@@ -29,6 +29,36 @@ pub const NOISE_XX: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 /// during the handshake instead of decrypting garbage later.
 pub const PROLOGUE: &[u8] = b"conduit/1";
 
+/// The relay preamble: `CDT1` then the 43-character rendezvous id, which is the
+/// desktop's [`device_id`]. Fixed size so the relay needs no parser at all. Mirrored in
+/// `relay/src/main.rs` and `android/.../Relay.kt`.
+pub const RELAY_MAGIC: &[u8; 4] = b"CDT1";
+
+/// Parks an outbound connection at the relay, returning it once a partner is spliced in.
+///
+/// This is the whole of NAT traversal: an outbound TCP connection from each side, with
+/// the relay copying ciphertext between them. Nothing arrives on a parked connection
+/// until it is paired, so one `peek` is the entire wait — no timer, no poll, and the
+/// bytes stay in the socket for the handshake that follows. `Ok(0)` means the relay hung
+/// up, which is also what being spliced onto a dead peer looks like from here.
+pub async fn park(endpoint: &str, rendezvous: &str) -> Result<tokio::net::TcpStream> {
+    let mut stream = tokio::net::TcpStream::connect(endpoint)
+        .await
+        .with_context(|| format!("dialling relay {endpoint}"))?;
+    stream.set_nodelay(true)?;
+    let mut preamble = Vec::with_capacity(RELAY_MAGIC.len() + rendezvous.len());
+    preamble.extend_from_slice(RELAY_MAGIC);
+    preamble.extend_from_slice(rendezvous.as_bytes());
+    stream.write_all(&preamble).await?;
+    stream.flush().await?;
+
+    let mut probe = [0u8; 1];
+    if stream.peek(&mut probe).await? == 0 {
+        bail!("relay closed the parked connection");
+    }
+    Ok(stream)
+}
+
 /// Reject an oversize length *before* allocating anything for it.
 pub fn parse_len(hdr: [u8; 4]) -> Result<usize> {
     let n = u32::from_be_bytes(hdr) as usize;

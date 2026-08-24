@@ -25,12 +25,18 @@ private const val BURST_MS = 8_000L
  * One pending message on the main looper is the entire timing cost, and only while a
  * burst is in flight.
  */
-class Discovery(context: Context, private val onFound: (InetSocketAddress) -> Unit) {
+class Discovery(
+    context: Context,
+    private val onFound: (InetSocketAddress) -> Unit,
+    /** No desktop on this LAN — the foreign-Wi-Fi case, which is what the relay is for. */
+    private val onEmpty: () -> Unit = {},
+) {
     private val nsd = context.getSystemService(NsdManager::class.java)
     private val handler = Handler(Looper.getMainLooper())
     private val deadline = Runnable {
         Log.d(TAG, "burst found nothing")
         stop()
+        onEmpty()
     }
 
     /** Guarded by `this`; the platform's callbacks arrive on its own threads. */

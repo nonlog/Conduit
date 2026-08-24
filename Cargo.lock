@@ -179,6 +179,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "conduit-relay"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "socket2",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "const-oid"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

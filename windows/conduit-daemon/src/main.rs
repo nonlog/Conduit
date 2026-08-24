@@ -22,9 +22,20 @@ use tracing::{info, warn};
 use wire::{pb, Session};
 
 const PORT: u16 = 41112;
+/// The relay this desktop parks at when the phone is not on the LAN. Ours, in Tokyo:
+/// lowest latency of the four hosts and the only one reachable without going through a
+/// local proxy. `CONDUIT_RELAY=` (empty) turns the relay path off entirely.
+const RELAY: &str = "tyo.414222.xyz:41113";
+/// ponytail: flat retry, no escalation. The desktop is on mains power and the relay is
+/// ours, so there is nothing to be polite to; add backoff if it ever rate-limits.
+const RELAY_RETRY: Duration = Duration::from_secs(15);
 /// Silence this long and we make the peer prove the path is alive. KDE Connect's
 /// bug 476747 is the counter-example: OS defaults meant ~7875 s to notice a dead peer.
 const IDLE_PING: Duration = Duration::from_secs(60);
+/// Over the relay the peer is on cellular or a foreign network, where every ping is a
+/// radio wake on a battery. Four an hour instead of sixty, at the cost of noticing a
+/// silently dead tunnel later. The phone's read deadline is 2.5x this and follows it.
+const RELAY_IDLE_PING: Duration = Duration::from_secs(240);
 const PONG_DEADLINE: Duration = Duration::from_secs(10);
 
 #[derive(Default)]
@@ -91,9 +102,35 @@ async fn main() -> Result<()> {
     // M0 carries exactly one peer. A reconnect must win, so the previous session is
     // dropped rather than the new one refused: a half-open socket would otherwise
     // lock the phone out until its own keepalive gave up.
+    //
+    // Two ways in now, and the difference ends here: a relay stream is spliced to the
+    // phone by a process that cannot read it, so from `serve`'s point of view it is an
+    // ordinary socket carrying an ordinary Noise session.
+    let (relay_tx, mut relay_rx) = tokio::sync::mpsc::channel::<TcpStream>(1);
+    match relay_endpoint() {
+        Some(endpoint) => {
+            let rendezvous = device_id.clone();
+            info!(%endpoint, "parking at the relay");
+            tokio::spawn(park_forever(endpoint, rendezvous, relay_tx));
+        }
+        // Dropping the sender closes the channel, which permanently disables the
+        // `select!` branch below rather than leaving it to fire on every poll.
+        None => drop(relay_tx),
+    }
+
     let mut active: Option<tokio::task::JoinHandle<()>> = None;
     loop {
-        let (stream, peer) = listener.accept().await?;
+        let (stream, peer, via) = tokio::select! {
+            accepted = listener.accept() => {
+                let (stream, peer) = accepted?;
+                (stream, peer, "lan")
+            }
+            Some(stream) = relay_rx.recv() => {
+                let peer = stream.peer_addr()?;
+                (stream, peer, "relay")
+            }
+        };
+        info!(%peer, via, "peer arriving");
         if let Some(previous) = active.take() {
             previous.abort();
             let _ = previous.await; // guard drop runs here — closed is counted
@@ -105,10 +142,45 @@ async fn main() -> Result<()> {
         let toasts = toasts.clone();
         active = Some(tokio::spawn(async move {
             let _guard = SessionGuard(metrics.clone());
-            if let Err(e) = serve(stream, peer, &local_priv, &metrics, &bridge, toasts.as_deref()).await {
+            if let Err(e) = serve(stream, peer, &local_priv, &metrics, &bridge, toasts.as_deref(), via).await {
                 warn!(%peer, error = %e, "session ended");
             }
         }));
+    }
+}
+
+/// `CONDUIT_RELAY` overrides the built-in endpoint; setting it empty disables the relay.
+fn relay_endpoint() -> Option<String> {
+    match std::env::var("CONDUIT_RELAY") {
+        Ok(value) if value.trim().is_empty() => None,
+        Ok(value) => Some(value),
+        Err(_) => Some(RELAY.to_string()),
+    }
+}
+
+/// Keeps exactly one connection parked at the relay for the life of the process.
+///
+/// Re-parks immediately after handing a stream over, so a reconnecting phone always
+/// finds a partner already waiting instead of racing the desktop to the rendezvous.
+/// The relay pairs whoever presents the id, so a stale park is harmless: the next
+/// arrival is spliced to the newest one.
+async fn park_forever(endpoint: String, rendezvous: String, tx: tokio::sync::mpsc::Sender<TcpStream>) {
+    loop {
+        match wire::park(&endpoint, &rendezvous).await {
+            Ok(stream) => {
+                if let Err(e) = set_keepalive(&stream) {
+                    warn!(error = %e, "relay stream without keepalive");
+                }
+                // Closed channel means main returned; nothing left to serve.
+                if tx.send(stream).await.is_err() {
+                    return;
+                }
+            }
+            Err(e) => {
+                warn!(error = %e, "relay unreachable");
+                tokio::time::sleep(RELAY_RETRY).await;
+            }
+        }
     }
 }
 
@@ -119,12 +191,15 @@ async fn serve(
     metrics: &Metrics,
     bridge: &clip::Bridge,
     toasts: Option<&toast::Notifier>,
+    // "lan" or "relay". Only the keepalive interval and the log line care.
+    path: &'static str,
 ) -> Result<()> {
     stream.set_nodelay(true)?;
     set_keepalive(&stream)?;
+    let idle_ping = if path == "relay" { RELAY_IDLE_PING } else { IDLE_PING };
 
     let mut session = Session::handshake(&mut stream, local_priv, false).await?;
-    info!(%peer, id = %wire::device_id(&session.peer_static), "session up");
+    info!(%peer, id = %wire::device_id(&session.peer_static), via = path, "session up");
     // Subscribed after the handshake so the session does not replay clips copied
     // while it was still connecting.
     let mut clips = bridge.subscribe();
@@ -134,7 +209,7 @@ async fn serve(
         // but a `select!` branch body runs to completion once chosen, so the sends
         // below are never cancelled mid-frame.
         let envelope = tokio::select! {
-            result = tokio::time::timeout(IDLE_PING, session.recv(&mut stream)) => match result {
+            result = tokio::time::timeout(idle_ping, session.recv(&mut stream)) => match result {
                 Ok(envelope) => envelope?,
                 Err(_) => {
                     session.send(&mut stream, pb::Kind::Ping, &[]).await?;

@@ -15,8 +15,28 @@ private const val TAG = "conduit.link"
 
 /** Long enough that a healthy peer's 60 s keepalive always beats it. */
 private const val READ_DEADLINE_MS = 150_000
+
+/**
+ * The relay path's deadline, following the desktop's slower keepalive there. A ping a
+ * minute is free on Wi-Fi and a radio wake a minute on cellular, so the desktop pings
+ * every 240 s over the relay and this is the 2.5x that follows. The cost is that a
+ * tunnel dying without a FIN goes unnoticed for up to ten minutes; the benefit is that
+ * an idle phone on mobile data wakes its radio four times an hour instead of sixty.
+ *
+ * It doubles as the parking deadline: a phone that reaches the relay before the desktop
+ * sits in exactly this blocked read until it is spliced.
+ */
+private const val RELAY_READ_DEADLINE_MS = 600_000
+
 private const val CONNECT_TIMEOUT_MS = 5_000
 private const val JOIN_TIMEOUT_MS = 2_000L
+
+/**
+ * The relay preamble's magic. `CDT1` then a 43-character rendezvous id is a fixed 47
+ * bytes, so the relay needs no parser. Mirrored in `relay/src/main.rs` and `wire.rs`.
+ */
+private val RELAY_MAGIC = "CDT1".toByteArray()
+
 
 /**
  * The one transport session this app ever has, and the two threads that own it.
@@ -40,6 +60,13 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
     interface Events {
         fun onState(state: LinkState, peer: String?)
         fun onText(text: String)
+
+        /**
+         * The peer's stable id, on every completed handshake. The service persists it
+         * because it doubles as the relay rendezvous, and the relay is unusable until
+         * one direct session has said what it is.
+         */
+        fun onPeer(deviceId: String)
 
         /**
          * A session that was actually up has gone. A dial that never completed its
@@ -73,13 +100,24 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
     private var reader: Thread? = null
 
     /** Dials on the reader thread. A no-op while a connection is already up. */
-    fun connect(address: InetSocketAddress) = sender.execute {
+    fun connect(address: InetSocketAddress) = dial(address, null)
+
+    /**
+     * Parks at the relay under [rendezvous] and waits to be spliced onto the desktop.
+     *
+     * Same reader thread, same session, same teardown as a LAN dial — the relay only
+     * changes which address is dialled and adds a 47-byte preamble, so nothing about the
+     * `opened == closed` invariant depends on which path was taken.
+     */
+    fun connectVia(relay: InetSocketAddress, rendezvous: String) = dial(relay, rendezvous)
+
+    private fun dial(address: InetSocketAddress, rendezvous: String?) = sender.execute {
         if (reader?.isAlive == true) {
             Log.d(TAG, "already connected, ignoring dial to $address")
             return@execute
         }
         events.onState(LinkState.Discovering, null)
-        reader = Thread({ pump(address) }, "conduit-recv").apply { start() }
+        reader = Thread({ pump(address, rendezvous) }, "conduit-recv").apply { start() }
     }
 
     /**
@@ -133,7 +171,7 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
         reader = null
     }
 
-    private fun pump(address: InetSocketAddress) {
+    private fun pump(address: InetSocketAddress, rendezvous: String?) {
         val count = opened.incrementAndGet()
         var established = false
         try {
@@ -142,8 +180,26 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
                 sock.tcpNoDelay = true
                 sock.keepAlive = true
                 // A deadline, not a poll: the kernel wakes nobody until it expires.
-                sock.soTimeout = READ_DEADLINE_MS
-                sock.connect(address, CONNECT_TIMEOUT_MS)
+                sock.soTimeout =
+                    if (rendezvous == null) READ_DEADLINE_MS else RELAY_READ_DEADLINE_MS
+                // The relay arrives as a hostname, and resolving it blocks. This is the
+                // one thread here that is allowed to, so it is resolved here rather than
+                // on the connectivity callback that asked for the dial.
+                val target = if (address.isUnresolved) {
+                    InetSocketAddress(address.hostName, address.port)
+                } else {
+                    address
+                }
+                sock.connect(target, CONNECT_TIMEOUT_MS)
+                if (rendezvous != null) {
+                    // 47 bytes naming the rendezvous, then the relay is a pipe and never
+                    // looks at this stream again. Mirrored in `relay/src/main.rs`.
+                    sock.getOutputStream().apply {
+                        write(RELAY_MAGIC + rendezvous.toByteArray())
+                        flush()
+                    }
+                    Log.i(TAG, "session $count parked at $target as ${rendezvous.take(12)}")
+                }
 
                 val live = WireSession.handshake(
                     sock.getInputStream(), sock.getOutputStream(), privateKey, initiator = true,
@@ -151,7 +207,8 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
                 session = live
                 established = true
                 val peer = Identity.fingerprint(live.peerStatic)
-                Log.i(TAG, "session $count up to $address, peer $peer")
+                Log.i(TAG, "session $count up to $target, peer $peer")
+                events.onPeer(Identity.deviceId(live.peerStatic))
                 events.onState(LinkState.Connected, peer)
 
                 while (true) dispatch(live.recv())

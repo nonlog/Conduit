@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["windows/conduit-daemon"]
+members = ["windows/conduit-daemon", "relay"]
 
 [workspace.package]
 version = "0.1.0"

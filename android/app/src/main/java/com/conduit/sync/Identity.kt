@@ -14,6 +14,9 @@ object Identity {
     /** 64 bytes: private ‖ public. Public is stored, not re-derived. */
     private const val FILE = "identity.bin"
 
+    /** The desktop's [deviceId], which is also the relay rendezvous. */
+    private const val PEER_FILE = "peer.txt"
+
     fun loadOrCreate(dir: File): KeyPair {
         val file = File(dir, FILE)
         val raw = if (file.isFile) file.readBytes() else null
@@ -43,4 +46,27 @@ object Identity {
 
     private fun sha256(data: ByteArray): ByteArray =
         MessageDigest.getInstance("SHA-256").digest(data)
+
+    /**
+     * Records which desktop we last completed a handshake with. Throws rather than
+     * swallowing: the caller logs it, and a phone that cannot remember its peer simply
+     * has no relay path.
+     */
+    fun rememberPeer(dir: File, deviceId: String) {
+        File(dir, PEER_FILE).writeText(deviceId)
+    }
+
+    /**
+     * The remembered desktop, or null if this phone has never paired.
+     *
+     * Length-checked, because the relay preamble is a fixed 47 bytes: a truncated file
+     * would produce a rendezvous the relay refuses, which is far harder to read in a log
+     * than "never paired".
+     */
+    fun peer(dir: File): String? = runCatching { File(dir, PEER_FILE).readText().trim() }
+        .getOrNull()
+        ?.takeIf { it.length == ID_LEN }
 }
+
+/** BASE64URL of a SHA-256 digest, unpadded, is always this long. */
+const val ID_LEN = 43
