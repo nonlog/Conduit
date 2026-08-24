@@ -209,11 +209,17 @@ async fn serve(
     let mut incoming: Option<image::Assembly> = None;
 
     loop {
+        // Time left before this side owes the peer a frame. Measured from our last
+        // *send*, not from the last thing we heard: the phone's read deadline can only
+        // be satisfied by us speaking, so a phone that chats steadily while hearing
+        // nothing back used to tear down a perfectly healthy session on the dot. It
+        // also still catches a dead peer, because a ping demands a pong.
+        let quiet = idle_ping.saturating_sub(session.quiet_for());
         // `recv` is cancel-safe, which is what makes racing it legal. `send` is not,
         // but a `select!` branch body runs to completion once chosen, so the sends
         // below are never cancelled mid-frame.
         let envelope = tokio::select! {
-            result = tokio::time::timeout(idle_ping, session.recv(&mut stream)) => match result {
+            result = tokio::time::timeout(quiet, session.recv(&mut stream)) => match result {
                 Ok(envelope) => envelope?,
                 Err(_) => {
                     session.send(&mut stream, pb::Kind::Ping, &[]).await?;

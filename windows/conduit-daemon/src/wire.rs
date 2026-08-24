@@ -8,6 +8,7 @@ use base64::Engine as _;
 use prost::Message as _;
 use sha2::{Digest, Sha256};
 use std::path::Path;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// Generated from `proto/conduit.proto` by `build.rs`. The M1 messages
@@ -129,6 +130,13 @@ pub struct Session {
     plain_in: Vec<u8>,
     plain_out: Vec<u8>,
     next_id: u64,
+    /// When this side last put a frame on the wire.
+    ///
+    /// Lives here rather than in the session loop because every send in the process goes
+    /// through [`Session::send`], and a heartbeat driven off a field the caller has to
+    /// remember to update is a heartbeat that stops the first time someone adds a
+    /// message kind and forgets.
+    last_sent: Instant,
 }
 
 impl Session {
@@ -176,7 +184,15 @@ impl Session {
             plain_in: vec![0u8; MAX_FRAME],
             plain_out: Vec::with_capacity(4096),
             next_id: 1,
+            last_sent: Instant::now(),
         })
+    }
+
+    /// How long this side has been silent. The peer's read deadline is the thing this
+    /// answers to: it is a promise to speak within a fixed window, and it does not care
+    /// in the slightest how much the peer itself has been saying.
+    pub fn quiet_for(&self) -> Duration {
+        self.last_sent.elapsed()
     }
 
     /// Not cancel-safe — a half-written frame desyncs the peer. Never wrap this in
@@ -203,6 +219,7 @@ impl Session {
         env.encode(&mut self.plain_out)?;
         let n = self.noise.write_message(&self.plain_out, &mut self.cipher)?;
         write_framed(w, &self.cipher[..n]).await?;
+        self.last_sent = Instant::now();
         Ok(id)
     }
 
@@ -285,6 +302,46 @@ mod tests {
         s.send(&mut b, pb::Kind::ClipText, &env.payload).await.unwrap();
 
         assert_eq!(init.await.unwrap(), "héllo → 世界");
+    }
+
+    /// The regression behind the "session ended after exactly 150 s" churn.
+    ///
+    /// The desktop's heartbeat used to be a read timeout, so a peer that talked steadily
+    /// reset it forever and this side never spoke — while the phone, whose own deadline
+    /// can only be met by hearing something, hung up on the dot. Silence has to mean our
+    /// silence, so receiving must not reset it and sending must.
+    #[tokio::test]
+    async fn silence_is_measured_from_our_own_last_send() {
+        let (mut a, mut b) = tokio::io::duplex(1 << 16);
+        let params: snow::params::NoiseParams = NOISE_XX.parse().unwrap();
+        let ka = snow::Builder::new(params.clone()).generate_keypair().unwrap();
+        let kb = snow::Builder::new(params).generate_keypair().unwrap();
+
+        let chatter = tokio::spawn(async move {
+            let mut s = Session::handshake(&mut a, &ka.private, true).await.unwrap();
+            // Two frames, spread out, and never a read: exactly the phone's behaviour.
+            for _ in 0..2 {
+                s.send(&mut a, pb::Kind::Ping, &[]).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(60)).await;
+            }
+        });
+
+        let mut s = Session::handshake(&mut b, &kb.private, false).await.unwrap();
+        s.recv(&mut b).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        s.recv(&mut b).await.unwrap();
+        let after_receiving = s.quiet_for();
+        assert!(
+            after_receiving >= Duration::from_millis(50),
+            "receiving reset the heartbeat, which is the bug: {after_receiving:?}"
+        );
+
+        s.send(&mut b, pb::Kind::Pong, &[]).await.unwrap();
+        assert!(
+            s.quiet_for() < after_receiving,
+            "sending did not reset the heartbeat"
+        );
+        chatter.await.unwrap();
     }
 
     #[tokio::test]
