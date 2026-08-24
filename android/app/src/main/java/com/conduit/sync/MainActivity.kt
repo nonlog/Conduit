@@ -9,19 +9,30 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions
+import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
@@ -33,8 +44,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -45,17 +59,28 @@ private const val TAG = "conduit.ui"
 enum class LinkState(val label: String) {
     Idle("Not linked"),
     Discovering("Looking for the desktop"),
+
+    /** Down, with an attempt already scheduled. See `SyncService.scheduleRetry`. */
+    Retrying("Reconnecting"),
     Connected("Linked"),
 }
 
 /**
  * The screen's whole state. Snapshot state rather than a flow because writes come from
- * [Link]'s threads and Compose already handles that; a repository layer for three
+ * [Link]'s threads and Compose already handles that; a repository layer for four
  * fields would be scaffolding.
  */
 object LinkStatus {
     var state by mutableStateOf(LinkState.Idle)
+
+    /**
+     * The peer's fingerprint, not a device name — it is what [Link] hands to `onState`,
+     * and it is the value compared by eye against the desktop when pairing.
+     */
     var peer by mutableStateOf<String?>(null)
+
+    /** "LAN", "Relay" or "Direct": which route the current attempt is taking. */
+    var path by mutableStateOf<String?>(null)
     var fingerprint by mutableStateOf("-- : -- : -- : -- : -- : -- : -- : --")
 }
 
@@ -76,6 +101,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // Shown before anything is running, so the desktop can be paired against it.
         LinkStatus.fingerprint = Identity.fingerprint(Identity.loadOrCreate(filesDir).public)
+        // The activity can be the first component to run, so it loads history too rather
+        // than showing an empty list until the service happens to start.
+        History.load(this)
         request()
         // A host on the launch intent pins the address and links straight away. It has to
         // go through the activity: Android 12+ refuses a foreground service started from
@@ -85,9 +113,13 @@ class MainActivity : ComponentActivity() {
             ConduitTheme {
                 HomeScreen(
                     fingerprint = LinkStatus.fingerprint,
-                    peerName = LinkStatus.peer,
+                    peerFingerprint = LinkStatus.peer,
+                    path = LinkStatus.path,
                     state = LinkStatus.state,
-                    onLink = { startLink(null) },
+                    history = History.entries,
+                    onConnect = { send(ACTION_CONNECT) },
+                    onDisconnect = { send(ACTION_DISCONNECT) },
+                    onClearHistory = History::clear,
                 )
             }
         }
@@ -107,7 +139,7 @@ class MainActivity : ComponentActivity() {
      *
      * Only ever asked for what is actually missing, and only the dangerous ones: reading
      * photos, and — on Android 13+ — posting the foreground service's own notification,
-     * without which the service runs but shows nothing. Everything else conduit needs is
+     * without which the service runs but shows nothing. Everything else Conduit needs is
      * install-time or a trip to Settings the user has to make anyway.
      */
     private fun request() {
@@ -130,6 +162,11 @@ class MainActivity : ComponentActivity() {
         }
         startForegroundService(service)
     }
+
+    /** Connect and disconnect are the same call with a different action. */
+    private fun send(action: String) {
+        startForegroundService(Intent(this, SyncService::class.java).setAction(action))
+    }
 }
 
 @Composable
@@ -150,25 +187,47 @@ private fun ConduitTheme(content: @Composable () -> Unit) {
 @Composable
 private fun HomeScreen(
     fingerprint: String,
-    peerName: String?,
+    peerFingerprint: String?,
+    path: String?,
     state: LinkState,
-    onLink: () -> Unit,
+    history: List<HistoryEntry>,
+    onConnect: () -> Unit,
+    onDisconnect: () -> Unit,
+    onClearHistory: () -> Unit,
 ) {
     Scaffold(topBar = { TopAppBar(title = { Text("Conduit") }) }) { insets ->
-        Column(
-            modifier = Modifier
-                .padding(insets)
-                .padding(horizontal = 16.dp),
+        // One lazy list for the whole screen, so the history scrolls under the cards
+        // instead of the cards needing their own scroll container.
+        LazyColumn(
+            modifier = Modifier.padding(insets),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            StatusCard(state, peerName, onLink)
-            IdentityCard(fingerprint)
+            item { StatusCard(state, peerFingerprint, path, onConnect, onDisconnect) }
+            item { IdentityCard(fingerprint) }
+            item { HistoryHeader(history.isNotEmpty(), onClearHistory) }
+            if (history.isEmpty()) {
+                item {
+                    Text(
+                        "Nothing synced yet.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            items(history, key = { "${it.at}:${it.direction}" }) { ClipRow(it) }
         }
     }
 }
 
 @Composable
-private fun StatusCard(state: LinkState, peerName: String?, onLink: () -> Unit) {
+private fun StatusCard(
+    state: LinkState,
+    peerFingerprint: String?,
+    path: String?,
+    onConnect: () -> Unit,
+    onDisconnect: () -> Unit,
+) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -179,24 +238,119 @@ private fun StatusCard(state: LinkState, peerName: String?, onLink: () -> Unit) 
             },
         ),
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Column {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Dot(state)
+                Spacer(Modifier.size(8.dp))
+                // The label carries the state; the dot only repeats it, so colour is
+                // never the only signal.
                 Text(state.label, style = MaterialTheme.typography.titleMedium)
-                peerName?.let {
-                    Text(it, style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.weight(1f))
+                path?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
-            if (state != LinkState.Connected) {
-                Button(onClick = onLink) { Text("Link") }
+            peerFingerprint?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (state == LinkState.Connected) {
+                    // Outlined, because disconnecting is not the action to draw the eye.
+                    OutlinedButton(onClick = onDisconnect, modifier = Modifier.heightIn(min = 48.dp)) {
+                        Text("Disconnect")
+                    }
+                } else {
+                    Button(onClick = onConnect, modifier = Modifier.heightIn(min = 48.dp)) {
+                        Text(if (state == LinkState.Retrying) "Connect now" else "Connect")
+                    }
+                }
             }
         }
     }
+}
+
+/** Decoration only — [LinkState.label] is what actually says the state. */
+@Composable
+private fun Dot(state: LinkState) {
+    val colour = when (state) {
+        LinkState.Connected -> Color(0xFF2FBF71)
+        LinkState.Discovering, LinkState.Retrying -> Color(0xFFE0A02F)
+        LinkState.Idle -> MaterialTheme.colorScheme.outline
+    }
+    Box(Modifier.size(10.dp).background(colour, CircleShape))
+}
+
+@Composable
+private fun HistoryHeader(any: Boolean, onClear: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text("Clipboard history", style = MaterialTheme.typography.titleSmall)
+        if (any) {
+            TextButton(onClick = onClear, modifier = Modifier.heightIn(min = 48.dp)) {
+                Text("Clear")
+            }
+        }
+    }
+}
+
+@Composable
+private fun ClipRow(entry: HistoryEntry) {
+    val clipboard = LocalClipboardManager.current
+    val arrow = if (entry.direction == Direction.Sent) "↑" else "↓"
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        // Tapping puts it back on the clipboard. Only the stored preview, which for a long
+        // clip is a prefix — the full text was deliberately never kept, so the history
+        // cannot grow without bound.
+        onClick = { if (!entry.image) clipboard.setText(AnnotatedString(entry.preview)) },
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    // The arrow is a glyph, so the direction has to be said out loud for
+                    // anything that is not reading it with eyes.
+                    .semantics { contentDescription = entry.direction.name },
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    "$arrow ${entry.direction.name}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Text(
+                    entry.ago().toString(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                entry.preview,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 3,
+            )
+        }
+    }
+    HorizontalDivider(color = Color.Transparent)
 }
 
 @Composable

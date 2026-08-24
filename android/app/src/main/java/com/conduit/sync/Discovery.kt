@@ -89,6 +89,10 @@ class Discovery(
         override fun onStartDiscoveryFailed(type: String, error: Int) {
             Log.w(TAG, "discovery would not start: $error")
             stop()
+            // Same outcome as a burst that found nothing, and it must be reported as one:
+            // [onEmpty] is what falls through to the relay and what keeps the caller's
+            // retry chain alive. Staying silent here strands the link until a network event.
+            onEmpty()
         }
 
         override fun onStopDiscoveryFailed(type: String, error: Int) {

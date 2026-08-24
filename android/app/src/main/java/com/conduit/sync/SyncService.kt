@@ -34,6 +34,31 @@ private const val RELAY_PORT = 41113
 private const val MAX_TEXT = 64_000
 
 /**
+ * First retry after a link goes down. Short, because the overwhelmingly common cause is a
+ * desktop that is a second away from being ready — it just booted, or the daemon restarted.
+ */
+private const val RETRY_MIN_MS = 5_000L
+
+/**
+ * The backoff ceiling: twelve attempts an hour once a desktop has been down a while.
+ *
+ * Affordable because of what schedules it. [Handler.postDelayed] is measured on
+ * `uptimeMillis`, which excludes deep sleep, and it acquires no wake lock — so a phone in
+ * deep sleep does not advance toward the next attempt and nothing here can wake the device
+ * or its radio. The retries land while the phone is awake anyway, which is what makes an
+ * automatic reconnect compatible with an idle cost of zero. `AlarmManager` with a WAKEUP
+ * type would have been the version of this feature that drains the battery.
+ */
+private const val RETRY_MAX_MS = 300_000L
+
+/** Sent by the UI. A disconnect has to be remembered, or START_STICKY undoes the user's tap. */
+const val ACTION_CONNECT = "com.conduit.sync.CONNECT"
+const val ACTION_DISCONNECT = "com.conduit.sync.DISCONNECT"
+
+private const val PREFS = "link"
+private const val PREF_WANTED = "wanted"
+
+/**
  * The long-running half of the app.
  *
  * `connectedDevice`, not `dataSync`: Android 15 caps a `dataSync` foreground service at
@@ -80,6 +105,28 @@ class SyncService : Service() {
     @Volatile private var knownPeer: String? = null
 
     /**
+     * Whether the user wants a link at all, persisted because [START_STICKY] means the
+     * system can restart this service with a null intent — and a restart that silently
+     * reconnects is a restart that overrides the disconnect the user asked for.
+     */
+    @Volatile private var wanted = true
+
+    /** Set in [onDestroy] so a retry already in flight cannot touch a closed [Link]. */
+    @Volatile private var destroyed = false
+
+    /**
+     * Retry state, touched only on the main thread — every mutation is posted there, so the
+     * backoff needs no lock even though the events that drive it arrive on [Link]'s reader
+     * thread.
+     */
+    private var retryMs = RETRY_MIN_MS
+    private val retry = Runnable {
+        if (destroyed || !wanted) return@Runnable
+        Log.i(TAG, "retrying the link")
+        redial()
+    }
+
+    /**
      * The *default* network only. A Wi-Fi to cellular handover is then one
      * [onAvailable] for the network that replaced it, rather than a pair of events about
      * two networks that both look current — which is what a transport-filtered request
@@ -89,6 +136,10 @@ class SyncService : Service() {
     private val network = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(net: Network) {
             networkUp = true
+            // A different network is a genuinely new chance, not a repeat of the attempt
+            // that just failed, so it starts from the floor instead of serving out a
+            // backoff earned on a network that no longer exists.
+            cancelRetry()
             redial(net)
         }
 
@@ -97,6 +148,8 @@ class SyncService : Service() {
             // survive, so a reconnect reuses them instead of allocating a fresh set.
             Log.i(TAG, "network gone, suspending session")
             networkUp = false
+            // Nothing to count down against; onAvailable is what resumes this.
+            main.removeCallbacks(retry)
             link.disconnect()
         }
     }
@@ -110,6 +163,8 @@ class SyncService : Service() {
         clipboard = getSystemService(ClipboardManager::class.java)
         connectivity = getSystemService(ConnectivityManager::class.java)
         knownPeer = Identity.peer(filesDir)
+        wanted = getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PREF_WANTED, true)
+        History.load(this)
 
         link = Link(
             identity.private,
@@ -117,6 +172,18 @@ class SyncService : Service() {
                 override fun onState(state: LinkState, peer: String?) {
                     LinkStatus.state = state
                     LinkStatus.peer = peer
+                    when (state) {
+                        // A completed handshake is the only proof the path works, so it is
+                        // the only thing that earns a reset back to the short interval.
+                        LinkState.Connected -> cancelRetry()
+                        // Every exit from the reader thread lands here, whether the
+                        // handshake completed or not. That is the point: a dial refused by
+                        // a desktop that is not listening notified nothing before, which is
+                        // exactly why a phone that missed one burst stayed dark until the
+                        // next network event.
+                        LinkState.Idle -> scheduleRetry()
+                        LinkState.Discovering, LinkState.Retrying -> {}
+                    }
                 }
 
                 override fun onText(text: String) = onRemoteText(text)
@@ -126,10 +193,11 @@ class SyncService : Service() {
                 override fun onPeer(deviceId: String) = rememberPeer(deviceId)
 
                 override fun onSessionLost() {
-                    // Edge-triggered reconnect: one attempt per lost session, and only
-                    // while a network is present. A desktop that stays down costs one
-                    // 8-second burst, not a retry timer.
-                    if (networkUp) redial()
+                    // Deliberately does not dial: [onState] already scheduled a retry for
+                    // this same teardown, and a second dial here would race it. The backoff
+                    // was reset to its minimum when this session connected, so a link that
+                    // was working comes back on the short interval anyway.
+                    Log.i(TAG, "session lost")
                 }
             },
         )
@@ -158,17 +226,35 @@ class SyncService : Service() {
         //   adb shell am start-foreground-service -n com.conduit.sync/.SyncService \
         //       --es host 127.0.0.1
         val host = intent?.getStringExtra("host")
-        if (host != null) {
-            link.connect(InetSocketAddress(host, intent.getIntExtra("port", PORT)))
-        } else {
-            // The network callback only fires on a change, so the first dial is ours.
-            redial()
+        when {
+            intent?.action == ACTION_DISCONNECT -> stopLink()
+            host != null -> {
+                setWanted(true)
+                cancelRetry()
+                LinkStatus.path = "Direct"
+                link.connect(InetSocketAddress(host, intent.getIntExtra("port", PORT)))
+            }
+            // An explicit tap always overrides a remembered disconnect and starts over from
+            // the short interval, so the user never waits out a backoff they did not cause.
+            intent?.action == ACTION_CONNECT -> {
+                setWanted(true)
+                cancelRetry()
+                redial()
+            }
+            // A null intent is the system restarting us under START_STICKY. Respecting the
+            // remembered choice is the whole reason it is persisted.
+            wanted -> redial()
+            else -> Log.i(TAG, "restarted, but the user had turned the link off")
         }
         return START_STICKY
     }
 
     override fun onDestroy() {
-        // Cleared first, so the notification relay stops handing frames to a link that
+        // Set first, and the callbacks dropped on this thread rather than posted, so a
+        // retry cannot fire against a [Link] that close() is about to spend.
+        destroyed = true
+        main.removeCallbacks(retry)
+        // Cleared next, so the notification relay stops handing frames to a link that
         // is being torn down.
         activeLink = null
         clipboard.removePrimaryClipChangedListener(clipListener)
@@ -178,10 +264,61 @@ class SyncService : Service() {
         link.close()
         LinkStatus.state = LinkState.Idle
         LinkStatus.peer = null
+        LinkStatus.path = null
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent): IBinder? = null
+
+    /**
+     * Schedules the next attempt, doubling up to [RETRY_MAX_MS].
+     *
+     * Posted to the main thread because it is called from [Link]'s reader thread, which is
+     * what keeps [retryMs] lock-free. A pending attempt is always dropped first, so however
+     * many times this is called there is at most one outstanding retry — that single-slot
+     * property is what stops a reconnect from becoming a spin loop.
+     */
+    private fun scheduleRetry() = main.post {
+        if (destroyed) return@post
+        main.removeCallbacks(retry)
+        if (!wanted) {
+            Log.i(TAG, "link down and the user wants it off, not retrying")
+            return@post
+        }
+        if (!networkUp) {
+            // No point counting down against a network that is gone; onAvailable redials.
+            Log.i(TAG, "link down with no network, waiting for one")
+            return@post
+        }
+        LinkStatus.state = LinkState.Retrying
+        Log.i(TAG, "link down, retrying in ${retryMs / 1000}s")
+        main.postDelayed(retry, retryMs)
+        retryMs = (retryMs * 2).coerceAtMost(RETRY_MAX_MS)
+    }
+
+    /** Drops any pending attempt and returns the backoff to its floor. */
+    private fun cancelRetry() = main.post {
+        main.removeCallbacks(retry)
+        retryMs = RETRY_MIN_MS
+    }
+
+    /** The user's tap. Remembered, so a service restart does not undo it. */
+    private fun stopLink() {
+        Log.i(TAG, "user asked for a disconnect")
+        setWanted(false)
+        main.removeCallbacks(retry)
+        retryMs = RETRY_MIN_MS
+        discovery.stop()
+        link.disconnect()
+        LinkStatus.state = LinkState.Idle
+        LinkStatus.path = null
+    }
+
+    private fun setWanted(value: Boolean) {
+        wanted = value
+        getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(PREF_WANTED, value).apply()
+    }
 
     /**
      * One dial attempt, routed by what the current network can actually reach.
@@ -193,11 +330,16 @@ class SyncService : Service() {
      * eight seconds of radio for a guaranteed miss.
      */
     private fun redial(net: Network? = null) {
+        if (!wanted) {
+            Log.i(TAG, "not dialling; the user turned the link off")
+            return
+        }
         val caps = connectivity.getNetworkCapabilities(net ?: connectivity.activeNetwork)
         val lan = caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true ||
             caps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true
         if (lan) {
             Log.i(TAG, "network up on a LAN, bursting")
+            LinkStatus.path = "LAN"
             discovery.burst()
         } else {
             Log.i(TAG, "network up off-LAN, going straight to the relay")
@@ -216,8 +358,14 @@ class SyncService : Service() {
         val peer = knownPeer
         if (peer == null) {
             Log.i(TAG, "no paired desktop yet, so no relay rendezvous; pair on a LAN first")
+            LinkStatus.path = null
+            // Nothing was dialled, so no reader thread will ever report Idle for this
+            // attempt — and Idle is what schedules the next one. Without this the retry
+            // chain ends here and an unpaired phone goes dark until the user taps.
+            scheduleRetry()
             return
         }
+        LinkStatus.path = "Relay"
         link.connectVia(InetSocketAddress.createUnresolved(RELAY_HOST, RELAY_PORT), peer)
     }
 
@@ -254,6 +402,7 @@ class SyncService : Service() {
             return
         }
         lastText = text
+        History.record(Direction.Sent, text)
         link.sendText(text)
     }
 
@@ -272,6 +421,7 @@ class SyncService : Service() {
         }
         // Reading happens on the sender thread: opening the URI is a binder call into
         // whichever app owns it, and this listener is on the main thread.
+        History.record(Direction.Sent, "Image", image = true)
         link.sendImage("clip image") { Images.fromClipboard(this, clip) }
     }
 
@@ -285,6 +435,7 @@ class SyncService : Service() {
             return
         }
         Log.i(TAG, "clip image in: ${png.size} B")
+        History.record(Direction.Received, "Image, ${png.size / 1024} kB", image = true)
         // The write itself is cheap, but it must happen where the clipboard expects to
         // be touched, and the listener it triggers arrives on the main thread too.
         main.post { Images.toClipboard(this, clipboard, png) }
@@ -297,6 +448,7 @@ class SyncService : Service() {
         // Recorded before the write, because the listener fires on the main thread and
         // may observe the change before setPrimaryClip has returned here.
         lastText = normalised
+        History.record(Direction.Received, normalised)
         main.post {
             clipboard.setPrimaryClip(ClipData.newPlainText("Conduit", normalised))
         }
