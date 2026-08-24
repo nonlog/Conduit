@@ -13,6 +13,10 @@ captures/
 *.aab
 *.dex
 
+# Captured build output
+build-log.txt
+build-err.txt
+
 # Signing keys and device identity — must never be committed
 *.jks
 *.keystore

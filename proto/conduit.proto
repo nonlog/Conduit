@@ -5,7 +5,8 @@
 // Framing (LAN and relay, identical):
 //   [4-byte BE uint32 length N][N bytes Noise transport ciphertext]
 // Ciphertext decrypts to exactly one Envelope. N is validated BEFORE allocation:
-// N > MAX_FRAME (1 MiB) closes the session.
+// N == 0 or N > MAX_FRAME closes the session. MAX_FRAME is 65535 because that is the
+// hard ceiling on a Noise transport message; usable plaintext is 65519 after the tag.
 
 syntax = "proto3";
 
@@ -30,8 +31,8 @@ enum Kind {
 }
 
 message Envelope {
-  uint64 message_id = 1;  // random 64-bit; receiver dedupes on (peer_id, message_id), LRU 1024
-  uint64 ack_for    = 2;  // 0 = not an ACK. Every non-ACK expects one within 5s, max 2 retries.
+  uint64 message_id = 1;  // per-session counter from 1; dedupe state resets with the session
+  uint64 ack_for    = 2;  // reserved: liveness is PING/PONG, so nothing sends an ACK
   Kind   kind       = 3;
   bytes  payload    = 4;  // serialized inner message below
 }
@@ -61,11 +62,14 @@ message ClipText {
 message ClipImageHeader {
   string mime         = 1;
   uint32 total_bytes  = 2;  // > MAX_MESSAGE (10 MiB) -> reject, do not allocate
-  uint32 chunk_size   = 3;  // fixed 64 KiB
+  uint32 chunk_size   = 3;  // fixed 32 KiB: 64 KiB overflows the 65519-byte plaintext ceiling
   uint32 chunk_count  = 4;  // ceil(total_bytes / chunk_size)
   string file_name    = 5;
   uint64 timestamp_ms = 6;
   bytes  header_id    = 7;  // hash of this header; chunks reference it
+  // A new camera photo takes this same chunked path, but must not hijack the clipboard:
+  // it becomes a toast hero image instead. Downscaled by the sender.
+  bool   photo        = 8;
 }
 
 message ClipImageChunk {
