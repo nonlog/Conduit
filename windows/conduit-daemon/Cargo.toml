@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 anyhow = "1.0.104"
 base64 = "0.23.1"
+clipboard-win = { version = "5.4.1", features = ["monitor", "std"] }
 prost = "0.14.4"
 sha2 = "0.11.0"
 snow = "0.10.0"

@@ -1,18 +1,21 @@
 //! conduit daemon — Windows side.
 //!
-//! M0 scope: accept one LAN peer, Noise XX, keep the socket honest, log inbound
-//! text clips. Clipboard read/write and mDNS advertise land next; the shape here
-//! is chosen so neither adds a thread or a timer per message.
+//! M0 scope: accept one LAN peer, Noise XX, keep the socket honest, sync text
+//! clipboard both ways. mDNS advertise lands next; the shape here is chosen so
+//! neither it nor image sync adds a thread or a timer per message.
 
+mod clip;
 mod wire;
 
 use anyhow::{Context, Result};
+use prost::Message as _;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::broadcast;
 use tracing::{info, warn};
 use wire::{pb, Session};
 
@@ -67,6 +70,9 @@ async fn main() -> Result<()> {
     );
 
     let metrics = Arc::new(Metrics::default());
+    // One listener thread for the process, started before the socket so a clip copied
+    // during the first handshake is already in the ring.
+    let bridge = Arc::new(clip::Bridge::start()?);
     let listener = TcpListener::bind(("0.0.0.0", PORT)).await?;
     info!(port = PORT, "listening");
 
@@ -83,9 +89,10 @@ async fn main() -> Result<()> {
         metrics.created.fetch_add(1, Ordering::Relaxed);
         let metrics = metrics.clone();
         let local_priv = identity.private.clone();
+        let bridge = bridge.clone();
         active = Some(tokio::spawn(async move {
             let _guard = SessionGuard(metrics.clone());
-            if let Err(e) = serve(stream, peer, &local_priv, &metrics).await {
+            if let Err(e) = serve(stream, peer, &local_priv, &metrics, &bridge).await {
                 warn!(%peer, error = %e, "session ended");
             }
         }));
@@ -97,23 +104,55 @@ async fn serve(
     peer: SocketAddr,
     local_priv: &[u8],
     metrics: &Metrics,
+    bridge: &clip::Bridge,
 ) -> Result<()> {
     stream.set_nodelay(true)?;
     set_keepalive(&stream)?;
 
     let mut session = Session::handshake(&mut stream, local_priv, false).await?;
     info!(%peer, id = %wire::device_id(&session.peer_static), "session up");
+    // Subscribed after the handshake so the session does not replay clips copied
+    // while it was still connecting.
+    let mut clips = bridge.subscribe();
 
     loop {
-        // `recv` is cancel-safe, which is what makes this timeout legal.
-        let envelope = match tokio::time::timeout(IDLE_PING, session.recv(&mut stream)).await {
-            Ok(result) => result?,
-            Err(_) => {
-                session.send(&mut stream, pb::Kind::Ping, &[]).await?;
-                metrics.frames_out.fetch_add(1, Ordering::Relaxed);
-                tokio::time::timeout(PONG_DEADLINE, session.recv(&mut stream))
-                    .await
-                    .context("peer silent past pong deadline")??
+        // `recv` is cancel-safe, which is what makes racing it legal. `send` is not,
+        // but a `select!` branch body runs to completion once chosen, so the sends
+        // below are never cancelled mid-frame.
+        let envelope = tokio::select! {
+            result = tokio::time::timeout(IDLE_PING, session.recv(&mut stream)) => match result {
+                Ok(envelope) => envelope?,
+                Err(_) => {
+                    session.send(&mut stream, pb::Kind::Ping, &[]).await?;
+                    metrics.frames_out.fetch_add(1, Ordering::Relaxed);
+                    tokio::time::timeout(PONG_DEADLINE, session.recv(&mut stream))
+                        .await
+                        .context("peer silent past pong deadline")??
+                }
+            },
+            local = clips.recv() => {
+                match local {
+                    Ok(text) => {
+                        let clip = pb::ClipText {
+                            timestamp_ms: now_ms(),
+                            mime: "text/plain".into(),
+                            text,
+                        };
+                        session
+                            .send(&mut stream, pb::Kind::ClipText, &clip.encode_to_vec())
+                            .await?;
+                        metrics.frames_out.fetch_add(1, Ordering::Relaxed);
+                    }
+                    // The ring overwrote clips faster than this session drained them.
+                    // Skipping is correct: only the newest clipboard state matters.
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!(skipped = n, "clip ring lagged")
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        anyhow::bail!("clipboard bridge is gone")
+                    }
+                }
+                continue;
             }
         };
         metrics.frames_in.fetch_add(1, Ordering::Relaxed);
@@ -125,13 +164,23 @@ async fn serve(
             }
             pb::Kind::Pong => {}
             pb::Kind::ClipText => {
-                let clip = <pb::ClipText as prost::Message>::decode(&envelope.payload[..])?;
-                // ponytail: logged, not applied — clipboard write is the next commit.
+                let clip = pb::ClipText::decode(&envelope.payload[..])?;
                 info!(bytes = clip.text.len(), mime = %clip.mime, "clip text in");
+                // A clipboard failure is the peer's problem, not the session's.
+                if let Err(e) = bridge.apply(&clip.text) {
+                    warn!(error = %e, "could not set the clipboard");
+                }
             }
             other => warn!(?other, "unhandled kind"),
         }
     }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// 30 s idle / 10 s probe / 3 retries. Windows' `SIO_KEEPALIVE_VALS` has no retry
