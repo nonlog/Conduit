@@ -1,0 +1,34 @@
+# Rust
+target/
+**/*.rs.bk
+*.pdb
+
+# Android / Gradle
+.gradle/
+build/
+local.properties
+captures/
+*.iml
+*.apk
+*.aab
+*.dex
+
+# Signing keys and device identity — must never be committed
+*.jks
+*.keystore
+keystore.properties
+identity.bin
+noise_static.bin
+trusted_peers.json
+conduit.toml
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store

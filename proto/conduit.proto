@@ -1,0 +1,122 @@
+// Single source of truth for the conduit wire format. Codegen both sides:
+//   Rust    : prost-build
+//   Android : protobuf-lite
+//
+// Framing (LAN and relay, identical):
+//   [4-byte BE uint32 length N][N bytes Noise transport ciphertext]
+// Ciphertext decrypts to exactly one Envelope. N is validated BEFORE allocation:
+// N > MAX_FRAME (1 MiB) closes the session.
+
+syntax = "proto3";
+
+package conduit;
+
+option java_package = "com.conduit.sync.proto";
+option java_multiple_files = true;
+
+enum Kind {
+  KIND_UNSPECIFIED   = 0;
+  PING               = 1;
+  PONG               = 2;
+  PAIR_REQUEST       = 3;
+  PAIR_RESPONSE      = 4;
+  CLIP_TEXT          = 10;
+  CLIP_IMAGE_HEADER  = 11;
+  CLIP_IMAGE_CHUNK   = 12;
+  NOTIF_NEW          = 20;
+  NOTIF_UPDATE       = 21;
+  NOTIF_REMOVE       = 22;
+  NOTIF_ACTION       = 23;
+}
+
+message Envelope {
+  uint64 message_id = 1;  // random 64-bit; receiver dedupes on (peer_id, message_id), LRU 1024
+  uint64 ack_for    = 2;  // 0 = not an ACK. Every non-ACK expects one within 5s, max 2 retries.
+  Kind   kind       = 3;
+  bytes  payload    = 4;  // serialized inner message below
+}
+
+// --- pairing (Noise XX; fingerprint confirmed out of band) ---
+
+message PairRequest {
+  string device_id   = 1;  // BASE64URL(SHA256(static_pub)), lowercase
+  string device_name = 2;
+  bytes  static_pub  = 3;
+  string version     = 4;
+}
+
+message PairResponse {
+  bool  accept     = 1;
+  bytes static_pub = 2;
+}
+
+// --- clipboard ---
+
+message ClipText {
+  string text         = 1;  // normalized CRLF -> LF before send
+  uint64 timestamp_ms = 2;
+  string mime         = 3;  // "text/plain"
+}
+
+message ClipImageHeader {
+  string mime         = 1;
+  uint32 total_bytes  = 2;  // > MAX_MESSAGE (10 MiB) -> reject, do not allocate
+  uint32 chunk_size   = 3;  // fixed 64 KiB
+  uint32 chunk_count  = 4;  // ceil(total_bytes / chunk_size)
+  string file_name    = 5;
+  uint64 timestamp_ms = 6;
+  bytes  header_id    = 7;  // hash of this header; chunks reference it
+}
+
+message ClipImageChunk {
+  uint32 index     = 1;
+  bytes  data      = 2;
+  bytes  header_id = 3;
+  uint32 stream_id = 4;  // so a ClipText arriving mid-image does not head-of-line block
+}
+
+// --- notifications ---
+
+message TextMessage {
+  string sender = 1;
+  string text   = 2;
+}
+
+message NotifActionDesc {
+  string label            = 1;
+  uint32 index            = 2;
+  bool   has_remote_input = 3;
+  string result_key       = 4;
+}
+
+message NotifNew {
+  string key                       = 1;  // becomes the Windows toast tag
+  string package                   = 2;
+  string tag                       = 3;
+  string group_key                 = 4;  // becomes the toast group
+  string title                     = 5;
+  string text                      = 6;
+  uint64 timestamp_ms              = 7;
+  repeated TextMessage messages    = 8;  // MessagingStyle history
+  bytes  app_icon_png              = 9;  // only on first-seen package+versionCode (LRU 64)
+  bytes  large_icon_png            = 10; // only when non-null, downscaled to 256px
+  repeated NotifActionDesc actions = 11;
+}
+
+message NotifUpdate {
+  string key   = 1;  // same key as NotifNew -> ToastNotifier.Update(data, tag, group)
+  string title = 2;
+  string text  = 3;
+}
+
+message NotifRemove {
+  string key     = 1;
+  string tag     = 2;
+  string package = 3;
+}
+
+message NotifAction {
+  string key          = 1;
+  uint32 action_index = 2;
+  string reply_text   = 3;  // set when the action has a RemoteInput
+}
