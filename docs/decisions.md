@@ -349,3 +349,81 @@ would pass just as happily on a toast rendering the literal text `{title}`.
 Deliberately not in this first cut: app and large icons, notification actions and inline
 reply, and `MessagingStyle` history. The proto already carries all of them, so adding them
 later does not change the wire.
+
+## Relay: off-LAN reach without transport machinery
+
+The relay is a byte splicer and nothing else. Both peers dial out to it, it pairs them by
+rendezvous id, and from there it is `copy_bidirectional` over opaque ciphertext. It has no
+protobuf dependency, no Noise dependency, and no key — if anything in its dependency tree
+could decrypt a frame, the design would be wrong.
+
+No ICE, STUN or TURN, ever. That machinery is precisely the transport lifecycle this project
+exists to avoid: candidate gathering, per-candidate sockets and a session object whose
+destruction is someone else's problem is the exact shape of the Phone Link leak. A splice
+needs none of it, because the phone always dials out and NAT only has to be traversed in the
+direction it already permits.
+
+The preamble is a fixed 47 bytes — `CDT1` plus a 43-character base64url id — because
+`BASE64URL(SHA256(static_pub))` unpadded is always 43 characters. Fixed size means no length
+field, no delimiter, and no parser to get wrong. A wrong-length id therefore stalls on
+`read_exact` and is dropped at the 10 s deadline rather than being interpreted; that is a
+feature, and it is also how a test bug once presented itself as a relay bug.
+
+The rendezvous id is the *desktop's* device id. Roles are not encoded, because the phone is
+always the Noise initiator and the desktop always the responder, so there is nothing for the
+relay to arbitrate.
+
+Staleness needs no detection. A waiter that died without a FIN is spliced to the next
+arrival, the copy ends immediately, and the live peer sees EOF and redials — one wasted
+round trip in place of a liveness protocol. Kernel `SO_KEEPALIVE` is the only liveness
+machinery in the process: it reaps genuinely dead waiters and refreshes the NAT mappings of
+live ones, so there is no timer anywhere in the relay.
+
+On the desktop, parking is one `peek`. Nothing arrives on a parked connection until it is
+spliced, so a single blocked `peek` replaces a poll, and the bytes stay in the socket for the
+handshake that follows. `Ok(0)` means the relay hung up, which is also what being spliced
+onto a dead peer looks like from that side. The desktop re-parks the instant it hands a
+stream over, so a reconnecting phone finds a partner already waiting instead of racing it.
+
+Keepalive is per-path, because a ping that is free on Wi-Fi is a radio wake on cellular:
+60 s on the LAN, 240 s over the relay, with the phone's read deadline following at 2.5x
+(150 s and 600 s). Four radio wakes an hour instead of sixty. The cost is that a tunnel
+dying without a FIN goes unnoticed for up to ten minutes, which is the right trade for a
+clipboard.
+
+Routing is one decision on the phone. Wi-Fi or Ethernet gets an mDNS burst, and the burst's
+empty callback falls through to the relay — that is the foreign-Wi-Fi case. Cellular skips
+mDNS entirely rather than running and waiting it out, because eight seconds of multicast on a
+mobile network is eight seconds of radio for a guaranteed miss. The relay hostname is
+resolved on the reader thread, the one thread allowed to block, never on the connectivity
+callback that asked for the dial.
+
+`registerDefaultNetworkCallback`, not a transport-filtered request. Filtering would have made
+the single `networkUp` flag wrong the moment cellular was included: a Wi-Fi `onLost` while
+cellular was up would have cleared it. On the default network a handover is exactly one
+`onAvailable` for the network that replaced the old one.
+
+Pairing must happen once on a LAN, because the rendezvous is the desktop's device id and
+nothing knows it until one direct handshake has said so. It is then persisted to `peer.txt`
+and length-checked on read, so a truncated file reads as "never paired" rather than producing
+a rendezvous the relay refuses.
+
+### Deployed
+
+`tyo.414222.xyz:41113`, a 1 MB static musl binary under systemd with `DynamicUser=yes`,
+`ProtectSystem=strict` and `MemoryMax=64M`. It holds no state on disk, so it needs no user,
+no home and no writable path. Cross-compiled from Windows with the toolchain's own
+`rust-lld` and `-C link-self-contained=yes` — the dependency tree is pure Rust, so no C
+cross-toolchain is involved, and the box has only ~390 MB of RAM free, which is not enough
+to compile tokio on.
+
+Chosen over the other three hosts on latency (77 ms) and, decisively, on reachability: the
+other candidate's outbound clients need a local HTTP proxy, and a relay the phone must reach
+through a proxy on cellular is a relay that does not work.
+
+frp was already installed on that box and was still rejected: `stcp` needs an `frpc` daemon
+at each end, which is more lifecycle to audit than the whole relay is.
+
+Verified from off-network: a pair spliced, 12 bytes crossed each way byte-for-byte, bad magic
+was refused with a clean EOF, and after the pair closed the process held 0 sockets, 1.5 MB
+RSS and 3 tasks.
