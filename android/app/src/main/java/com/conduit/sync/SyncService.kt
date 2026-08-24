@@ -273,8 +273,7 @@ class SyncService : Service() {
             PendingIntent.FLAG_IMMUTABLE,
         )
         return Notification.Builder(this, CHANNEL)
-            // A platform drawable: this app has no icon worth shipping yet.
-            .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setSmallIcon(R.drawable.ic_stat_link)
             .setContentTitle("conduit")
             .setContentText("Clipboard linked to the desktop")
             .setContentIntent(open)

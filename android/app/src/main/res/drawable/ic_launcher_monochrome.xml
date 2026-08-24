@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Themed-icon layer for Android 13+. Same geometry as the foreground, but the system
+  recolours it from the wallpaper palette, so the strokes must be opaque black on
+  transparent and the gradient background is not used at all.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:pathData="M33,45 L72,45"
+        android:strokeWidth="9"
+        android:strokeColor="#000000"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M64,37 L72,45 L64,53"
+        android:strokeWidth="9"
+        android:strokeColor="#000000"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M75,63 L36,63"
+        android:strokeWidth="9"
+        android:strokeColor="#000000"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M44,55 L36,63 L44,71"
+        android:strokeWidth="9"
+        android:strokeColor="#000000"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>
