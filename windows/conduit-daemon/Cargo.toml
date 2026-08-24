@@ -19,7 +19,9 @@ socket2 = { version = "0.6.5", features = ["all"] }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "io-util", "macros", "time", "sync"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Com", "Data_Xml_Dom", "UI_Notifications", "Foundation_Collections"] }
+# Graphics_Imaging + Storage_Streams are what let image clipboard sync avoid an image
+# crate: Windows already ships PNG and BMP codecs, and this dependency was here anyway.
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Com", "Data_Xml_Dom", "UI_Notifications", "Foundation_Collections", "Graphics_Imaging", "Storage_Streams"] }
 windows-registry = "0.6.1"
 
 [build-dependencies]

@@ -6,6 +6,7 @@
 
 mod advert;
 mod clip;
+mod image;
 mod toast;
 mod wire;
 
@@ -189,7 +190,7 @@ async fn serve(
     peer: SocketAddr,
     local_priv: &[u8],
     metrics: &Metrics,
-    bridge: &clip::Bridge,
+    bridge: &Arc<clip::Bridge>,
     toasts: Option<&toast::Notifier>,
     // "lan" or "relay". Only the keepalive interval and the log line care.
     path: &'static str,
@@ -203,6 +204,9 @@ async fn serve(
     // Subscribed after the handshake so the session does not replay clips copied
     // while it was still connecting.
     let mut clips = bridge.subscribe();
+    // At most one image in flight, and it dies with the session: a peer that vanishes
+    // mid-transfer cannot leave a partial buffer behind for the next one to inherit.
+    let mut incoming: Option<image::Assembly> = None;
 
     loop {
         // `recv` is cancel-safe, which is what makes racing it legal. `send` is not,
@@ -221,7 +225,7 @@ async fn serve(
             },
             local = clips.recv() => {
                 match local {
-                    Ok(text) => {
+                    Ok(clip::Clip::Text(text)) => {
                         let clip = pb::ClipText {
                             timestamp_ms: now_ms(),
                             mime: "text/plain".into(),
@@ -231,6 +235,11 @@ async fn serve(
                             .send(&mut stream, pb::Kind::ClipText, &clip.encode_to_vec())
                             .await?;
                         metrics.frames_out.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Ok(clip::Clip::Image(png)) => {
+                        info!(bytes = png.len(), "clip image out");
+                        let frames = image::send(&mut session, &mut stream, &png, false).await?;
+                        metrics.frames_out.fetch_add(frames, Ordering::Relaxed);
                     }
                     // The ring overwrote clips faster than this session drained them.
                     // Skipping is correct: only the newest clipboard state matters.
@@ -258,6 +267,63 @@ async fn serve(
                 // A clipboard failure is the peer's problem, not the session's.
                 if let Err(e) = bridge.apply(&clip.text) {
                     warn!(error = %e, "could not set the clipboard");
+                }
+            }
+            // A bad image is dropped, never fatal — same rule as a bad notification.
+            // The peer controls every field here, so a refused header must cost this
+            // side an allocation of zero and the session nothing at all.
+            pb::Kind::ClipImageHeader => {
+                let header = pb::ClipImageHeader::decode(&envelope.payload[..])?;
+                match image::Assembly::begin(&header) {
+                    Ok(assembly) => {
+                        info!(
+                            bytes = header.total_bytes,
+                            chunks = header.chunk_count,
+                            mime = %header.mime,
+                            photo = header.photo,
+                            "image in, receiving"
+                        );
+                        incoming = Some(assembly);
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "refused an image header");
+                        incoming = None;
+                    }
+                }
+            }
+            pb::Kind::ClipImageChunk => {
+                let chunk = pb::ClipImageChunk::decode(&envelope.payload[..])?;
+                let Some(assembly) = incoming.as_mut() else {
+                    warn!(index = chunk.index, "image chunk with no header, dropped");
+                    continue;
+                };
+                match assembly.push(&chunk) {
+                    Ok(None) => {}
+                    Ok(Some(png)) => {
+                        let photo = assembly.is_photo();
+                        incoming = None;
+                        info!(bytes = png.len(), photo, "image complete");
+                        if photo {
+                            // ponytail: a camera photo must not hijack the clipboard, and
+                            // the toast path cannot carry a hero image yet, so it is
+                            // logged and dropped. Wire it to toast::Cmd when that lands.
+                            info!("photo received; hero-image toasts are not wired up yet");
+                        } else {
+                            // Decode, encode and two clipboard opens: too slow for a
+                            // worker, and COM work regardless.
+                            let bridge = bridge.clone();
+                            match tokio::task::spawn_blocking(move || bridge.apply_image(&png)).await
+                            {
+                                Ok(Err(e)) => warn!(error = %e, "could not set the clipboard image"),
+                                Err(e) => warn!(error = %e, "clipboard image task failed"),
+                                Ok(Ok(())) => {}
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "image transfer dropped");
+                        incoming = None;
+                    }
                 }
             }
             // A malformed notification is dropped, never fatal: the phone's shade must
