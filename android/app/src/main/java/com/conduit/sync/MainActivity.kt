@@ -29,7 +29,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 
@@ -162,7 +164,15 @@ private fun StatusCard(state: LinkState, peerName: String?, onLink: () -> Unit) 
 
 @Composable
 private fun IdentityCard(fingerprint: String) {
-    Card(modifier = Modifier.fillMaxWidth()) {
+    val clipboard = LocalClipboardManager.current
+    // Tapping copies, which is how you get the fingerprint into the desktop's pairing
+    // field. It is also the only way to originate a clip from inside this app while it
+    // holds focus, which makes it the one trigger that tests the outbound path without
+    // the LSPosed hook.
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        onClick = { clipboard.setText(AnnotatedString(fingerprint)) },
+    ) {
         Column(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
