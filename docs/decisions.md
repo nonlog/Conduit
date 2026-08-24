@@ -427,3 +427,102 @@ at each end, which is more lifecycle to audit than the whole relay is.
 Verified from off-network: a pair spliced, 12 bytes crossed each way byte-for-byte, bad magic
 was refused with a clean EOF, and after the pair closed the process held 0 sockets, 1.5 MB
 RSS and 3 tasks.
+
+## Image clipboard sync
+
+PNG on the wire in both directions, so nothing has to negotiate a format. 32 KiB chunks,
+because 64 KiB plus protobuf framing overflows the 65519-byte Noise plaintext ceiling and
+`send` refuses an oversized frame — which would tear the session down over a pasted
+screenshot. 10 MiB ceiling on one image: a clipboard is not a file transfer, and it is a
+cheap thing to refuse before allocating anything for it.
+
+No new dependency. `Windows.Graphics.Imaging` already ships PNG and BMP codecs and the
+`windows` crate was already here for toasts, so image support cost two cargo features
+instead of an image crate and its colour-management CVE stream. The fiddly part was not the
+codec but the 14 bytes either side of it: `CF_DIB` is a .bmp with its `BITMAPFILEHEADER`
+removed, and `bfOffBits` has to account for the colour table and, for a `BI_BITFIELDS` DIB,
+the channel masks that follow the header.
+
+Both clipboard formats are written inside one `with_clipboard` closure. Two `set_clipboard`
+calls would each empty the clipboard first, so the second would delete the first and leave
+either Paint or Chrome with nothing to paste.
+
+windows-future 0.3.2 does not re-export the `Async` trait that carries the blocking `join`
+— it is imported into the crate with `use r#async::*`, not `pub use` — so only `IntoFuture`
+is reachable. Waiting on a WinRT operation is therefore a hand-rolled park/unpark
+`block_on`, which has the side benefit of keeping the module synchronous so the clipboard
+thread and `spawn_blocking` workers can both call it. `CoIncrementMTAUsage` gives the
+process an implicit MTA so neither of those threads needs apartment bookkeeping.
+
+The phone does not re-encode. Turning a 4 MB camera JPEG into PNG on a battery costs a full
+decode and encode and can produce 20 MB — past the ceiling, so the transfer would be
+refused *after* the work. It sends the source bytes with the provider's MIME type and the
+desktop normalises, detecting PNG by signature rather than trusting the declared MIME.
+
+Echo suppression differs per side, deliberately. Windows compares a `Seen` enum, text by
+value and image by length. Android compares the clipboard URI's authority against its own
+provider, which is exact and costs a string comparison instead of reading the file back on
+the main thread to discover we wrote it.
+
+## A phone photo becomes a Snipping Tool snip
+
+The ask was Phone Link's behaviour: take a photo, and Windows offers it as though you had
+just pressed Win+Shift+S. So the toast is not the feature — the click is.
+
+Snipping Tool's protocol was read out of its own binaries rather than guessed:
+`ms-screensketch://edit/?source=<who>&isTemporary=<bool>&sharedAccessToken=<token>`, and
+`source=Toast` is one of the values it ships with. A file path in that URI is useless: it
+is a packaged app in a container, and the handoff it expects is a token minted by
+`SharedStorageAccessManager` that it redeems for the file. Whether an unpackaged daemon
+could mint one at all was the open question, and it can — the token comes back as a plain
+GUID, no package identity required.
+
+`activationType="protocol"` is what keeps this cheap. Windows resolves the URI itself, so
+there is no COM activator to register, no CLSID, and no callback the daemon has to stay
+alive to serve.
+
+One photo toast at a time: fixed tag, one staged file, one outstanding token, each replaced
+by the next photo. That bounds all three by construction rather than by cleanup, which is
+the only kind of bound this project trusts. The cost is that a burst of photos leaves only
+the last one on screen.
+
+No transcode on the desktop either. Both the toast image loader and Snipping Tool read
+JPEG, the phone already downscaled, and re-encoding a photograph as PNG would multiply its
+size — against a 3 MB cap on local toast images.
+
+The photo never touches the clipboard. It is not something the user copied, and overwriting
+their clipboard with it would be a mistake they cannot undo; on the phone side the same
+frame arriving inbound is dropped for the same reason.
+
+On the phone it is a `ContentObserver` on MediaStore and nothing else — no thread, no timer,
+no poll. The callback does no work whatsoever: it hands the query, the decode and the JPEG
+encode to the sender thread that already exists. `DCIM/%` and `DATE_ADDED` after service
+start, deduped by MediaStore id, because the scanner writes a row several times per file and
+the existing library is not news. `ImageDecoder` rather than `BitmapFactory`, because it
+subsamples during the decode instead of allocating the full frame first, and it applies the
+EXIF rotation a phone camera always writes — without which half the photos arrive sideways.
+
+1280 px longest edge. A hero image renders at 364x180 dip so most of a 12 MP frame is bytes
+nobody sees, and over the relay they are cellular data; it is not smaller because the toast
+is only the doorway, and that is the resolution you then have to mark up.
+
+Known ceiling: Android 14+ can grant "Selected photos only", which satisfies the permission
+check while making new camera shots invisible to the query. The phone this targets is
+rooted and granted through adb, so it is noted rather than handled.
+
+## The heartbeat was measured from the wrong end
+
+Found on real hardware, not in a test: sessions ended after exactly 150 000 ms, with
+`frames_in=16` and `frames_out=0`.
+
+The desktop's keepalive was a read timeout — it pinged after hearing nothing for 60 s. A
+phone forwarding notifications is never silent that long, so the timeout kept being reset
+and the desktop never sent anything at all. The phone's read deadline can only be satisfied
+by hearing something, so it hung up on the dot and re-dialled. Two mechanisms that each
+looked correct alone, producing session churn every two and a half minutes — precisely the
+failure this project exists to avoid.
+
+Silence has to mean *our* silence. The timestamp therefore lives in `Session` and is
+updated by `send`, not in the session loop: every send in the process already funnels
+through that one function, and a heartbeat that depends on each caller remembering to poke
+a variable is a heartbeat that dies the first time someone adds a message kind.

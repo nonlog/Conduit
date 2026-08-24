@@ -298,7 +298,7 @@ class SyncService : Service() {
         // may observe the change before setPrimaryClip has returned here.
         lastText = normalised
         main.post {
-            clipboard.setPrimaryClip(ClipData.newPlainText("conduit", normalised))
+            clipboard.setPrimaryClip(ClipData.newPlainText("Conduit", normalised))
         }
     }
 
@@ -317,7 +317,7 @@ class SyncService : Service() {
         )
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_link)
-            .setContentTitle("conduit")
+            .setContentTitle("Conduit")
             .setContentText("Clipboard linked to the desktop")
             .setContentIntent(open)
             .setOngoing(true)

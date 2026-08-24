@@ -154,7 +154,7 @@ private fun HomeScreen(
     state: LinkState,
     onLink: () -> Unit,
 ) {
-    Scaffold(topBar = { TopAppBar(title = { Text("conduit") }) }) { insets ->
+    Scaffold(topBar = { TopAppBar(title = { Text("Conduit") }) }) { insets ->
         Column(
             modifier = Modifier
                 .padding(insets)

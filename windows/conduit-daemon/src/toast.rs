@@ -297,7 +297,7 @@ fn photo_xml(token: &str, path: &Path) -> String {
                  <image placement="hero" src="{hero}"/>
                  <text>New photo</text>
                  <text>Select to open it in Snipping Tool.</text>
-                 <text placement="attribution">conduit</text>
+                 <text placement="attribution">Conduit</text>
                </binding>
              </visual>
            </toast>"#,
@@ -378,8 +378,8 @@ fn data(title: &str, body: &str) -> Result<NotificationData> {
 fn register_aumid() -> Result<()> {
     let key = windows_registry::CURRENT_USER
         .create(format!(r"Software\Classes\AppUserModelId\{AUMID}"))?;
-    key.set_string("DisplayName", "conduit")?;
-    // On, so conduit gets its own entry in Settings -> Notifications and the toasts can
+    key.set_string("DisplayName", "Conduit")?;
+    // On, so Conduit gets its own entry in Settings -> Notifications and the toasts can
     // be muted there like any other app's rather than only by killing the daemon.
     key.set_u32("ShowInActionCenter", 1)?;
     Ok(())

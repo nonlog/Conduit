@@ -22,7 +22,7 @@
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
-        android:label="conduit"
+        android:label="Conduit"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.Conduit">
@@ -34,7 +34,7 @@
             android:value="true" />
         <meta-data
             android:name="xposeddescription"
-            android:value="Lets conduit read the clipboard while it is in the background" />
+            android:value="Lets Conduit read the clipboard while it is in the background" />
         <meta-data
             android:name="xposedminversion"
             android:value="93" />
@@ -69,7 +69,7 @@
         <service
             android:name=".NotificationRelay"
             android:exported="true"
-            android:label="conduit"
+            android:label="Conduit"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService" />
