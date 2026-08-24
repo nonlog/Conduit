@@ -167,6 +167,26 @@ pub fn png_to_dib(png: &[u8]) -> Result<Vec<u8>> {
     Ok(bmp[FILE_HEADER..].to_vec())
 }
 
+/// Makes sure `bytes` really are a PNG, re-encoding if they are not.
+///
+/// The phone sends camera photos as the JPEG it already had rather than re-encoding them:
+/// that saves a decode and an encode on a battery, and avoids a 4 MB photo arriving as
+/// 20 MB of PNG. The conversion lands here instead, because the registered `"PNG"`
+/// clipboard format has to actually contain a PNG — an app reading JPEG bytes from it
+/// shows nothing, and gives no hint why.
+///
+/// Detection is by signature, not by the header's MIME string: the sender's `mime` is a
+/// hint, and a peer that mislabels its own bytes should still end up with a working paste.
+pub fn to_png(bytes: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>> {
+    const MAGIC: &[u8] = b"\x89PNG\r\n\x1a\n";
+    if bytes.starts_with(MAGIC) {
+        return Ok(std::borrow::Cow::Borrowed(bytes));
+    }
+    recode(bytes, BitmapEncoder::PngEncoderId()?)
+        .map(std::borrow::Cow::Owned)
+        .context("re-encoding a received image as PNG")
+}
+
 /// 32 KiB. A 64 KiB chunk plus its protobuf framing overflows the 65519-byte Noise
 /// plaintext ceiling, and `Session::send` refuses an oversized frame by returning an
 /// error — which would tear down the session over a pasted screenshot.
@@ -370,6 +390,24 @@ mod tests {
     #[test]
     fn junk_is_an_error_not_a_panic() {
         assert!(png_to_dib(b"this is not an image at all").is_err());
+        assert!(to_png(b"this is not an image at all").is_err());
+    }
+
+    #[test]
+    fn to_png_passes_a_png_through_and_converts_anything_else() {
+        let png = dib_to_png(&dib_2x2()).expect("a DIB should encode as PNG");
+        // Borrowed, not re-encoded: a needless decode/encode of every received image
+        // would be invisible except as latency on the common path.
+        let same = to_png(&png).expect("a PNG should pass through");
+        assert!(matches!(same, std::borrow::Cow::Borrowed(_)), "PNG was re-encoded");
+        assert_eq!(&*same, &png[..]);
+
+        // A JPEG is what the phone actually sends for a camera photo. Whatever comes
+        // back must carry the PNG signature, or the clipboard format would be a lie.
+        let jpeg = recode(&png, BitmapEncoder::JpegEncoderId().unwrap()).expect("encode JPEG");
+        assert_ne!(&jpeg[..2], b"\x89P", "fixture is not actually a JPEG");
+        let converted = to_png(&jpeg).expect("a JPEG should convert");
+        assert_eq!(&converted[..8], b"\x89PNG\r\n\x1a\n", "not converted to PNG");
     }
 
     fn header(total: usize, chunk: usize, count: u32) -> crate::wire::pb::ClipImageHeader {

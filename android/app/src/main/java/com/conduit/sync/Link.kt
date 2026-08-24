@@ -1,6 +1,8 @@
 package com.conduit.sync
 
 import android.util.Log
+import com.conduit.sync.proto.ClipImageChunk
+import com.conduit.sync.proto.ClipImageHeader
 import com.conduit.sync.proto.ClipText
 import com.conduit.sync.proto.Envelope
 import com.conduit.sync.proto.Kind
@@ -62,6 +64,12 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
         fun onText(text: String)
 
         /**
+         * A complete image. [photo] distinguishes a camera photo, which must not touch
+         * the clipboard, from a clipboard copy, which must.
+         */
+        fun onImage(png: ByteArray, photo: Boolean)
+
+        /**
          * The peer's stable id, on every completed handshake. The service persists it
          * because it doubles as the relay rendezvous, and the relay is unusable until
          * one direct session has said what it is.
@@ -98,6 +106,41 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
     @Volatile private var socket: Socket? = null
     @Volatile private var session: WireSession? = null
     private var reader: Thread? = null
+
+    /**
+     * The image being reassembled. Touched only by the reader thread, so it is neither
+     * volatile nor locked, and it is cleared on teardown with the session.
+     */
+    private var incoming: Images.Assembly? = null
+
+    /**
+     * Reads [uri] on the sender thread and queues it as chunks.
+     *
+     * The read is a binder call into whichever app owns the provider, so it must not run
+     * on the main thread — and the clipboard listener that notices a copied image runs
+     * there. Handing over a lambda keeps that work on the one thread already dedicated
+     * to outbound frames, and keeps this class free of Android's content APIs.
+     */
+    fun sendImage(what: String, photo: Boolean = false, load: () -> Images.Payload?) =
+        sender.execute {
+            val live = session
+            if (live == null) {
+                Log.d(TAG, "$what dropped, no session")
+                return@execute
+            }
+            val payload = runCatching { load() }
+                .onFailure { Log.w(TAG, "$what could not be read", it) }
+                .getOrNull()
+            if (payload == null || payload.bytes.isEmpty()) return@execute
+            try {
+                Images.send(live, payload, photo)
+            } catch (e: Exception) {
+                // Same rule as a failed text write: the socket is gone, so let the reader
+                // notice and unwind rather than half-finishing the transfer.
+                Log.w(TAG, "$what write failed", e)
+                teardown()
+            }
+        }
 
     /** Dials on the reader thread. A no-op while a connection is already up. */
     fun connect(address: InetSocketAddress) = dial(address, null)
@@ -218,6 +261,9 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
         } finally {
             session = null
             socket = null
+            // A partial image dies with the session that was carrying it, so the next
+            // one never inherits a half-filled buffer.
+            incoming = null
             events.onState(LinkState.Idle, null)
             Log.i(TAG, "session $count closed: opened=$count closed=${closed.incrementAndGet()}")
             if (established) events.onSessionLost()
@@ -230,6 +276,33 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
             Kind.PING -> sender.execute { runCatching { session?.send(Kind.PONG) } }
             Kind.PONG -> {}
             Kind.CLIP_TEXT -> events.onText(ClipText.parseFrom(envelope.payload).text)
+            // Reassembly state lives on this thread and nowhere else, so it needs no
+            // lock and cannot outlive the session that is filling it.
+            Kind.CLIP_IMAGE_HEADER -> incoming = runCatching {
+                Images.Assembly.begin(ClipImageHeader.parseFrom(envelope.payload))
+            }.onFailure { Log.w(TAG, "refused an image header", it) }.getOrNull()
+
+            Kind.CLIP_IMAGE_CHUNK -> {
+                val assembly = incoming
+                if (assembly == null) {
+                    Log.w(TAG, "image chunk with no header, dropped")
+                    return
+                }
+                // A malformed transfer drops the image, never the session: the desktop's
+                // clipboard must not be able to disconnect the phone.
+                runCatching { assembly.push(ClipImageChunk.parseFrom(envelope.payload)) }
+                    .onFailure {
+                        Log.w(TAG, "image transfer dropped", it)
+                        incoming = null
+                    }
+                    .getOrNull()
+                    ?.let { png ->
+                        incoming = null
+                        Log.i(TAG, "image in: ${png.size} B, photo=${assembly.photo}")
+                        events.onImage(png, assembly.photo)
+                    }
+            }
+
             else -> Log.d(TAG, "unhandled kind ${envelope.kind}")
         }
     }

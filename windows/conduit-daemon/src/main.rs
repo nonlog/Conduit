@@ -312,7 +312,13 @@ async fn serve(
                             // Decode, encode and two clipboard opens: too slow for a
                             // worker, and COM work regardless.
                             let bridge = bridge.clone();
-                            match tokio::task::spawn_blocking(move || bridge.apply_image(&png)).await
+                            match tokio::task::spawn_blocking(move || {
+                                // Normalise first: the phone sends a camera JPEG as-is,
+                                // and the PNG clipboard format must hold a real PNG.
+                                let png = image::to_png(&png)?;
+                                bridge.apply_image(&png)
+                            })
+                            .await
                             {
                                 Ok(Err(e)) => warn!(error = %e, "could not set the clipboard image"),
                                 Err(e) => warn!(error = %e, "clipboard image task failed"),

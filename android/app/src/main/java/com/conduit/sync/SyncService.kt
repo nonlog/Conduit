@@ -120,6 +120,8 @@ class SyncService : Service() {
 
                 override fun onText(text: String) = onRemoteText(text)
 
+                override fun onImage(png: ByteArray, photo: Boolean) = onRemoteImage(png, photo)
+
                 override fun onPeer(deviceId: String) = rememberPeer(deviceId)
 
                 override fun onSessionLost() {
@@ -226,14 +228,19 @@ class SyncService : Service() {
     }
 
     private fun onLocalClip() {
-        val item = clipboard.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)
+        val clip = clipboard.primaryClip
+        val item = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)
         if (item == null) {
             // Expected on stock Android 10+: a background app is not allowed to read the
             // clipboard. The LSPosed hook on ClipboardService is what lifts this.
             Log.d(TAG, "clipboard unreadable from the background")
             return
         }
-        val text = item.text?.toString()?.replace("\r\n", "\n") ?: return
+        val text = item.text?.toString()?.replace("\r\n", "\n")
+        if (text == null) {
+            onLocalImage(clip)
+            return
+        }
         if (text.isEmpty()) return
         if (text == lastText) {
             Log.d(TAG, "echo of our own write, dropped")
@@ -245,6 +252,38 @@ class SyncService : Service() {
         }
         lastText = text
         link.sendText(text)
+    }
+
+    /**
+     * A copied image, which on Android means a `content://` URI rather than bytes.
+     *
+     * The URI's authority is the echo check, and it is exact: our own write points at
+     * [ImageProvider], so recognising it costs an equality test instead of reading the
+     * file back on the main thread to discover we were the ones who wrote it.
+     */
+    private fun onLocalImage(clip: ClipData) {
+        val uri = clip.getItemAt(0).uri ?: return
+        if (ImageProvider.isOurs(uri)) {
+            Log.d(TAG, "echo of our own image write, dropped")
+            return
+        }
+        // Reading happens on the sender thread: opening the URI is a binder call into
+        // whichever app owns it, and this listener is on the main thread.
+        link.sendImage("clip image") { Images.fromClipboard(this, clip) }
+    }
+
+    private fun onRemoteImage(png: ByteArray, photo: Boolean) {
+        if (photo) {
+            // Nothing sends this yet — photo=true is the phone-to-desktop direction, for
+            // a camera shot that becomes a toast. Dropping it is the safe default: a
+            // photo is not a clipboard event and must not overwrite what the user copied.
+            Log.i(TAG, "photo in: ${png.size} B, dropped; the desktop does not send these")
+            return
+        }
+        Log.i(TAG, "clip image in: ${png.size} B")
+        // The write itself is cheap, but it must happen where the clipboard expects to
+        // be touched, and the listener it triggers arrives on the main thread too.
+        main.post { Images.toClipboard(this, clipboard, png) }
     }
 
     private fun onRemoteText(text: String) {

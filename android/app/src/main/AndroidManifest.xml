@@ -56,6 +56,13 @@
             android:name=".SyncService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+        <!-- Serves the one cached clipboard image. Not exported, so a grant handed out by
+             ClipboardManager when another app pastes is the only way to reach it. -->
+        <provider
+            android:name=".ImageProvider"
+            android:authorities="com.conduit.sync.images"
+            android:exported="false"
+            android:grantUriPermissions="true" />
         <!-- Bound by the system, not by us, so it must be exported; the permission is
              what limits the binder to system_server. Enabling it is a user action in
              Settings -> Notification access. -->
