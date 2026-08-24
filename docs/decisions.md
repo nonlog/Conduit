@@ -217,3 +217,30 @@ Two traps worth writing down:
   of lifetime bug this project exists to avoid. The advert is registered *after* the socket
   binds, so a resolve is never answered by a connection refusal, and the TXT record carries
   `id`/`fp`/`v` so the phone can tell two desktops apart before handshaking.
+
+## Clipboard access from the background
+
+Stock Android 10+ makes the Android→Windows direction of feature 1 impossible, and not by
+an app-ops gate: `ClipboardService.clipboardAccessAllowed` refuses a caller that is neither
+focused nor the current IME *before* it ever consults app-ops, so `appops set
+READ_CLIPBOARD allow` changes nothing. The same method also gates listener delivery, so
+without a fix the app is not merely unable to read a clip — it is never told one happened.
+
+Three ways out, in the order they were rejected:
+
+1. `android.permission.READ_CLIPBOARD_IN_BACKGROUND` is AOSP's own escape hatch but is
+   `signature|privileged`; using it means shipping the APK into `/system/priv-app` with a
+   `privapp-permissions` overlay. Heavier and more fragile than the hook.
+2. An `AccessibilityService` can observe clipboard-bearing events, but it is a broad
+   capability granted for a narrow purpose. Kept as the M3 fallback for non-rooted phones.
+3. **An LSPosed module in the same APK**, hooking `clipboardAccessAllowed` inside
+   system_server. Chosen: the phone is rooted with KernelSU + LSPosed, and Play Store policy
+   was already sacrificed.
+
+The hook is narrowed twice on purpose. It forces the result only when this package's own
+name appears among the arguments, so every other app stays subject to the normal check; and
+it matches on the method *name*, never a signature, because that method gained a `userId` in
+11, a `shouldNoteOp` in 12 and an `attributionTag` plus a `deviceId` in 13. `xposedscope` is
+pinned to `android` alone. The Xposed API jar is `compileOnly` from `api.xposed.info` — the
+only place it is published — and the APK was checked to carry nothing from it but type
+references.

@@ -83,6 +83,11 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.activity:activity-compose:1.13.0")
 
+    // Reading the clipboard from the background is impossible on stock Android 10+, so
+    // ClipboardHook lifts the check inside system_server. compileOnly: LSPosed supplies
+    // the implementation, and nothing from this jar may end up in the APK.
+    compileOnly("de.robv.android.xposed:api:82")
+
     // Noise XX is hand-written, so it is checked against a transcript produced by the
     // Rust reference implementation. Plain JVM test — no device, no instrumentation.
     testImplementation("junit:junit:4.13.2")

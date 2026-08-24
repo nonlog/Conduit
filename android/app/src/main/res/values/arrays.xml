@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- LSPosed pre-selects this scope. "android" is system_server, where
+         ClipboardService lives; the hook has no business anywhere else. -->
+    <string-array name="xposed_scope">
+        <item>android</item>
+    </string-array>
+</resources>

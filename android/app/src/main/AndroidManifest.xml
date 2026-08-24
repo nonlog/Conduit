@@ -21,6 +21,21 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Conduit">
 
+        <!-- LSPosed module metadata. The entry point is assets/xposed_init, and the scope
+             array keeps ClipboardHook out of every process but system_server. -->
+        <meta-data
+            android:name="xposedmodule"
+            android:value="true" />
+        <meta-data
+            android:name="xposeddescription"
+            android:value="Lets conduit read the clipboard while it is in the background" />
+        <meta-data
+            android:name="xposedminversion"
+            android:value="93" />
+        <meta-data
+            android:name="xposedscope"
+            android:resource="@array/xposed_scope" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
