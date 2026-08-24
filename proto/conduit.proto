@@ -105,6 +105,8 @@ message NotifNew {
   bytes  app_icon_png              = 9;  // only on first-seen package+versionCode (LRU 64)
   bytes  large_icon_png            = 10; // only when non-null, downscaled to 256px
   repeated NotifActionDesc actions = 11;
+  string app_name                  = 12; // resolved label, because a toast showing
+                                         // "com.tencent.mm" is useless to a human
 }
 
 message NotifUpdate {

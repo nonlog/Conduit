@@ -43,6 +43,18 @@ private const val MAX_TEXT = 64_000
  */
 class SyncService : Service() {
 
+    companion object {
+        /**
+         * The live link, borrowed by [NotificationRelay]. The system binds and unbinds
+         * that service on its own schedule, so it cannot own a transport; same process,
+         * so this is a plain reference rather than IPC. Null means nothing is connected
+         * and a notification is dropped, which is the correct outcome.
+         */
+        @Volatile
+        var activeLink: Link? = null
+            private set
+    }
+
     private lateinit var link: Link
     private lateinit var discovery: Discovery
     private lateinit var clipboard: ClipboardManager
@@ -108,6 +120,7 @@ class SyncService : Service() {
             },
         )
         discovery = Discovery(this) { address -> link.connect(address) }
+        activeLink = link
 
         clipboard.addPrimaryClipChangedListener(clipListener)
         connectivity.registerNetworkCallback(
@@ -141,6 +154,9 @@ class SyncService : Service() {
     }
 
     override fun onDestroy() {
+        // Cleared first, so the notification relay stops handing frames to a link that
+        // is being torn down.
+        activeLink = null
         clipboard.removePrimaryClipChangedListener(clipListener)
         connectivity.unregisterNetworkCallback(network)
         discovery.stop()

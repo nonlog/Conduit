@@ -294,3 +294,58 @@ to repeat:
 
 Still outstanding for M0: the same counters over a 48 h run, and mDNS discovery exercised
 for real, which needs the phone and the desktop on one subnet.
+
+## Notification mirroring
+
+The phone's shade becomes genuine `ToastNotification`s — Action Center entries that update
+in place and withdraw when the phone's notification is dismissed — not balloons and not a
+custom window.
+
+**Android.** A `NotificationListenerService` cannot own the transport: the system binds and
+rebinds it on its own schedule, so it borrows `SyncService`'s `Link` through one volatile
+field and drops the notification when nothing is connected. Queueing instead would be
+wrong — a notification the desktop missed is not worth showing minutes later. Ongoing
+notifications (media transports, other apps' foreground services, progress bars) and group
+summaries are filtered out: they are states rather than events, so mirroring them would
+leave permanent toasts and duplicates. A repost of a key already seen becomes `NOTIF_UPDATE`
+rather than a second `NOTIF_NEW`, which is what stops a chat thread popping once per
+message. The key set is bounded at 256 because a removal that never arrives — listener
+rebound, posting app killed — would otherwise leak it.
+
+The send queue went from 16 to 64 now that notifications share it with clips. Discard-oldest
+is still right, but a chat app catching up after a reconnect posts a burst no human
+clipboard ever produces.
+
+**Windows.** Two things make this less obvious than it looks, and both were settled by a
+test against the real platform rather than by reading:
+
+- `ToastNotifier` is COM apartment-bound, so it cannot be built on one tokio worker and
+  used from another. One dedicated MTA thread owns it for the life of the process and takes
+  commands over a channel — the same shape as the clipboard bridge, and for the same reason:
+  notification traffic must not add a thread per message.
+- An unpackaged Win32 process has no package identity, so `CreateToastNotifierWithId` needs
+  an AppUserModelID Windows can resolve. A key under
+  `HKCU\Software\Classes\AppUserModelId\Conduit.Desktop` with a `DisplayName` is enough;
+  the documented alternative is a Start Menu shortcut carrying the ID as a shell property,
+  which means `IShellLink` plumbing for the same result.
+
+Toast tags are a digest of the Android key, not the key: Windows caps a tag at 64 characters
+and keys like `0|com.tencent.mm|1234567|null|10123` are already close. Because the tag is
+*derived* rather than remembered, update and removal need no per-notification state on the
+desktop at all — the same key always hashes to the same tag.
+
+Update uses `{title}`/`{body}` data binding with sequence number 0, not a re-`Show` with the
+same tag. Re-showing would work, but it re-alerts: a typing indicator or a download
+percentage would pop the toast again every time. Sequence 0 means "apply unconditionally",
+which removes the per-toast counter a real sequence would need — the single sender thread
+already guarantees order. Only the app name is inlined into the XML, so it is the only value
+that needs escaping; title and body travel as bound data and never reach the parser.
+
+`cargo test -p conduit-daemon -- --ignored` pops a real toast and asserts the whole cycle:
+the tag reaches Action Center, survives an update, and is gone after a hide. The
+load-bearing assertion is reading `title` back off the live toast — without it the test
+would pass just as happily on a toast rendering the literal text `{title}`.
+
+Deliberately not in this first cut: app and large icons, notification actions and inline
+reply, and `MessagingStyle` history. The proto already carries all of them, so adding them
+later does not change the wire.

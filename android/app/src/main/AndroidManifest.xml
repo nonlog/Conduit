@@ -54,5 +54,17 @@
             android:name=".SyncService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+        <!-- Bound by the system, not by us, so it must be exported; the permission is
+             what limits the binder to system_server. Enabling it is a user action in
+             Settings -> Notification access. -->
+        <service
+            android:name=".NotificationRelay"
+            android:exported="true"
+            android:label="conduit"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

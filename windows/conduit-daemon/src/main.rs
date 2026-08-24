@@ -6,6 +6,7 @@
 
 mod advert;
 mod clip;
+mod toast;
 mod wire;
 
 use anyhow::{Context, Result};
@@ -72,6 +73,15 @@ async fn main() -> Result<()> {
     // One listener thread for the process, started before the socket so a clip copied
     // during the first handshake is already in the ring.
     let bridge = Arc::new(clip::Bridge::start()?);
+    // Likewise one toast thread. A failure here is not fatal: clipboard sync is still
+    // worth having on a machine where the notification platform will not cooperate.
+    let toasts = match toast::Notifier::start() {
+        Ok(notifier) => Some(Arc::new(notifier)),
+        Err(e) => {
+            warn!(error = %e, "toasts unavailable, mirroring notifications is disabled");
+            None
+        }
+    };
     let listener = TcpListener::bind(("0.0.0.0", PORT)).await?;
     info!(port = PORT, "listening");
     // Bound, not dropped: this is what the phone's discovery burst finds. Advertised
@@ -92,9 +102,10 @@ async fn main() -> Result<()> {
         let metrics = metrics.clone();
         let local_priv = identity.private.clone();
         let bridge = bridge.clone();
+        let toasts = toasts.clone();
         active = Some(tokio::spawn(async move {
             let _guard = SessionGuard(metrics.clone());
-            if let Err(e) = serve(stream, peer, &local_priv, &metrics, &bridge).await {
+            if let Err(e) = serve(stream, peer, &local_priv, &metrics, &bridge, toasts.as_deref()).await {
                 warn!(%peer, error = %e, "session ended");
             }
         }));
@@ -107,6 +118,7 @@ async fn serve(
     local_priv: &[u8],
     metrics: &Metrics,
     bridge: &clip::Bridge,
+    toasts: Option<&toast::Notifier>,
 ) -> Result<()> {
     stream.set_nodelay(true)?;
     set_keepalive(&stream)?;
@@ -171,6 +183,36 @@ async fn serve(
                 // A clipboard failure is the peer's problem, not the session's.
                 if let Err(e) = bridge.apply(&clip.text) {
                     warn!(error = %e, "could not set the clipboard");
+                }
+            }
+            // A malformed notification is dropped, never fatal: the phone's shade must
+            // not be able to end a session that is also carrying the clipboard.
+            pb::Kind::NotifNew => {
+                let notif = pb::NotifNew::decode(&envelope.payload[..])?;
+                info!(app = %notif.app_name, pkg = %notif.package, "notif in");
+                if let Some(toasts) = toasts {
+                    toasts.post(toast::Cmd::Show {
+                        key: notif.key,
+                        app: if notif.app_name.is_empty() { notif.package } else { notif.app_name },
+                        title: notif.title,
+                        body: notif.text,
+                    });
+                }
+            }
+            pb::Kind::NotifUpdate => {
+                let notif = pb::NotifUpdate::decode(&envelope.payload[..])?;
+                if let Some(toasts) = toasts {
+                    toasts.post(toast::Cmd::Update {
+                        key: notif.key,
+                        title: notif.title,
+                        body: notif.text,
+                    });
+                }
+            }
+            pb::Kind::NotifRemove => {
+                let notif = pb::NotifRemove::decode(&envelope.payload[..])?;
+                if let Some(toasts) = toasts {
+                    toasts.post(toast::Cmd::Hide { key: notif.key });
                 }
             }
             other => warn!(?other, "unhandled kind"),

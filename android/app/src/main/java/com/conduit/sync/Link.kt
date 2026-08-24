@@ -56,12 +56,13 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
      * Serializes connect, disconnect and every outbound frame. Created once per
      * service, not per connection, so reconnect churn cannot grow the thread count.
      *
-     * ponytail: discard-oldest on a full queue. 16 deep is unreachable at
-     * human clipboard pace — if it fills, the socket write is wedged and the queued
-     * frames are already stale. Revisit only if image chunks share this queue.
+     * ponytail: discard-oldest on a full queue. Notifications share it with clips, so
+     * 64 rather than 16: a chat app catching up after a reconnect can post a burst no
+     * human clipboard ever produces. Dropping the oldest is still right — a stale
+     * notification mirror is worth less than a fresh one.
      */
     private val sender = ThreadPoolExecutor(
-        1, 1, 0, TimeUnit.MILLISECONDS, ArrayBlockingQueue(16),
+        1, 1, 0, TimeUnit.MILLISECONDS, ArrayBlockingQueue(64),
         { r -> Thread(r, "conduit-send") },
         ThreadPoolExecutor.DiscardOldestPolicy(),
     )
@@ -88,22 +89,30 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
      */
     fun disconnect() = sender.execute { teardown() }
 
-    fun sendText(text: String) = sender.execute {
-        val live = session
-        if (live == null) {
-            Log.d(TAG, "clip dropped, no session")
-            return@execute
-        }
+    fun sendText(text: String) {
         val clip = ClipText.newBuilder()
             .setText(text)
             .setMime("text/plain")
             .setTimestampMs(System.currentTimeMillis())
             .build()
+        send(Kind.CLIP_TEXT, clip.toByteArray(), "clip")
+    }
+
+    /**
+     * Queues one already-encoded frame. [what] only names the payload in the log, so a
+     * dropped notification is distinguishable from a dropped clip.
+     */
+    fun send(kind: Kind, payload: ByteArray, what: String) = sender.execute {
+        val live = session
+        if (live == null) {
+            Log.d(TAG, "$what dropped, no session")
+            return@execute
+        }
         try {
-            live.send(Kind.CLIP_TEXT, clip.toByteArray())
+            live.send(kind, payload)
         } catch (e: Exception) {
             // A failed write means the socket is gone; let the reader notice and unwind.
-            Log.w(TAG, "clip write failed", e)
+            Log.w(TAG, "$what write failed", e)
             teardown()
         }
     }
