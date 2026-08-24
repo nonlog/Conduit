@@ -244,3 +244,53 @@ it matches on the method *name*, never a signature, because that method gained a
 pinned to `android` alone. The Xposed API jar is `compileOnly` from `api.xposed.info` — the
 only place it is published — and the APK was checked to carry nothing from it but type
 references.
+
+## What real hardware added to the foreground-service rules
+
+Two platform requirements that no amount of reading the manifest reference produces, both
+found by the service refusing to start on an OPPO CPH2573 (Android 16 / API 36):
+
+- **Android 12+ refuses a foreground service started from the background**
+  (`ForegroundServiceStartNotAllowedException: mAllowStartForeground false`). The tempting
+  fix — `android:exported="true"` so `am start-foreground-service` can reach it — is a
+  regression twice over: it opens the service to every app on the device and it does not
+  even address the cause. The service is instead always started by `MainActivity`, which is
+  a legitimate foreground caller and is also the real user path. The debug host override
+  therefore rides in on the *activity's* launch intent and is forwarded to the service.
+- **Android 14+ will not start a `connectedDevice` service on
+  `FOREGROUND_SERVICE_CONNECTED_DEVICE` alone.** It demands a second permission proving a
+  device is genuinely involved, from a list spanning the three `BLUETOOTH_*`,
+  `CHANGE_NETWORK_STATE`, `CHANGE_WIFI_STATE`, `CHANGE_WIFI_MULTICAST_STATE`, `NFC`,
+  `TRANSMIT_IR`, `UWB_RANGING`, `RANGING` and USB host/accessory. Of these
+  `CHANGE_WIFI_MULTICAST_STATE` is the only honest one: mDNS discovery is multicast, so the
+  permission describes something the app actually does.
+
+`MainActivity` is `singleTop` with an `onNewIntent`. Without both, a second launch carrying
+a different host silently does nothing — the existing instance is reused, `onCreate` never
+runs again, and the new extras are dropped on the floor.
+
+## M0 leak invariant, measured
+
+Six connect/drop cycles driven by killing and restarting the desktop daemon, so the phone's
+reader wakes on a real FIN rather than a timeout:
+
+```
+session 1 closed: opened=1 closed=1   ...   session 5 closed: opened=5 closed=5
+threads=24  fds=142  VmRSS≈222 MB     unchanged across all six
+```
+
+The reader thread's tid differs every session (18519 → 19345) while the thread count stays
+put, which is the point: each session's thread genuinely exits instead of accumulating. This
+is the failure mode the project was started over — connect, disconnect, Java believes it
+closed, the native session lives on — and `opened == closed` is the assertion that catches
+it. Two measurements that looked like passes but were not, kept here because both are easy
+to repeat:
+
+- `adb reverse --remove` does **not** close an established socket. It stops new connections
+  only, so the phone's reader sits on its 150 s deadline and the thread count naturally
+  holds steady. Nothing was being torn down, so nothing was being tested.
+- Re-launching the activity with a host extra did nothing before the `onNewIntent` fix
+  above, so the "cycles" never re-dialled either.
+
+Still outstanding for M0: the same counters over a 48 h run, and mDNS discovery exercised
+for real, which needs the phone and the desktop on one subnet.

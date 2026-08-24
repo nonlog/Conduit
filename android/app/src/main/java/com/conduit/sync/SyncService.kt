@@ -18,10 +18,14 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
+import java.net.InetSocketAddress
 
 private const val TAG = "conduit.svc"
 private const val CHANNEL = "link"
 private const val NOTIFICATION_ID = 1
+
+/** Only used by the intent-driven path; mDNS carries the port otherwise. */
+private const val PORT = 41112
 
 /** Matches the desktop's ceiling; a longer clip is skipped, never truncated. */
 private const val MAX_TEXT = 64_000
@@ -121,8 +125,18 @@ class SyncService : Service() {
             notification(),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
         )
-        // The network callback only fires on a change, so the first dial is ours.
-        discovery.burst()
+        // A literal address on the intent skips discovery, which is the only way to drive
+        // the link when the phone and the desktop are not on one subnet:
+        //   adb reverse tcp:41112 tcp:41112
+        //   adb shell am start-foreground-service -n com.conduit.sync/.SyncService \
+        //       --es host 127.0.0.1
+        val host = intent?.getStringExtra("host")
+        if (host != null) {
+            link.connect(InetSocketAddress(host, intent.getIntExtra("port", PORT)))
+        } else {
+            // The network callback only fires on a change, so the first dial is ours.
+            discovery.burst()
+        }
         return START_STICKY
     }
 
@@ -147,7 +161,11 @@ class SyncService : Service() {
             return
         }
         val text = item.text?.toString()?.replace("\r\n", "\n") ?: return
-        if (text.isEmpty() || text == lastText) return
+        if (text.isEmpty()) return
+        if (text == lastText) {
+            Log.d(TAG, "echo of our own write, dropped")
+            return
+        }
         if (text.length > MAX_TEXT) {
             Log.w(TAG, "clip of ${text.length} chars is too large for one frame, skipped")
             return
@@ -159,6 +177,7 @@ class SyncService : Service() {
     private fun onRemoteText(text: String) {
         val normalised = text.replace("\r\n", "\n")
         if (normalised == lastText) return
+        Log.i(TAG, "clip text in: ${normalised.length} chars")
         // Recorded before the write, because the listener fires on the main thread and
         // may observe the change before setPrimaryClip has returned here.
         lastText = normalised

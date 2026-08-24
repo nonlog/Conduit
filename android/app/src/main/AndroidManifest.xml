@@ -7,6 +7,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <!-- connectedDevice, not dataSync: dataSync is capped at 6 h on Android 15. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- Android 14+ will not start a connectedDevice service on FOREGROUND_SERVICE_CONNECTED_DEVICE
+         alone; it also demands one permission that proves an actual device is involved.
+         Multicast is the honest one here, because mDNS discovery is exactly what we do. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
 
     <!-- New camera photos become a Windows toast. Watched with a ContentObserver,
          never polled. -->
@@ -39,6 +43,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:theme="@style/Theme.Conduit">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

@@ -56,18 +56,40 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // Shown before anything is running, so the desktop can be paired against it.
         LinkStatus.fingerprint = Identity.fingerprint(Identity.loadOrCreate(filesDir).public)
+        // A host on the launch intent pins the address and links straight away. It has to
+        // go through the activity: Android 12+ refuses a foreground service started from
+        // the background, so `am start-foreground-service` cannot drive the service itself.
+        intent.getStringExtra("host")?.let(::startLink)
         setContent {
             ConduitTheme {
                 HomeScreen(
                     fingerprint = LinkStatus.fingerprint,
                     peerName = LinkStatus.peer,
                     state = LinkStatus.state,
-                    onLink = {
-                        startForegroundService(Intent(this, SyncService::class.java))
-                    },
+                    onLink = { startLink(null) },
                 )
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // singleTop means a second launch reuses this instance, so onCreate does not run
+        // and the new extras would be dropped. setIntent first, because startLink reads
+        // the port off the activity's current intent.
+        setIntent(intent)
+        intent.getStringExtra("host")?.let(::startLink)
+    }
+
+    /** A null host means discover; anything else is a literal address. */
+    private fun startLink(host: String?) {
+        val service = Intent(this, SyncService::class.java)
+        if (host != null) {
+            service.putExtra("host", host)
+            // Left unset when absent, so the service's own default applies.
+            intent.getIntExtra("port", 0).takeIf { it > 0 }?.let { service.putExtra("port", it) }
+        }
+        startForegroundService(service)
     }
 }
 
