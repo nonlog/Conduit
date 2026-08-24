@@ -1,5 +1,6 @@
 package com.conduit.sync
 
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -23,29 +24,47 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 
-/** What the one screen has to say. Nothing here is live yet — M0 wires it up. */
+/** What the one screen has to say. */
 enum class LinkState(val label: String) {
     Idle("Not linked"),
     Discovering("Looking for the desktop"),
     Connected("Linked"),
 }
 
+/**
+ * The screen's whole state. Snapshot state rather than a flow because writes come from
+ * [Link]'s threads and Compose already handles that; a repository layer for three
+ * fields would be scaffolding.
+ */
+object LinkStatus {
+    var state by mutableStateOf(LinkState.Idle)
+    var peer by mutableStateOf<String?>(null)
+    var fingerprint by mutableStateOf("-- : -- : -- : -- : -- : -- : -- : --")
+}
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Shown before anything is running, so the desktop can be paired against it.
+        LinkStatus.fingerprint = Identity.fingerprint(Identity.loadOrCreate(filesDir).public)
         setContent {
             ConduitTheme {
                 HomeScreen(
-                    fingerprint = "-- : -- : -- : -- : -- : -- : -- : --",
-                    peerName = null,
-                    state = LinkState.Idle,
-                    onLink = {},
+                    fingerprint = LinkStatus.fingerprint,
+                    peerName = LinkStatus.peer,
+                    state = LinkStatus.state,
+                    onLink = {
+                        startForegroundService(Intent(this, SyncService::class.java))
+                    },
                 )
             }
         }

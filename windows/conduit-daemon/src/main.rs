@@ -1,9 +1,10 @@
 //! conduit daemon — Windows side.
 //!
-//! M0 scope: accept one LAN peer, Noise XX, keep the socket honest, sync text
-//! clipboard both ways. mDNS advertise lands next; the shape here is chosen so
-//! neither it nor image sync adds a thread or a timer per message.
+//! M0 scope: advertise over mDNS, accept one LAN peer, Noise XX, keep the socket
+//! honest, sync text clipboard both ways. The shape here is chosen so image sync adds
+//! neither a thread nor a timer per message.
 
+mod advert;
 mod clip;
 mod wire;
 
@@ -63,11 +64,9 @@ async fn main() -> Result<()> {
     let dir = config_dir()?;
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let identity = wire::load_or_create_identity(&dir.join("identity.bin"))?;
-    info!(
-        id = %wire::device_id(&identity.public),
-        fingerprint = %wire::fingerprint(&identity.public),
-        "identity"
-    );
+    let device_id = wire::device_id(&identity.public);
+    let fingerprint = wire::fingerprint(&identity.public);
+    info!(id = %device_id, %fingerprint, "identity");
 
     let metrics = Arc::new(Metrics::default());
     // One listener thread for the process, started before the socket so a clip copied
@@ -75,6 +74,9 @@ async fn main() -> Result<()> {
     let bridge = Arc::new(clip::Bridge::start()?);
     let listener = TcpListener::bind(("0.0.0.0", PORT)).await?;
     info!(port = PORT, "listening");
+    // Bound, not dropped: this is what the phone's discovery burst finds. Advertised
+    // only once the socket is accepting, so a resolve is never answered by a refusal.
+    let _advert = advert::Advert::start(PORT, &device_id, &fingerprint)?;
 
     // M0 carries exactly one peer. A reconnect must win, so the previous session is
     // dropped rather than the new one refused: a half-open socket would otherwise

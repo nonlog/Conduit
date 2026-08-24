@@ -9,6 +9,9 @@ publish.workspace = true
 anyhow = "1.0.104"
 base64 = "0.23.1"
 clipboard-win = { version = "5.4.1", features = ["monitor", "std"] }
+# Default features pull an async facade and a `log` bridge; neither is used, and the
+# daemon's own thread is easier to account for without them.
+mdns-sd = { version = "0.21.0", default-features = false }
 prost = "0.14.4"
 sha2 = "0.11.0"
 snow = "0.10.0"

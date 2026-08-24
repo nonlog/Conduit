@@ -169,3 +169,51 @@ Two traps worth writing down:
   `(this as ExtensionAware).extensions.getByName("proto")`; and an Android generate task starts
   with no builtin, so it is `maybeCreate("java").option("lite")`, not `getByName("java")`.
 
+
+## M0 transport decisions (Android)
+
+- **Two threads per link, both blocked in a syscall when idle.** A reader thread sits in
+  `recvfrom`; a single-thread executor sits on its queue. That split is what removes the
+  locks: the reader is the only caller of `recv`, the sender the only caller of `send`, so
+  the two Noise counters are never touched concurrently. The PONG a PING earns is *posted*
+  to the sender rather than written by the reader, for the same reason. The rejected
+  alternative was one thread with `SO_RCVTIMEO` set short enough to drain a queue — which
+  is polling with extra steps.
+- **`Link` outlives its connections.** The sender thread and the queue are created once per
+  service; only the socket, the reader thread and the `WireSession` come and go. A network
+  change calls `disconnect()`, not `close()`, so reconnect churn cannot grow the thread
+  count. This is the "suspend, not destroy" rule, and it is the direct answer to the
+  Phone Link failure this project replaces.
+- **`Socket().use { }` is the `SessionGuard` equivalent.** Every exit — return, throw, or
+  another thread closing the socket underneath the read — runs the same teardown, and the
+  `opened`/`closed` counters are logged on each close so the 48 h criterion is greppable
+  from `logcat`.
+- **`soTimeout` is 150 s: a deadline, not a poll.** The kernel wakes nobody until it fires,
+  and a healthy desktop's 60 s keepalive always beats it.
+- **Reconnect is edge-triggered, with a spin guard.** Triggers are service start, a Wi-Fi or
+  Ethernet network appearing, the user tapping Link, and *a session that was up being lost*.
+  A dial that never completed its handshake deliberately does not re-dial, or a desktop that
+  is advertising but refusing would produce a spin loop. Cost of a down desktop is one 8 s
+  mDNS burst, not a retry timer.
+  - **Known gap:** if the desktop restarts while the phone stays on the same Wi-Fi and the
+    phone's session was already down, nothing re-dials until a network event or a tap. The
+    fix is a browse that lives only while the screen is on — screen-on is itself an event,
+    and the CPU is already up — not continuous discovery, which holds a multicast lock and
+    wakes the app for every mDNS packet on the subnet.
+- **Discovery bursts, and stops itself twice over**: on the first resolve, or on an 8 s
+  deadline. One pending main-looper message is the whole timing cost, and only in flight.
+  `resolveService`/`getHost` are deprecated at API 34 but kept because `minSdk` is 29 and one
+  code path beats two.
+- **Ping-pong prevention is one normalisation invariant, mirrored on both sides.** `lastText`
+  always holds the LF form; it is written *before* the clipboard write, because the change
+  listener can fire before `setPrimaryClip` returns. Without the LF normalisation the two
+  sides trade the same text forever, since Windows hands back CRLF.
+- **UI state is Compose snapshot state in one `object`**, written from the link's threads.
+  A flow plus a repository layer for three fields would be scaffolding.
+- **mDNS advertising uses `mdns-sd` with `enable_addr_auto()`.** The daemon tracks interface
+  addresses itself, so a VPN or dock appearing does not require a re-register and therefore
+  cannot disturb a live session. The native alternative, `DnsServiceRegister` from `dnsapi`,
+  would avoid the dependency but needs a completion callback in unsafe FFI — the exact class
+  of lifetime bug this project exists to avoid. The advert is registered *after* the socket
+  binds, so a resolve is never answered by a connection refusal, and the TXT record carries
+  `id`/`fp`/`v` so the phone can tell two desktops apart before handshaking.
