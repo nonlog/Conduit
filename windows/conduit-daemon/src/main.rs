@@ -304,10 +304,24 @@ async fn serve(
                         incoming = None;
                         info!(bytes = png.len(), photo, "image complete");
                         if photo {
-                            // ponytail: a camera photo must not hijack the clipboard, and
-                            // the toast path cannot carry a hero image yet, so it is
-                            // logged and dropped. Wire it to toast::Cmd when that lands.
-                            info!("photo received; hero-image toasts are not wired up yet");
+                            // Never the clipboard. A photo is not something the user
+                            // copied, so overwriting their clipboard with one would be a
+                            // bug they cannot undo. It becomes a toast carrying the
+                            // picture instead, and clicking that hands the file to
+                            // Snipping Tool — the same gesture as Win+Shift+S, which is
+                            // where a picture that just appeared belongs.
+                            match toasts {
+                                Some(toasts) => {
+                                    match tokio::task::spawn_blocking(move || stage_photo(&png))
+                                        .await
+                                    {
+                                        Ok(Ok(path)) => toasts.post(toast::Cmd::Photo { path }),
+                                        Ok(Err(e)) => warn!(error = %e, "could not stage the photo"),
+                                        Err(e) => warn!(error = %e, "photo staging task failed"),
+                                    }
+                                }
+                                None => info!("photo dropped, toasts are unavailable"),
+                            }
                         } else {
                             // Decode, encode and two clipboard opens: too slow for a
                             // worker, and COM work regardless.
@@ -372,6 +386,23 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// Writes the newest photo where the shell and Snipping Tool can both read it.
+///
+/// One file, overwritten each time, which is the same bound as the single photo toast
+/// that names it. No transcode: the toast image loader and Snipping Tool each read JPEG
+/// happily, the phone already downscaled it, and re-encoding a photograph as PNG would
+/// multiply its size for nothing — local toast images are capped at 3 MB.
+fn stage_photo(bytes: &[u8]) -> Result<PathBuf> {
+    let name = if bytes.starts_with(b"\x89PNG") {
+        "photo.png"
+    } else {
+        "photo.jpg"
+    };
+    let path = config_dir()?.join(name);
+    std::fs::write(&path, bytes).with_context(|| format!("writing {}", path.display()))?;
+    Ok(path)
 }
 
 /// 30 s idle / 10 s probe / 3 retries. Windows' `SIO_KEEPALIVE_VALS` has no retry

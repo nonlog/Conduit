@@ -60,6 +60,7 @@ class SyncService : Service() {
 
     private lateinit var link: Link
     private lateinit var discovery: Discovery
+    private lateinit var photos: Photos
     private lateinit var clipboard: ClipboardManager
     private lateinit var connectivity: ConnectivityManager
     private val main = Handler(Looper.getMainLooper())
@@ -137,6 +138,7 @@ class SyncService : Service() {
             onFound = { address -> link.connect(address) },
             onEmpty = { dialRelay() },
         )
+        photos = Photos(this, link).apply { start() }
         activeLink = link
 
         clipboard.addPrimaryClipChangedListener(clipListener)
@@ -171,6 +173,7 @@ class SyncService : Service() {
         activeLink = null
         clipboard.removePrimaryClipChangedListener(clipListener)
         connectivity.unregisterNetworkCallback(network)
+        photos.stop()
         discovery.stop()
         link.close()
         LinkStatus.state = LinkState.Idle
@@ -274,9 +277,10 @@ class SyncService : Service() {
 
     private fun onRemoteImage(png: ByteArray, photo: Boolean) {
         if (photo) {
-            // Nothing sends this yet — photo=true is the phone-to-desktop direction, for
-            // a camera shot that becomes a toast. Dropping it is the safe default: a
-            // photo is not a clipboard event and must not overwrite what the user copied.
+            // photo=true only ever travels the other way, phone to desktop, where it
+            // becomes a Windows toast. Arriving here means the desktop sent one, which
+            // nothing does; dropping it is the safe reading either way, because a photo
+            // is not a clipboard event and must not overwrite what the user copied.
             Log.i(TAG, "photo in: ${png.size} B, dropped; the desktop does not send these")
             return
         }

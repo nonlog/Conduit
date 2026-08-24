@@ -45,9 +45,9 @@ impl Wake for Unparker {
 /// one, so a conversion costs no CPU while the codec works. A spurious unpark only causes
 /// an extra harmless poll.
 ///
-/// Deliberately sync all the way down. Both callers are already off the reactor — the
-/// clipboard thread and a `spawn_blocking` — because clipboard work is COM work.
-fn block_on<F: IntoFuture>(op: F) -> F::Output {
+/// Deliberately sync all the way down. Every caller is already off the reactor — the
+/// clipboard thread, the toast thread, a `spawn_blocking` — because this is COM work.
+pub(crate) fn block_on<F: IntoFuture>(op: F) -> F::Output {
     let mut future = std::pin::pin!(op.into_future());
     let waker = Waker::from(Arc::new(Unparker(std::thread::current())));
     let mut cx = Context::from_waker(&waker);
@@ -66,7 +66,7 @@ fn block_on<F: IntoFuture>(op: F) -> F::Output {
 /// same thread, or leak an apartment — this keeps a process-wide implicit MTA alive that
 /// uninitialised threads join automatically. The cookie is a plain `Copy` handle with no
 /// destructor, so simply not calling `CoDecrementMTAUsage` is what keeps the MTA up.
-fn ensure_mta() {
+pub(crate) fn ensure_mta() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         let _ = unsafe { CoIncrementMTAUsage() };

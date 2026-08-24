@@ -1,10 +1,14 @@
 package com.conduit.sync
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -35,6 +39,8 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 
+private const val TAG = "conduit.ui"
+
 /** What the one screen has to say. */
 enum class LinkState(val label: String) {
     Idle("Not linked"),
@@ -54,10 +60,23 @@ object LinkStatus {
 }
 
 class MainActivity : ComponentActivity() {
+    /**
+     * Registered before `onCreate` runs, which is the contract: the result callback has
+     * to survive the activity being recreated behind the system's permission dialog.
+     */
+    private val ask = registerForActivityResult(RequestMultiplePermissions()) { granted ->
+        granted.filterValues { !it }.keys.forEach {
+            // Not fatal, and not worth nagging over. Photo mirroring simply stays off
+            // until it is granted in Settings, and the service says so in its log.
+            Log.i(TAG, "$it denied")
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Shown before anything is running, so the desktop can be paired against it.
         LinkStatus.fingerprint = Identity.fingerprint(Identity.loadOrCreate(filesDir).public)
+        request()
         // A host on the launch intent pins the address and links straight away. It has to
         // go through the activity: Android 12+ refuses a foreground service started from
         // the background, so `am start-foreground-service` cannot drive the service itself.
@@ -81,6 +100,24 @@ class MainActivity : ComponentActivity() {
         // the port off the activity's current intent.
         setIntent(intent)
         intent.getStringExtra("host")?.let(::startLink)
+    }
+
+    /**
+     * The two runtime permissions the manifest declares.
+     *
+     * Only ever asked for what is actually missing, and only the dangerous ones: reading
+     * photos, and — on Android 13+ — posting the foreground service's own notification,
+     * without which the service runs but shows nothing. Everything else conduit needs is
+     * install-time or a trip to Settings the user has to make anyway.
+     */
+    private fun request() {
+        val wanted = buildList {
+            add(Photos.READ)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                add(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (wanted.isNotEmpty()) ask.launch(wanted.toTypedArray())
     }
 
     /** A null host means discover; anything else is a literal address. */
