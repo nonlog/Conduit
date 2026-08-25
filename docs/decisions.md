@@ -160,6 +160,16 @@ Two traps worth writing down:
 - **A camera photo reuses the image path**, with `ClipImageHeader.photo = true` meaning
   "toast this, do not touch the clipboard". Cheaper than a fourth message family, and the
   chunking already exists.
+- **A screenshot reuses the bounded image path but has explicit semantics.**
+  `ClipImageHeader.screenshot = true` identifies it to new peers, while the Android sender also
+  sets `photo = true` as a compatibility marker: an older desktop then still treats the unknown
+  screenshot as a non-clipboard capture rather than overwriting the user's clipboard. A separate
+  `Screenshots` `ContentObserver` accepts only new `Pictures/Screenshots/%` rows named
+  `Screenshot_*`, deduped by MediaStore id; there is no poll or new worker. Camera photos and
+  screenshots share one bounded Windows capture-toast/staged-file/shared-token slot. On the
+  target CPH2573, a real system screenshot produced one `New screenshot` toast, the click opened
+  that image in Snipping Tool, the Windows clipboard sequence stayed 979 → 979, and a scanner
+  re-notification did not produce a duplicate toast.
 - Gradle stays at **8.14.3**: 8.14.4+ is not fetchable from this network (the
   `services.gradle.org` redirect target times out) and AGP 8.x cannot use ≥ 9.6 anyway. KGP's
   deprecation warning is suppressed in `gradle.properties` so bumping Kotlin to 2.5 fails
@@ -481,10 +491,10 @@ GUID, no package identity required.
 there is no COM activator to register, no CLSID, and no callback the daemon has to stay
 alive to serve.
 
-One photo toast at a time: fixed tag, one staged file, one outstanding token, each replaced
-by the next photo. That bounds all three by construction rather than by cleanup, which is
-the only kind of bound this project trusts. The cost is that a burst of photos leaves only
-the last one on screen.
+One phone-capture toast at a time: camera photos and screenshots share a fixed tag, one staged
+file and one outstanding token, each replaced by the next capture. That bounds all three by
+construction rather than by cleanup, which is the only kind of bound this project trusts. The
+cost is that a burst of captures leaves only the last one on screen.
 
 No transcode on the desktop either. Both the toast image loader and Snipping Tool read
 JPEG, the phone already downscaled, and re-encoding a photograph as PNG would multiply its
