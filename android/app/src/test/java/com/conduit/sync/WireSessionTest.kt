@@ -16,6 +16,17 @@ import org.junit.Test
  */
 class WireSessionTest {
     @Test
+    fun relayPreambleCarriesTheInitiatorRoleWithoutAmbiguity() {
+        val id = Identity.deviceId(ByteArray(32) { 7 })
+        val preamble = relayPreamble(id)
+        assertEquals(48, preamble.size)
+        assertArrayEquals("CDT1".toByteArray(), preamble.copyOfRange(0, 4))
+        assertEquals('>'.code.toByte(), preamble[4])
+        assertArrayEquals(id.toByteArray(), preamble.copyOfRange(5, preamble.size))
+        assertThrows(IllegalArgumentException::class.java) { relayPreamble("short") }
+    }
+
+    @Test
     fun handshakeThenFramesRoundTrip() {
         val initiator = KeyPair.generate()
         val responder = KeyPair.generate()

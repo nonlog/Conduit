@@ -5,24 +5,32 @@
 //! is the transport leak this project exists to escape, and this file is the entire
 //! replacement for it.
 //!
-//! The relay is untrusted by construction. It sees a 47-byte preamble — `CDT1` plus a
-//! rendezvous id that is already public — and then opaque Noise ciphertext. The XX
-//! handshake runs phone-to-desktop *through* here, so session keys never exist on this
-//! machine and it cannot read a clipboard or a notification even if it wanted to. There
-//! is no config file, no database, and no state that outlives the process: a restart
-//! just makes both peers redial.
+//! The relay is untrusted by construction. Current peers send a 48-byte preamble — `CDT1`,
+//! a role, and a rendezvous id that is already public — and then opaque Noise ciphertext.
+//! During the protocol transition it also accepts the deployed 47-byte form and infers the
+//! old peer's role from whether it immediately starts the Noise handshake. The XX handshake
+//! still runs phone-to-desktop *through* here, so session keys never exist on this machine
+//! and it cannot read a clipboard or a notification even if it wanted to. There is no config
+//! file, no database, and no state that outlives the process: a restart just makes both peers
+//! redial.
 //!
-//! Pairing rule: the first connection presenting an id waits, and the next one
-//! presenting the same id is spliced to it. Roles are not encoded, because the phone is
-//! always the Noise initiator and the desktop always the responder — the relay never
-//! needs to know which is which.
+//! Pairing rule: a connection is spliced to a waiter under the same id and the *opposite*
+//! role, and parks otherwise. The role byte is the one thing here that was learned the
+//! hard way. It was originally left out — the phone is always the Noise initiator and the
+//! desktop always the responder, so the relay appeared not to need it — but that reasoning
+//! only holds while every waiter is live. A phone whose session died leaves its socket
+//! parked, unnoticed because nothing here reads it; the same phone's next attempt then
+//! presents the same id and gets spliced to its own corpse. Two initiators, each handed
+//! the other's 32-byte first message where an 80-byte second one was due, on a 300 s retry
+//! loop. With a role, that arrival displaces the stale waiter instead of marrying it.
 //!
-//! Staleness needs no detection. A waiter whose TCP died is spliced to the next arrival,
-//! the copy ends at once, the live peer sees EOF and redials. One wasted round trip
-//! instead of a liveness probe. Waiters that are merely idle — a desktop waiting hours
-//! for a phone — are the correct behaviour, and the kernel's own keepalive both reaps
-//! the genuinely dead ones and refreshes the NAT mapping that keeps the live ones
-//! reachable. No timer runs in this process.
+//! Staleness still needs no detection. A waiter whose TCP died is spliced to the next
+//! arrival of the opposite role, the copy ends at once, the live peer sees EOF and
+//! redials. One wasted round trip instead of a liveness probe. Waiters that are merely
+//! idle — a desktop waiting hours for a phone — are the correct behaviour, and the
+//! kernel's own keepalive both reaps the genuinely dead ones and refreshes the NAT mapping
+//! that keeps the live ones reachable. The only userspace timeout after the preamble is the
+//! short, migration-only legacy-role inference window; explicit-role peers never pay it.
 
 use anyhow::{bail, Context, Result};
 use std::collections::HashMap;
@@ -37,14 +45,29 @@ use tracing::{info, warn};
 
 const MAGIC: [u8; 4] = *b"CDT1";
 
+/// Which half of the Noise handshake this peer intends to be: the phone speaks first, the
+/// desktop waits. Deliberately outside the base64url alphabet, so a peer still speaking
+/// the 47-byte preamble fails the check below with a message that says what is wrong
+/// rather than stalling until the deadline on a byte that never comes.
+const INITIATOR: u8 = b'>';
+const RESPONDER: u8 = b'<';
+
 /// `BASE64URL(SHA256(static_pub))` unpadded is always 43 characters, so the preamble is
 /// a fixed size: no length field, no delimiter, no parser to get wrong.
 const ID_LEN: usize = 43;
-const PREAMBLE: usize = MAGIC.len() + ID_LEN;
+
+/// Magic and role. Read before the id so an unknown role is refused immediately.
+const HEAD: usize = MAGIC.len() + 1;
 
 /// A connection that has not sent its preamble is holding an fd for nothing, and the
 /// kernel's keepalive cannot help — such a peer is alive, merely silent.
 const PREAMBLE_DEADLINE: Duration = Duration::from_secs(10);
+
+/// The deployed 47-byte preamble has no role. Its initiator writes Noise message 1
+/// immediately after the id, while its responder writes nothing until a partner speaks.
+/// Waiting one second here is a migration tax only: it is long compared with the same task's
+/// next write, but tiny compared with the relay's normal multi-minute idle cadence.
+const LEGACY_ROLE_GRACE: Duration = Duration::from_secs(1);
 
 /// One fd per waiter, so this ceiling bounds a buggy or hostile client rather than
 /// rationing a real resource. Far past any plausible number of paired devices.
@@ -52,7 +75,11 @@ const MAX_WAITING: usize = 256;
 
 const DEFAULT_PORT: u16 = 41113;
 
-type Waiting = Mutex<HashMap<String, TcpStream>>;
+/// Rendezvous id and role. Keyed by both, because at most one waiter per role per id is
+/// exactly what stops a peer from being spliced to a stale copy of itself.
+type Key = (String, u8);
+
+type Waiting = Mutex<HashMap<Key, TcpStream>>;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<()> {
@@ -105,39 +132,45 @@ async fn arrive(
     stream.set_nodelay(true)?;
     keepalive(&stream)?;
 
-    let mut buf = [0u8; PREAMBLE];
-    tokio::time::timeout(PREAMBLE_DEADLINE, stream.read_exact(&mut buf))
-        .await
-        .context("no preamble before the deadline")??;
-    if buf[..MAGIC.len()] != MAGIC {
-        bail!("bad magic, not a conduit peer");
-    }
-    let id = std::str::from_utf8(&buf[MAGIC.len()..])
-        .context("rendezvous id is not utf-8")?
-        .to_owned();
-    // Nothing outside the base64url alphabet can be a device id, and refusing it here
-    // keeps arbitrary remote bytes out of the log.
-    if !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
-        bail!("rendezvous id is not base64url");
-    }
+    let (id, role, legacy) = read_preamble(&mut stream).await?;
+    let want = match role {
+        INITIATOR => RESPONDER,
+        RESPONDER => INITIATOR,
+        other => bail!("unknown role {:?}, expected an initiator or a responder", other as char),
+    };
 
     let mut waiter = {
         let mut map = waiting.lock().await;
-        match map.remove(&id) {
+        match map.remove(&(id.clone(), want)) {
             Some(waiter) => waiter,
             None => {
                 if map.len() >= MAX_WAITING {
                     bail!("{} peers already waiting, refusing this one", map.len());
                 }
-                map.insert(id.clone(), stream);
-                info!(%peer, id = %short(&id), waiting = map.len(), "waiting for a partner");
+                // Displaces any earlier waiter of this same role, which is the repair for a
+                // peer that reconnected without its previous socket being noticed as dead.
+                // Dropping it here is the correct outcome either way: if it really was dead
+                // this costs nothing, and if the peer is somehow live it redials — where
+                // leaving it would have wedged the id until one end restarted.
+                if let Some(stale) = map.insert((id.clone(), role), stream) {
+                    info!(id = %short(&id), role = %role as char, "displaced a stale waiter");
+                    drop(stale);
+                }
+                info!(
+                    %peer,
+                    id = %short(&id),
+                    role = %role as char,
+                    legacy,
+                    waiting = map.len(),
+                    "waiting for a partner"
+                );
                 return Ok(());
             }
         }
     };
 
     let n = pairs.fetch_add(1, Ordering::Relaxed) + 1;
-    info!(%peer, id = %short(&id), pair = n, "spliced");
+    info!(%peer, id = %short(&id), role = %role as char, legacy, pair = n, "spliced");
     // The only thing this process ever does with a payload. No parse, no inspection, no
     // buffer of its own beyond the two `copy_bidirectional` allocates.
     match tokio::io::copy_bidirectional(&mut waiter, &mut stream).await {
@@ -146,6 +179,72 @@ async fn arrive(
         Err(e) => info!(id = %short(&id), error = %e, "pair closed"),
     }
     Ok(())
+}
+
+/// Reads either the current role-aware preamble or the deployed legacy one without consuming
+/// any Noise byte. Role markers deliberately sit outside the base64url alphabet, so byte five
+/// is an unambiguous discriminator and no version field is needed for this transition.
+async fn read_preamble(stream: &mut TcpStream) -> Result<(String, u8, bool)> {
+    let mut head = [0u8; HEAD];
+    tokio::time::timeout(PREAMBLE_DEADLINE, stream.read_exact(&mut head))
+        .await
+        .context("no preamble before the deadline")??;
+    if head[..MAGIC.len()] != MAGIC {
+        bail!("bad magic, not a conduit peer");
+    }
+
+    let marker = head[MAGIC.len()];
+    let (role, id, legacy) = match marker {
+        INITIATOR | RESPONDER => {
+            let mut id = [0u8; ID_LEN];
+            read_deadlined(stream, &mut id, "no rendezvous id before the deadline").await?;
+            (marker, id, false)
+        }
+        first if id_byte(first) => {
+            // Legacy is `CDT1 + id`: the byte already read as `marker` is id[0]. Read only
+            // the remaining 42 bytes, then peek so the first Noise byte stays in the socket.
+            let mut id = [0u8; ID_LEN];
+            id[0] = first;
+            read_deadlined(
+                stream,
+                &mut id[1..],
+                "no legacy rendezvous id before the deadline",
+            )
+            .await?;
+            let role = infer_legacy_role(stream).await?;
+            (role, id, true)
+        }
+        other => bail!("unknown relay role/version marker {other:#04x}"),
+    };
+
+    if !id.iter().copied().all(id_byte) {
+        bail!("rendezvous id is not base64url");
+    }
+    let id = std::str::from_utf8(&id)
+        .context("rendezvous id is not utf-8")?
+        .to_owned();
+    Ok((id, role, legacy))
+}
+
+async fn read_deadlined(stream: &mut TcpStream, buf: &mut [u8], what: &'static str) -> Result<()> {
+    tokio::time::timeout(PREAMBLE_DEADLINE, stream.read_exact(buf))
+        .await
+        .context(what)??;
+    Ok(())
+}
+
+async fn infer_legacy_role(stream: &TcpStream) -> Result<u8> {
+    let mut probe = [0u8; 1];
+    match tokio::time::timeout(LEGACY_ROLE_GRACE, stream.peek(&mut probe)).await {
+        Ok(Ok(0)) => bail!("legacy peer closed before its role could be inferred"),
+        Ok(Ok(_)) => Ok(INITIATOR),
+        Ok(Err(e)) => Err(e).context("peeking legacy peer after the preamble"),
+        Err(_) => Ok(RESPONDER),
+    }
+}
+
+fn id_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
 }
 
 /// A prefix, not the whole id. It is not secret — it is a hash of a public key — but a
@@ -198,8 +297,21 @@ mod tests {
     }
 
     async fn dial(addr: SocketAddr, id: &str) -> TcpStream {
+        dial_as(addr, id, INITIATOR).await
+    }
+
+    async fn dial_as(addr: SocketAddr, id: &str, role: u8) -> TcpStream {
         // A wrong-length id would stall on the fixed-size preamble and surface as
         // "never registered the waiter" ten seconds later, which reads like a relay bug.
+        assert_eq!(id.len(), ID_LEN, "test id must be a realistic length");
+        let mut s = TcpStream::connect(addr).await.unwrap();
+        s.write_all(&MAGIC).await.unwrap();
+        s.write_all(&[role]).await.unwrap();
+        s.write_all(id.as_bytes()).await.unwrap();
+        s
+    }
+
+    async fn dial_legacy(addr: SocketAddr, id: &str) -> TcpStream {
         assert_eq!(id.len(), ID_LEN, "test id must be a realistic length");
         let mut s = TcpStream::connect(addr).await.unwrap();
         s.write_all(&MAGIC).await.unwrap();
@@ -207,12 +319,25 @@ mod tests {
         s
     }
 
+    /// A deployed phone starts Noise immediately after its 47-byte preamble. These bytes are
+    /// deliberately arbitrary: role inference only peeks and must leave them untouched.
+    async fn dial_legacy_initiator(addr: SocketAddr, id: &str, first_noise: &[u8]) -> TcpStream {
+        let mut s = dial_legacy(addr, id).await;
+        s.write_all(first_noise).await.unwrap();
+        s
+    }
+
     /// Accepting is asynchronous, so a test dialling twice in a microsecond could leave
     /// both peers as waiters that never meet. Real peers are minutes apart; this is the
     /// only place the ordering has to be forced.
     async fn await_waiter(waiting: &Waiting, id: &str) {
-        for _ in 0..1000 {
-            if waiting.lock().await.contains_key(id) {
+        await_waiter_as(waiting, id, INITIATOR).await
+    }
+
+    async fn await_waiter_as(waiting: &Waiting, id: &str, role: u8) {
+        // A legacy responder is deliberately classified only after a one-second quiet window.
+        for _ in 0..2500 {
+            if waiting.lock().await.contains_key(&(id.to_owned(), role)) {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(1)).await;
@@ -228,7 +353,7 @@ mod tests {
         // the Noise initiator never has to wait for the relay to be "ready".
         a.write_all(b"noise-msg1").await.unwrap();
         await_waiter(&waiting, ID).await;
-        let mut b = dial(addr, ID).await;
+        let mut b = dial_as(addr, ID, RESPONDER).await;
 
         let mut got = [0u8; 10];
         b.read_exact(&mut got).await.unwrap();
@@ -246,12 +371,103 @@ mod tests {
         let (addr, waiting) = relay().await;
         let mut s = TcpStream::connect(addr).await.unwrap();
         s.write_all(b"HTTP").await.unwrap();
+        s.write_all(&[INITIATOR]).await.unwrap();
         s.write_all(&[b'x'; ID_LEN]).await.unwrap();
         // Closed on bad magic, so this reads EOF rather than data. A reset is also fine.
         let mut sink = Vec::new();
         let _ = s.read_to_end(&mut sink).await;
         assert!(sink.is_empty(), "the relay answered a stranger: {sink:?}");
         assert!(waiting.lock().await.is_empty(), "a refusal must not hold a slot");
+    }
+
+    /// The bug this role byte exists for: a phone whose session died leaves a socket parked
+    /// that nothing here is reading, so its own next attempt used to be spliced to it. Two
+    /// initiators, each handed the other's 32-byte first Noise message where an 80-byte
+    /// second one was due — which is an IndexOutOfBoundsException on the phone and a link
+    /// down for hours on a 300 s retry loop.
+    #[tokio::test]
+    async fn a_peer_is_never_spliced_to_a_stale_copy_of_itself() {
+        let (addr, waiting) = relay().await;
+        let mut dead = dial(addr, ID).await;
+        await_waiter(&waiting, ID).await;
+
+        // The same side again, as happens on every reconnect. It must park, not pair.
+        let mut again = dial(addr, ID).await;
+        await_waiter(&waiting, ID).await;
+        assert_eq!(waiting.lock().await.len(), 1, "one waiter per role, the stale one gone");
+        // And the displaced socket is closed rather than left holding an fd forever.
+        let mut sink = Vec::new();
+        let _ = dead.read_to_end(&mut sink).await;
+        assert!(sink.is_empty(), "the stale waiter should have been dropped");
+
+        // The reconnect then meets the real partner, which is the half that matters.
+        let mut desktop = dial_as(addr, ID, RESPONDER).await;
+        again.write_all(b"msg1").await.unwrap();
+        let mut got = [0u8; 4];
+        desktop.read_exact(&mut got).await.unwrap();
+        assert_eq!(&got, b"msg1");
+    }
+
+    #[tokio::test]
+    async fn two_legacy_peers_are_classified_and_spliced_without_consuming_noise() {
+        let (addr, waiting) = relay().await;
+        let mut phone = dial_legacy_initiator(addr, ID, b"old-noise1").await;
+        await_waiter_as(&waiting, ID, INITIATOR).await;
+        let mut desktop = dial_legacy(addr, ID).await;
+
+        let mut got = [0u8; 10];
+        desktop.read_exact(&mut got).await.unwrap();
+        assert_eq!(&got, b"old-noise1", "legacy role inference consumed Noise bytes");
+        desktop.write_all(b"old-noise2").await.unwrap();
+        phone.read_exact(&mut got).await.unwrap();
+        assert_eq!(&got, b"old-noise2");
+        assert!(waiting.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn explicit_and_legacy_peers_interoperate_in_both_upgrade_orders() {
+        let (addr, waiting) = relay().await;
+
+        // Desktop upgraded first, phone still on the deployed 47-byte form.
+        let mut new_desktop = dial_as(addr, ID, RESPONDER).await;
+        await_waiter_as(&waiting, ID, RESPONDER).await;
+        let old_phone = dial_legacy_initiator(addr, ID, b"phone-old").await;
+        let mut got = [0u8; 9];
+        new_desktop.read_exact(&mut got).await.unwrap();
+        assert_eq!(&got, b"phone-old");
+        drop(old_phone);
+        drop(new_desktop);
+
+        // Phone upgraded first, desktop still on the deployed 47-byte form.
+        let mut new_phone = dial(addr, ID).await;
+        new_phone.write_all(b"phone-new").await.unwrap();
+        await_waiter_as(&waiting, ID, INITIATOR).await;
+        let mut old_desktop = dial_legacy(addr, ID).await;
+        old_desktop.read_exact(&mut got).await.unwrap();
+        assert_eq!(&got, b"phone-new");
+    }
+
+    #[tokio::test]
+    async fn a_legacy_phone_reconnect_displaces_its_stale_copy() {
+        let (addr, waiting) = relay().await;
+        let mut stale = dial_legacy_initiator(addr, ID, b"stale").await;
+        await_waiter_as(&waiting, ID, INITIATOR).await;
+
+        let mut fresh = dial_legacy_initiator(addr, ID, b"fresh").await;
+        await_waiter_as(&waiting, ID, INITIATOR).await;
+        assert_eq!(waiting.lock().await.len(), 1);
+
+        let mut sink = Vec::new();
+        let _ = stale.read_to_end(&mut sink).await;
+        assert!(sink.is_empty(), "legacy stale waiter was not displaced");
+
+        let mut desktop = dial_as(addr, ID, RESPONDER).await;
+        let mut got = [0u8; 5];
+        desktop.read_exact(&mut got).await.unwrap();
+        assert_eq!(&got, b"fresh");
+        desktop.write_all(b"reply").await.unwrap();
+        fresh.read_exact(&mut got).await.unwrap();
+        assert_eq!(&got, b"reply");
     }
 
     /// The self-healing rule, which is why there is no liveness check: an id whose
@@ -263,7 +479,7 @@ mod tests {
         await_waiter(&waiting, ID).await;
         drop(dead); // FIN, and nobody in the relay is reading it to notice
 
-        let mut b = dial(addr, ID).await;
+        let mut b = dial_as(addr, ID, RESPONDER).await;
         // Spliced to a corpse: b sees EOF at once instead of hanging on a handshake.
         let mut sink = Vec::new();
         let _ = b.read_to_end(&mut sink).await;
@@ -274,7 +490,7 @@ mod tests {
         // And the redial genuinely works, which is the half that matters.
         let mut c = dial(addr, ID).await;
         await_waiter(&waiting, ID).await;
-        let mut d = dial(addr, ID).await;
+        let mut d = dial_as(addr, ID, RESPONDER).await;
         c.write_all(b"ok").await.unwrap();
         let mut got = [0u8; 2];
         d.read_exact(&mut got).await.unwrap();
@@ -291,15 +507,29 @@ mod tests {
         await_waiter(&waiting, other).await;
         assert_eq!(waiting.lock().await.len(), 2, "two ids, two independent waiters");
 
-        let mut a2 = dial(addr, ID).await;
+        let mut a2 = dial_as(addr, ID, RESPONDER).await;
         a1.write_all(b"for-a").await.unwrap();
         let mut got = [0u8; 5];
         a2.read_exact(&mut got).await.unwrap();
         assert_eq!(&got, b"for-a");
 
-        let mut b2 = dial(addr, other).await;
+        let mut b2 = dial_as(addr, other, RESPONDER).await;
         b1.write_all(b"for-b").await.unwrap();
         b2.read_exact(&mut got).await.unwrap();
         assert_eq!(&got, b"for-b");
+    }
+
+    /// Opposite roles under the same id are partners, not two independent waiting slots.
+    #[tokio::test]
+    async fn opposite_roles_of_one_id_splice_immediately() {
+        let (addr, waiting) = relay().await;
+        let mut phone = dial(addr, ID).await;
+        phone.write_all(b"hello").await.unwrap();
+        await_waiter_as(&waiting, ID, INITIATOR).await;
+        let mut desktop = dial_as(addr, ID, RESPONDER).await;
+        let mut got = [0u8; 5];
+        desktop.read_exact(&mut got).await.unwrap();
+        assert_eq!(&got, b"hello");
+        assert!(waiting.lock().await.is_empty());
     }
 }

@@ -30,10 +30,13 @@ pub const NOISE_XX: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 /// during the handshake instead of decrypting garbage later.
 pub const PROLOGUE: &[u8] = b"conduit/1";
 
-/// The relay preamble: `CDT1` then the 43-character rendezvous id, which is the
-/// desktop's [`device_id`]. Fixed size so the relay needs no parser at all. Mirrored in
-/// `relay/src/main.rs` and `android/.../Relay.kt`.
+/// The role-aware relay preamble starts with `CDT1`. The next byte is outside base64url so a
+/// transition relay can distinguish this 48-byte form from the deployed 47-byte legacy form.
+/// Mirrored in `relay/src/main.rs` and Android `Link.kt`.
 pub const RELAY_MAGIC: &[u8; 4] = b"CDT1";
+const RELAY_INITIATOR: u8 = b'>';
+const RELAY_RESPONDER: u8 = b'<';
+const RENDEZVOUS_LEN: usize = 43;
 
 /// Parks an outbound connection at the relay, returning it once a partner is spliced in.
 ///
@@ -47,9 +50,7 @@ pub async fn park(endpoint: &str, rendezvous: &str) -> Result<tokio::net::TcpStr
         .await
         .with_context(|| format!("dialling relay {endpoint}"))?;
     stream.set_nodelay(true)?;
-    let mut preamble = Vec::with_capacity(RELAY_MAGIC.len() + rendezvous.len());
-    preamble.extend_from_slice(RELAY_MAGIC);
-    preamble.extend_from_slice(rendezvous.as_bytes());
+    let preamble = relay_preamble(rendezvous, RELAY_RESPONDER)?;
     stream.write_all(&preamble).await?;
     stream.flush().await?;
 
@@ -58,6 +59,24 @@ pub async fn park(endpoint: &str, rendezvous: &str) -> Result<tokio::net::TcpStr
         bail!("relay closed the parked connection");
     }
     Ok(stream)
+}
+
+fn relay_preamble(rendezvous: &str, role: u8) -> Result<Vec<u8>> {
+    if rendezvous.len() != RENDEZVOUS_LEN || !rendezvous.bytes().all(relay_id_byte) {
+        bail!("relay rendezvous id must be {RENDEZVOUS_LEN} base64url bytes");
+    }
+    if role != RELAY_INITIATOR && role != RELAY_RESPONDER {
+        bail!("invalid relay role {role:#04x}");
+    }
+    let mut preamble = Vec::with_capacity(RELAY_MAGIC.len() + 1 + RENDEZVOUS_LEN);
+    preamble.extend_from_slice(RELAY_MAGIC);
+    preamble.push(role);
+    preamble.extend_from_slice(rendezvous.as_bytes());
+    Ok(preamble)
+}
+
+fn relay_id_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
 }
 
 /// Reject an oversize length *before* allocating anything for it.
@@ -268,6 +287,19 @@ mod tests {
         assert_eq!(id, device_id(&[7u8; 32]));
         assert!(!id.contains('+') && !id.contains('/') && !id.contains('='), "{id}");
         assert_eq!(fingerprint(&[7u8; 32]).split(':').count(), 8);
+    }
+
+    #[test]
+    fn relay_preamble_carries_the_responder_role_without_ambiguity() {
+        let id = device_id(&[7u8; 32]);
+        let preamble = relay_preamble(&id, RELAY_RESPONDER).unwrap();
+        assert_eq!(preamble.len(), 48);
+        assert_eq!(&preamble[..4], RELAY_MAGIC);
+        assert_eq!(preamble[4], RELAY_RESPONDER);
+        assert_eq!(&preamble[5..], id.as_bytes());
+        assert!(!relay_id_byte(RELAY_RESPONDER));
+        assert!(relay_preamble("short", RELAY_RESPONDER).is_err());
+        assert!(relay_preamble(&id, b'?').is_err());
     }
 
     /// The whole transport: XX handshake, then a text clip each way.

@@ -38,10 +38,22 @@ private const val JOIN_TIMEOUT_MS = 2_000L
 private const val PEER_NAME_MAX = 64
 
 /**
- * The relay preamble's magic. `CDT1` then a 43-character rendezvous id is a fixed 47
- * bytes, so the relay needs no parser. Mirrored in `relay/src/main.rs` and `wire.rs`.
+ * The role-aware relay preamble's magic. The role marker is deliberately outside base64url,
+ * so a transition relay can distinguish this 48-byte form from the deployed 47-byte legacy
+ * form without consuming any Noise byte. Mirrored in `relay/src/main.rs` and `wire.rs`.
  */
 private val RELAY_MAGIC = "CDT1".toByteArray()
+private const val RELAY_INITIATOR = '>'.code.toByte()
+
+internal fun relayPreamble(rendezvous: String): ByteArray {
+    require(rendezvous.length == ID_LEN && rendezvous.all(::relayIdChar)) {
+        "relay rendezvous id must be $ID_LEN base64url characters"
+    }
+    return RELAY_MAGIC + byteArrayOf(RELAY_INITIATOR) + rendezvous.toByteArray(Charsets.US_ASCII)
+}
+
+private fun relayIdChar(c: Char): Boolean =
+    c in 'A'..'Z' || c in 'a'..'z' || c in '0'..'9' || c == '-' || c == '_'
 
 
 /**
@@ -196,8 +208,8 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
      * Parks at the relay under [rendezvous] and waits to be spliced onto the desktop.
      *
      * Same reader thread, same session, same teardown as a LAN dial — the relay only
-     * changes which address is dialled and adds a 47-byte preamble, so nothing about the
-     * `opened == closed` invariant depends on which path was taken.
+     * changes which address is dialled and adds a 48-byte role-aware preamble, so nothing
+     * about the `opened == closed` invariant depends on which path was taken.
      */
     fun connectVia(relay: InetSocketAddress, rendezvous: String) = dial(relay, rendezvous)
 
@@ -282,10 +294,11 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
                 }
                 sock.connect(target, CONNECT_TIMEOUT_MS)
                 if (rendezvous != null) {
-                    // 47 bytes naming the rendezvous, then the relay is a pipe and never
-                    // looks at this stream again. Mirrored in `relay/src/main.rs`.
+                    // 48 bytes naming our initiator role and the rendezvous, then the relay
+                    // is a pipe and never looks at this stream again. The transition relay
+                    // still accepts old 47-byte clients; upgraded clients are explicit.
                     sock.getOutputStream().apply {
-                        write(RELAY_MAGIC + rendezvous.toByteArray())
+                        write(relayPreamble(rendezvous))
                         flush()
                     }
                     Log.i(TAG, "session $count parked at $target as ${rendezvous.take(12)}")
