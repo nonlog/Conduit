@@ -373,21 +373,33 @@ destruction is someone else's problem is the exact shape of the Phone Link leak.
 needs none of it, because the phone always dials out and NAT only has to be traversed in the
 direction it already permits.
 
-The preamble is a fixed 47 bytes — `CDT1` plus a 43-character base64url id — because
-`BASE64URL(SHA256(static_pub))` unpadded is always 43 characters. Fixed size means no length
-field, no delimiter, and no parser to get wrong. A wrong-length id therefore stalls on
-`read_exact` and is dropped at the 10 s deadline rather than being interpreted; that is a
-feature, and it is also how a test bug once presented itself as a relay bug.
+The deployed preamble is the original fixed 47 bytes — `CDT1` plus a 43-character base64url
+id. That omitted the role because the phone is always the Noise initiator and the desktop is
+always the responder. Real reconnect behaviour proved the omission wrong: a stale parked phone
+could survive long enough for the same phone's next attempt to arrive, and the id-only relay
+would splice the two initiators together. Each then saw the other's 32-byte Noise message 1
+where an 80-byte responder message 2 was expected.
 
-The rendezvous id is the *desktop's* device id. Roles are not encoded, because the phone is
-always the Noise initiator and the desktop always the responder, so there is nothing for the
-relay to arbitrate.
+The migration format is therefore 48 bytes: `CDT1`, one role byte (`>` initiator / `<`
+responder), then the same 43-byte rendezvous id. The role bytes are deliberately outside the
+base64url alphabet. That gives the compatible relay a zero-ambiguity discriminator at byte five:
+an explicit role means the new form; a base64url byte means the first character of a legacy id.
+The waiting map is keyed by `(id, role)`, and a same-role arrival replaces the previous waiter
+instead of ever being paired with it.
 
-Staleness needs no detection. A waiter that died without a FIN is spliced to the next
-arrival, the copy ends immediately, and the live peer sees EOF and redials — one wasted
-round trip in place of a liveness protocol. Kernel `SO_KEEPALIVE` is the only liveness
-machinery in the process: it reaps genuinely dead waiters and refreshes the NAT mappings of
-live ones, so there is no timer anywhere in the relay.
+Compatibility is server-first. For a legacy 47-byte connection only, after reading the id the
+relay performs a non-consuming `peek` for at most one second. The deployed phone immediately
+writes Noise message 1 and is classified as initiator; the deployed desktop writes nothing until
+a partner speaks and is classified as responder. This temporary timer is negotiation machinery,
+not steady-state liveness. Explicit-role peers have no such wait. The test suite covers old↔old,
+both mixed upgrade orders, explicit stale reconnect and legacy stale reconnect, and proves the
+peek leaves the first Noise bytes untouched.
+
+Steady-state staleness still needs no userspace probe. A waiter whose TCP genuinely died is
+spliced to the next opposite-role arrival, the copy ends immediately, and the live peer sees EOF
+and redials — one wasted round trip in place of a liveness protocol. Kernel `SO_KEEPALIVE` reaps
+dead waiters and refreshes live NAT mappings. After old clients are retired, the one-second
+legacy inference path can be deleted and the relay returns to having no userspace timer at all.
 
 On the desktop, parking is one `peek`. Nothing arrives on a parked connection until it is
 spliced, so a single blocked `peek` replaces a poll, and the bytes stay in the socket for the
@@ -426,6 +438,12 @@ no home and no writable path. Cross-compiled from Windows with the toolchain's o
 `rust-lld` and `-C link-self-contained=yes` — the dependency tree is pure Rust, so no C
 cross-toolchain is involved, and the box has only ~390 MB of RAM free, which is not enough
 to compile tokio on.
+
+As of 2026-08-25 this production instance still runs the legacy 47-byte implementation. Commit
+`86a2b86` contains the compatible server plus explicit-role Android/Windows writers, but none of
+those protocol changes has been deployed or installed. The safe order is compatible relay first,
+verify old clients, then upgrade one endpoint at a time and finally retire legacy inference after
+M2/stale-reconnect evidence.
 
 Chosen over the other three hosts on latency (77 ms) and, decisively, on reachability: the
 other candidate's outbound clients need a local HTTP proxy, and a relay the phone must reach

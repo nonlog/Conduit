@@ -10,29 +10,29 @@ Conduit has functioning implementation paths beyond the original pre-M0 descript
 has **not** earned M0/M2 completion.  The central endurance requirement remains open: a
 48-hour run must show no net thread, handle/FD, or session-lifecycle growth.
 
-The repository is currently on local `master` commit `02f0afe`:
+The latest protocol implementation commit on local `master` is `86a2b86`:
 
 ```text
-Mirror phone screenshots into Snipping Tool
+Make relay role migration backward compatible
 ```
 
-At this snapshot it is ahead of `origin/master`; do not treat it as published.  The working
-tree also has uncommitted role-aware relay changes in `relay/src/main.rs`.  That draft is
-incompatible with the current client preamble and must not be deployed alone.
+At this snapshot it is ahead of `origin/master`; do not treat it as published. The compatible
+relay migration is committed locally but has not been deployed. The installed phone/daemon still
+speak the deployed 47-byte form; do not install or restart the new role-aware clients until the
+compatible relay is deployed first.
 
 ## Test evidence
 
 | Area | Last recorded result | What it establishes | Limitation |
 | --- | --- | --- | --- |
-| Android JVM suite | **15 passed, 0 failed** | Noise transcript, frame limits, bounded history, file/image validation including capture flags, notification payload budget, and wire behaviours covered by unit tests. | No actual system-server hook, notification listener, or device radio lifecycle. |
-| Windows daemon | **36 passed, 2 ignored, 0 failed** on the last full normal run | Rust transport, clipboard/image/file/toast helpers, screenshot semantics, and resource-bound assertions. | Ignored tests show real toasts and require interactive validation. |
-| Local role-aware relay draft | **7 passed, 0 failed** | Blind byte splice, invalid preamble rejection, stale same-role replacement, dead-waiter recovery, and rendezvous isolation. | The draft changes the protocol from 47 to 48 bytes; endpoints still send 47 bytes. |
+| Android JVM suite | **16 passed, 0 failed** | Noise transcript, frame limits, bounded history, file/image validation including capture flags, notification payload budget, wire behaviours, and explicit initiator relay preamble. | No actual system-server hook, notification listener, or device radio lifecycle. |
+| Windows daemon | **37 passed, 2 ignored, 0 failed** on the last full normal run | Rust transport, clipboard/image/file/toast helpers, screenshot semantics, resource-bound assertions, and explicit responder relay preamble. | Ignored tests show real toasts and require interactive validation. |
+| Compatible relay migration | **9 passed, 0 failed** | Explicit-role splice, legacy 47-byte role inference without consuming Noise, both mixed upgrade orders, stale same-role replacement for new and legacy phones, dead-waiter recovery, and rendezvous isolation. | Production still runs the old relay; server-first rollout and live stale/flap proof remain. |
 | Noise interoperability | JVM transcript test + Rust `snow` fixture | The hand-written Android Noise XX agrees byte-for-byte with a reference implementation. | Does not replace live-network testing. |
 
-The relay draft test named `the_two_roles_of_one_id_are_separate_slots` should be reviewed if
-it is retained: normal opposite roles with one ID splice immediately, so that test currently
-uses distinct IDs and does not demonstrate both roles parked under one rendezvous.  The
-load-bearing regression coverage is `a_peer_is_never_spliced_to_a_stale_copy_of_itself`.
+The misleading earlier `the_two_roles_of_one_id_are_separate_slots` test was replaced with
+`opposite_roles_of_one_id_splice_immediately`. The load-bearing stale-waiter regressions now
+cover both explicit-role peers and a deployed-format legacy phone reconnect.
 
 ## Device and feature evidence
 
@@ -134,23 +134,30 @@ observed Android slicing failure and leaving recovery subject to retry timing.
 Android Noise input now reports a protocol-sized short handshake error rather than a generic
 internal `IndexOutOfBoundsException`.
 
-### Local repair, not released
+### Compatible migration implemented locally, not released
 
-The local relay draft uses:
+New endpoint builds use:
 
 ```text
 CDT1 + role byte + rendezvous ID
 ```
 
-and replaces a stale same-role waiter instead of self-splicing.  Its unit suite passes, but it
-is deliberately unfinished because Android and Windows endpoint writers still emit:
+and the relay replaces a stale same-role waiter instead of self-splicing. For the rollout
+window, the relay also accepts the currently deployed form:
 
 ```text
 CDT1 + rendezvous ID
 ```
 
-Do not deploy, publish, or casually merge the relay draft without the coordinated endpoint and
-server migration work in [backlog.md](backlog.md#p0--correctness-and-release-safety).
+Legacy-role inference is deliberately narrow: after reading the 47-byte preamble, the relay
+peeks for up to one second. Immediate post-preamble Noise bytes identify the phone/initiator;
+a quiet legacy connection is the desktop/responder. The peek leaves Noise message 1 untouched.
+Tests prove old↔old and both mixed upgrade orders, plus stale legacy-phone displacement.
+
+The migration now has a safe order but is **not deployed**: install the compatible relay first,
+then upgrade endpoints. New endpoint builds cannot be used against the currently deployed old
+relay because it does not understand the extra role byte. Live stale-reconnect and network-flap
+evidence remain part of the release gate.
 
 ### Live-state caveats
 
@@ -167,7 +174,9 @@ server migration work in [backlog.md](backlog.md#p0--correctness-and-release-saf
    counters matching the invariant.
 2. **M2 flap resilience:** repeated cellular ↔ Wi-Fi/hotspot changes with no growing session
    count, thread count, or relay-pair leak.
-3. **Relay migration:** a compatible, coordinated protocol rollout for the role byte.
+3. **Relay rollout:** deploy the compatible server first with explicit approval, then upgrade
+   endpoints and validate real stale reconnect / opposite-role splice before retiring legacy
+   inference.
 4. **File incident:** explain the logged-but-missing received file before calling phone → PC
    files reliable at all sizes.
 5. **Avatar proof:** capture a real incoming Nagram XF notification carrying a contact icon.

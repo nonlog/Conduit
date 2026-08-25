@@ -17,11 +17,11 @@
    git log --oneline --decorate -8
    ```
 
-3. Do **not** resume the local relay draft by deploying it.  It currently changes the relay
-   preamble but not either endpoint client.
-4. Screenshot → native Windows toast → Snipping Tool is now implemented and device-verified.
-   The next correctness task is a **compatible, coordinated relay role-byte migration**; do not
-   turn the existing server-only draft into a deployment.
+3. The compatible relay migration is implemented locally, but **production still runs the old
+   relay and the installed endpoints still use the old 47-byte preamble**. Do not install or
+   restart role-aware client builds before the compatible relay is deployed first.
+4. Screenshot → native Windows toast → Snipping Tool is implemented and device-verified. The
+   next relay step is deployment-gated; non-deployment correctness work can continue meanwhile.
 
 ## Documentation created in this pass
 
@@ -38,24 +38,15 @@ same authoritative state as the architecture/progress/backlog records.
 ## Repository state at handoff
 
 ```text
-HEAD:          02f0afe Mirror phone screenshots into Snipping Tool
-origin/master: 1c7e18c Send files from the share sheet, and stop toasting what the phone silenced
+protocol implementation: 86a2b86 Make relay role migration backward compatible
+screenshot implementation: 02f0afe Mirror phone screenshots into Snipping Tool
+origin/master:           1c7e18c Send files from the share sheet, and stop toasting what the phone silenced
 ```
 
-Expected working-tree changes:
-
-```text
-M  relay/src/main.rs                    # pre-existing local role-byte draft
-?? docs/architecture.md
-?? docs/development.md
-?? docs/progress.md
-?? docs/backlog.md
-?? docs/CONDUIT_HANDOFF.md
-```
-
-Local `master` now includes the tested persistence fix and screenshot implementation, neither of
-which has been pushed. A future push is outward-facing: obtain explicit approval unless it is
-requested again.
+Local `master` includes the tested persistence fix, screenshot implementation, and compatible
+relay migration. None has been pushed. After the documentation update, `git status --short`
+should be clean before the next task starts. A future push is outward-facing: obtain explicit
+approval unless it is requested again.
 
 Git identity is configured as:
 
@@ -122,9 +113,10 @@ See `docs/architecture.md` for full data flow and trust boundaries.
 
 ## Latest evidence
 
-- Android JVM tests: **15 passed, 0 failed**.
-- Windows daemon normal test run: **36 passed, 2 ignored, 0 failed**.
-- Local role-aware relay draft: **7 passed, 0 failed**.
+- Android JVM tests: **16 passed, 0 failed**.
+- Windows daemon normal test run: **37 passed, 2 ignored, 0 failed**.
+- Compatible relay migration: **9 passed, 0 failed**, including legacy↔legacy, both mixed
+  upgrade orders, explicit stale-role replacement, and legacy stale-phone replacement.
 - Last sampled daemon: about **9 threads**, **247 handles**, **24.1 MB working set**, about
   **276 minutes** uptime.
 - Earlier lifecycle observation: 14 completed sessions with `created == closed`; an active
@@ -154,7 +146,7 @@ See `docs/architecture.md` for full data flow and trust boundaries.
   device file.  Do not perform a screenshot and then wait through the short keyguard/bouncer
   window before operating it.
 
-## Relay failure and non-deployable local repair
+## Relay failure and compatible local migration
 
 ### Failure
 
@@ -170,9 +162,9 @@ initiators together.  A 32-byte Noise message 1 then arrives where the initiator
 80-byte message 2.  Android’s bounds hardening now reports a peer-protocol error rather than
 an internal slice exception.
 
-### Draft repair
+### Local migration implementation
 
-`relay/src/main.rs` is locally changed to require:
+New client builds send:
 
 ```text
 CDT1 + role byte + 43-character rendezvous ID
@@ -181,35 +173,33 @@ CDT1 + role byte + 43-character rendezvous ID
 ```
 
 The waiting-map key is `(rendezvous ID, role)` and a same-role reconnect displaces the old
-waiter.  Its regression test `a_peer_is_never_spliced_to_a_stale_copy_of_itself` is the key
-coverage.
+waiter. The compatible relay also accepts the deployed 47-byte form. Byte five is either an
+explicit role or the first base64url id byte; for a legacy connection it peeks for up to one
+second after the id. Immediate Noise bytes classify a phone/initiator, while a quiet connection
+is the desktop/responder. `peek` leaves the Noise bytes untouched.
 
 ### Critical deployment warning
 
-Android `Link.kt` and Windows `wire.rs::park` still send the old 47-byte preamble.  A new relay
-would immediately reject existing clients.  A changed client cannot work through the currently
-deployed relay.  Treat compatibility policy, both client writers/tests, relay change, and
-release sequencing as one atomic feature.  Do not merge/deploy the draft alone.
+Android `Link.kt` now builds an explicit `>` initiator preamble and Windows `wire.rs::park`
+builds an explicit `<` responder preamble. The compatible relay can pair those with each other
+or with legacy clients, and the local suite proves both upgrade orders. However the **currently
+deployed relay is still old** and cannot parse the extra byte. Therefore:
 
-The test called `the_two_roles_of_one_id_are_separate_slots` should be renamed/reworked if the
-draft proceeds: normal equal-ID opposite roles splice immediately, and its current setup uses
-different IDs.
+1. deploy the compatible relay first, with explicit approval;
+2. verify the still-old installed clients through it;
+3. then upgrade one endpoint, verify mixed-version operation, and upgrade the other; and
+4. only retire legacy inference after live M2/stale-reconnect evidence and old-client retirement.
 
-## Recommended next implementation: compatible relay role-byte migration
+The old misleading role-slot test was replaced by `opposite_roles_of_one_id_splice_immediately`.
+The two stale-waiter regressions are `a_peer_is_never_spliced_to_a_stale_copy_of_itself` and
+`a_legacy_phone_reconnect_displaces_its_stale_copy`.
 
-The reproduced stale-waiter failure needs the role-aware fix, but the rollout must remain
-interoperable while old endpoints and the deployed relay still exist. Treat these as one unit:
+## Recommended next non-deployment work
 
-1. Define a transition that allows the relay to distinguish initiator/responder without
-   immediately refusing every existing 47-byte client.
-2. Update Android `Link.kt` and Windows `wire.rs::park` together, with endpoint encoding tests.
-3. Tighten the relay regression suite around same-id/opposite-role pairing and stale same-role
-   replacement.
-4. Prove new ↔ compatible-relay operation locally and retain an explicit old-client path for the
-   rollout window.
-5. Only after client releases can reach the compatible relay should the legacy form be retired.
-
-Do not deploy or push merely because the migration tests pass locally.
+Until relay deployment is explicitly approved, continue correctness work that does not change
+the production protocol. The highest-value candidates are the logged-but-missing phone → PC file
+incident and endurance instrumentation/evidence. Do not install the newly built role-aware APK
+or restart the daemon from new source against the old production relay just for unrelated tests.
 
 ## Useful commands
 
@@ -226,7 +216,7 @@ cargo test -p conduit-relay
 # Check the test phone explicitly
 adb devices -l
 
-# Current diff, including the pre-existing relay draft
+# Current diff
 Set-Location D:\Workspace\Conduit
 git status --short
 git diff --check

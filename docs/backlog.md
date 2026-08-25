@@ -5,23 +5,28 @@
 
 ## P0 — correctness and release safety
 
-### 1. Finish the relay role-byte migration as one deployable change
+### 1. Roll out the compatible relay role-byte migration safely
 
-The local relay draft is a correctness repair, not a release.  Current endpoints write the
-47-byte preamble `CDT1 + rendezvous ID`; the draft relay expects the incompatible 48-byte
-`CDT1 + role + rendezvous ID` form.
+Commit `86a2b86` completes the local protocol work. The relay accepts both the deployed 47-byte
+`CDT1 + rendezvous ID` form and the new 48-byte `CDT1 + role + rendezvous ID` form. Legacy peers
+are classified without consuming Noise bytes, Android now emits `>` (initiator), Windows emits
+`<` (responder), and the relay suite covers old↔old plus both mixed upgrade orders. The stale
+same-role bug is covered for both explicit and legacy phone reconnects.
 
-Required work:
+Remaining rollout work:
 
-1. Decide compatibility/version-transition behaviour before modifying the deployment.
-2. Update Android `Link.kt` to send the initiator role and Windows `wire.rs::park` to send the
-   responder role, with endpoint tests where practical.
-3. Tighten/review relay tests, especially the misleading “two roles of one id” case.
-4. Stage coordinated client and relay rollout so neither side silently strands existing peers.
-5. Validate a stale same-side reconnect on a real relay and prove normal opposite-role splice.
-6. Only then deploy the relay with explicit approval.
+1. With explicit approval, deploy the **compatible relay first** while installed endpoints are
+   still using the old 47-byte form.
+2. Verify those old endpoints continue to connect through the new server.
+3. Upgrade one endpoint and prove a mixed old/new session, then upgrade the other endpoint and
+   prove new/new operation.
+4. Reproduce a stale same-side reconnect on the real relay and prove it displaces rather than
+   self-splices; also prove the normal opposite-role splice.
+5. Fold the result into M2 cellular ↔ Wi-Fi/hotspot flap evidence.
+6. Retire the one-second legacy inference path only after old clients are no longer expected.
 
-**Do not deploy the server-only draft.** It will reject current clients immediately.
+**Do not install/restart the role-aware client builds against the currently deployed old relay.**
+It does not understand the extra role byte. No production rollout has been performed yet.
 
 ### 2. Establish endurance evidence
 

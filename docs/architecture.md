@@ -183,15 +183,16 @@ new peers correct user-facing semantics.
 - **Persistence:** identity, settings, peer metadata, and history are app-private files.
   History uses a bounded whole-file rewrite; it is intentionally not yet an atomic rename.
 
-## Relay preamble: deployed contract and migration draft
+## Relay preamble: deployed contract and compatible migration
 
-The currently deployed client-compatible preamble is 47 bytes:
+The currently deployed relay and the endpoints installed on the test devices still speak the
+47-byte legacy preamble:
 
 ```text
 CDT1 + 43-character base64url desktop rendezvous ID
 ```
 
-A local, uncommitted relay repair changes that to 48 bytes:
+Commit `86a2b86` implements the role-aware 48-byte form in both endpoint writers:
 
 ```text
 CDT1 + role byte + 43-character rendezvous ID
@@ -200,13 +201,25 @@ CDT1 + role byte + 43-character rendezvous ID
 ```
 
 The role byte prevents a reconnecting phone from being spliced to its own stale parked
-initiator socket.  The draft relay keys waiters by `(rendezvous ID, role)` and replaces a
-same-role stale waiter.  It is covered by local relay tests, but Android `Link.kt` and Windows
-`wire.rs` still write the 47-byte version.  Consequently:
+initiator socket. The migration relay keys waiters by `(rendezvous ID, role)` and replaces a
+same-role stale waiter. To permit a server-first rollout, it also accepts the 47-byte form:
+byte five is unambiguously either an explicit role (`>` / `<`) or the first base64url id byte.
+For a legacy peer only, the relay then peeks for up to one second after the id. An old phone
+immediately starts Noise message 1 and is therefore an initiator; an old desktop stays silent
+until a partner speaks and is therefore a responder. `peek` consumes nothing, so the first
+Noise byte remains in the socket.
 
-> **Do not deploy the role-aware relay by itself.** It will reject existing clients, and a
-> changed client cannot interoperate with the deployed relay.  Client changes, a compatibility
-> strategy, and a coordinated deployment are one unit of work.
+This makes all four combinations interoperable **on the compatible relay**: old↔old,
+old-phone↔new-desktop, new-phone↔old-desktop, and new↔new. The safe rollout order is therefore:
+
+1. deploy the compatible relay while all installed clients remain on 47 bytes;
+2. upgrade the Windows and Android endpoints, which then send explicit roles; and
+3. after the legacy population is retired and live flap/stale-waiter evidence is captured,
+   remove the one-second legacy inference path in a later cleanup.
+
+> **Do not install/restart the role-aware clients before the compatible relay is deployed.**
+> The currently deployed old relay does not understand the extra role byte. No production
+> deployment has been performed yet.
 
 ## Related documents
 

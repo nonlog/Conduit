@@ -124,10 +124,12 @@ Set-Location D:\Workspace\Conduit
 cargo test -p conduit-relay
 ```
 
-The relay test result validates the source currently on disk.  It does **not** authorise a
-deployment: the present working tree contains an uncommitted 48-byte role-aware preamble
-change while both endpoint clients still send 47-byte preambles.  See
-[architecture.md](architecture.md#relay-preamble-deployed-contract-and-migration-draft).
+The relay test result validates the source currently on disk. It does **not** authorise a
+deployment. Commit `86a2b86` contains the compatible migration: the relay accepts both deployed
+47-byte clients and explicit-role 48-byte clients, while Android and Windows now build the
+explicit-role form. The currently deployed relay is still the old implementation, so do not
+install/restart those new clients against production until the compatible relay has been rolled
+out first. See [architecture.md](architecture.md#relay-preamble-deployed-contract-and-compatible-migration).
 
 ### Whole workspace formatting/checks
 
@@ -244,9 +246,10 @@ Confirm current timestamps and filesystem state after the transfer has had time 
 
 - Do not push merely because local tests pass.  A push is outward-facing and needs explicit
   approval unless it was explicitly requested in the same context.
-- Keep the local relay role-byte draft uncommitted until endpoint compatibility and deployment
-  sequencing are designed.  The current state is a useful regression-testbed, not a release
-  candidate.
+- The relay migration is committed locally but not deployed. Preserve its server-first rollout
+  order: compatible relay first, then explicit-role endpoints, then eventual removal of legacy
+  inference after live evidence. Do not install the role-aware endpoints while production still
+  runs the old relay.
 - Keep commits narrow: protocol revisions must include both endpoint implementations, relay
   compatibility tests, and an explicit migration plan; a relay-only patch is incorrect.
 
