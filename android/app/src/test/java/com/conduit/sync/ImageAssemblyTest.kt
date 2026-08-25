@@ -23,6 +23,7 @@ class ImageAssemblyTest {
         chunk: Int = chunkSize,
         count: Int = (total + chunk - 1) / chunk,
         photo: Boolean = false,
+        screenshot: Boolean = false,
         headerId: ByteString = id,
     ): ClipImageHeader = ClipImageHeader.newBuilder()
         .setMime("image/png")
@@ -31,6 +32,7 @@ class ImageAssemblyTest {
         .setChunkCount(count)
         .setHeaderId(headerId)
         .setPhoto(photo)
+        .setScreenshot(screenshot)
         .build()
 
     private fun chunk(index: Int, data: ByteArray, headerId: ByteString = id): ClipImageChunk =
@@ -105,12 +107,17 @@ class ImageAssemblyTest {
     }
 
     @Test
-    fun `the photo flag survives the transfer`() {
-        // It decides whether the image lands on the clipboard or in the gallery, so
-        // losing it would silently overwrite whatever the user had copied.
+    fun `the capture flags survive the transfer`() {
+        // They decide whether the image lands on the clipboard or becomes a capture toast,
+        // so losing either can silently overwrite whatever the user had copied.
         val assembly = Images.Assembly.begin(header(4, photo = true))
         assertArrayEquals(byteArrayOf(1, 2, 3, 4), assembly.push(chunk(0, byteArrayOf(1, 2, 3, 4))))
         org.junit.Assert.assertTrue(assembly.photo)
         org.junit.Assert.assertFalse(Images.Assembly.begin(header(4)).photo)
+
+        val screenshot = Images.Assembly.begin(header(4, photo = true, screenshot = true))
+        org.junit.Assert.assertTrue(screenshot.photo)
+        org.junit.Assert.assertTrue(screenshot.screenshot)
+        org.junit.Assert.assertFalse(Images.Assembly.begin(header(4)).screenshot)
     }
 }

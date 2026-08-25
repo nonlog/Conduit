@@ -74,9 +74,14 @@ message ClipImageHeader {
   string file_name    = 5;
   uint64 timestamp_ms = 6;
   bytes  header_id    = 7;  // hash of this header; chunks reference it
-  // A new camera photo takes this same chunked path, but must not hijack the clipboard:
-  // it becomes a toast hero image instead. Downscaled by the sender.
+  // Non-clipboard image compatibility marker. A camera photo sets this, and a screenshot
+  // deliberately sets it too so an older desktop that does not know field 9 still treats
+  // the image as a toast rather than silently overwriting the clipboard.
   bool   photo        = 8;
+  // Explicit screenshot semantics for peers that understand them. `photo=true` remains set
+  // alongside this field for backward-safe behaviour; this flag only changes the toast's
+  // meaning/text and lets future capture-specific behaviour stay unambiguous.
+  bool   screenshot   = 9;
 }
 
 message ClipImageChunk {

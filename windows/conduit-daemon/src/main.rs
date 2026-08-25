@@ -262,7 +262,7 @@ async fn serve(
                     }
                     Ok(clip::Clip::Image(png)) => {
                         info!(bytes = png.len(), "clip image out");
-                        let frames = image::send(&mut session, &mut stream, &png, false).await?;
+                        let frames = image::send(&mut session, &mut stream, &png, false, false).await?;
                         metrics.frames_out.fetch_add(frames, Ordering::Relaxed);
                     }
                     // The ring overwrote clips faster than this session drained them.
@@ -305,6 +305,7 @@ async fn serve(
                             chunks = header.chunk_count,
                             mime = %header.mime,
                             photo = header.photo,
+                            screenshot = header.screenshot,
                             "image in, receiving"
                         );
                         incoming = Some(assembly);
@@ -325,26 +326,30 @@ async fn serve(
                     Ok(None) => {}
                     Ok(Some(png)) => {
                         let photo = assembly.is_photo();
+                        let screenshot = assembly.is_screenshot();
                         incoming = None;
-                        info!(bytes = png.len(), photo, "image complete");
-                        if photo {
-                            // Never the clipboard. A photo is not something the user
-                            // copied, so overwriting their clipboard with one would be a
-                            // bug they cannot undo. It becomes a toast carrying the
-                            // picture instead, and clicking that hands the file to
-                            // Snipping Tool — the same gesture as Win+Shift+S, which is
-                            // where a picture that just appeared belongs.
+                        info!(bytes = png.len(), photo, screenshot, "image complete");
+                        if photo || screenshot {
+                            // Never the clipboard. Camera photos and screenshots are capture
+                            // events, not copy events. A screenshot also sets photo=true for
+                            // backward safety, while the explicit bit selects the right toast.
                             match toasts {
                                 Some(toasts) => {
-                                    match tokio::task::spawn_blocking(move || stage_photo(&png))
+                                    match tokio::task::spawn_blocking(move || stage_capture(&png))
                                         .await
                                     {
-                                        Ok(Ok(path)) => toasts.post(toast::Cmd::Photo { path }),
-                                        Ok(Err(e)) => warn!(error = %e, "could not stage the photo"),
-                                        Err(e) => warn!(error = %e, "photo staging task failed"),
+                                        Ok(Ok(path)) => {
+                                            if screenshot {
+                                                toasts.post(toast::Cmd::Screenshot { path });
+                                            } else {
+                                                toasts.post(toast::Cmd::Photo { path });
+                                            }
+                                        }
+                                        Ok(Err(e)) => warn!(error = %e, "could not stage the capture"),
+                                        Err(e) => warn!(error = %e, "capture staging task failed"),
                                     }
                                 }
-                                None => info!("photo dropped, toasts are unavailable"),
+                                None => info!("capture dropped, toasts are unavailable"),
                             }
                         } else {
                             // Decode, encode and two clipboard opens: too slow for a
@@ -474,19 +479,23 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Writes the newest photo where the shell and Snipping Tool can both read it.
+/// Writes the newest phone capture where the shell and Snipping Tool can both read it.
 ///
-/// One file, overwritten each time, which is the same bound as the single photo toast
+/// One file, overwritten each time, which is the same bound as the single capture toast
 /// that names it. No transcode: the toast image loader and Snipping Tool each read JPEG
 /// happily, the phone already downscaled it, and re-encoding a photograph as PNG would
 /// multiply its size for nothing — local toast images are capped at 3 MB.
-fn stage_photo(bytes: &[u8]) -> Result<PathBuf> {
-    let name = if bytes.starts_with(b"\x89PNG") {
-        "photo.png"
+fn stage_capture(bytes: &[u8]) -> Result<PathBuf> {
+    let (name, stale) = if bytes.starts_with(b"\x89PNG") {
+        ("capture.png", "capture.jpg")
     } else {
-        "photo.jpg"
+        ("capture.jpg", "capture.png")
     };
-    let path = config_dir()?.join(name);
+    let dir = config_dir()?;
+    // Switching between a JPEG camera photo and a PNG screenshot must not leave a second
+    // staged capture behind. Best effort: the old toast/token is replaced in the same slot.
+    let _ = std::fs::remove_file(dir.join(stale));
+    let path = dir.join(name);
     std::fs::write(&path, bytes).with_context(|| format!("writing {}", path.display()))?;
     Ok(path)
 }

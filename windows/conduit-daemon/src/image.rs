@@ -204,6 +204,7 @@ pub async fn send<W>(
     w: &mut W,
     png: &[u8],
     photo: bool,
+    screenshot: bool,
 ) -> Result<u64>
 where
     W: tokio::io::AsyncWrite + Unpin,
@@ -226,6 +227,7 @@ where
         timestamp_ms: crate::now_ms(),
         header_id: id.clone(),
         photo,
+        screenshot,
     };
     session
         .send(w, pb::Kind::ClipImageHeader, &header.encode_to_vec())
@@ -257,6 +259,7 @@ where
 pub struct Assembly {
     id: Vec<u8>,
     photo: bool,
+    screenshot: bool,
     expect: u32,
     next: u32,
     total: usize,
@@ -291,6 +294,7 @@ impl Assembly {
         Ok(Self {
             id: header.header_id.clone(),
             photo: header.photo,
+            screenshot: header.screenshot,
             expect,
             next: 0,
             total,
@@ -332,6 +336,13 @@ impl Assembly {
     /// Whether this was announced as a camera photo rather than a clipboard copy.
     pub fn is_photo(&self) -> bool {
         self.photo
+    }
+
+    /// Explicit screenshot semantics. New phone clients also set `photo=true` on a
+    /// screenshot so old desktops keep it out of the clipboard; this field is what lets
+    /// a new desktop label and handle the capture correctly.
+    pub fn is_screenshot(&self) -> bool {
+        self.screenshot
     }
 }
 
@@ -420,6 +431,7 @@ mod tests {
             timestamp_ms: 0,
             header_id: vec![7; 16],
             photo: false,
+            screenshot: false,
         }
     }
 
@@ -443,6 +455,21 @@ mod tests {
             out = rx.push(&chunk(index as u32, part.to_vec())).expect("valid chunk");
         }
         assert_eq!(out.as_deref(), Some(&payload[..]), "reassembly changed the bytes");
+    }
+
+    #[test]
+    fn capture_flags_survive_header_validation() {
+        let mut photo = header(4, CHUNK, 1);
+        photo.photo = true;
+        assert!(Assembly::begin(&photo).expect("photo header").is_photo());
+
+        let mut screenshot = header(4, CHUNK, 1);
+        // Compatibility marker and explicit semantics travel together.
+        screenshot.photo = true;
+        screenshot.screenshot = true;
+        let rx = Assembly::begin(&screenshot).expect("screenshot header");
+        assert!(rx.is_photo());
+        assert!(rx.is_screenshot());
     }
 
     #[test]

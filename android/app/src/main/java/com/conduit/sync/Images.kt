@@ -104,7 +104,12 @@ object Images {
      * and quietly drop most of a large image; the caller is already the sender thread, so
      * the frames are written straight out, in order, as one unit of work.
      */
-    fun send(session: WireSession, payload: Payload, photo: Boolean) {
+    fun send(
+        session: WireSession,
+        payload: Payload,
+        photo: Boolean,
+        screenshot: Boolean = false,
+    ) {
         val bytes = payload.bytes
         val id = ByteString.copyFrom(MessageDigest.getInstance("SHA-256").digest(bytes), 0, 16)
         val count = (bytes.size + CHUNK - 1) / CHUNK
@@ -117,6 +122,7 @@ object Images {
             .setTimestampMs(System.currentTimeMillis())
             .setHeaderId(id)
             .setPhoto(photo)
+            .setScreenshot(screenshot)
             .build()
         session.send(Kind.CLIP_IMAGE_HEADER, header.toByteArray())
 
@@ -131,7 +137,11 @@ object Images {
                 .build()
             session.send(Kind.CLIP_IMAGE_CHUNK, chunk.toByteArray())
         }
-        Log.i(TAG, "sent ${bytes.size} B of ${payload.mime} as $count chunks, photo=$photo")
+        Log.i(
+            TAG,
+            "sent ${bytes.size} B of ${payload.mime} as $count chunks, " +
+                "photo=$photo screenshot=$screenshot",
+        )
     }
 
     /**
@@ -164,8 +174,10 @@ object Images {
      */
     class Assembly private constructor(
         private val id: ByteString,
-        /** Announced as a camera photo rather than a clipboard copy. */
+        /** Legacy non-clipboard marker; true for camera photos and compatibility screenshots. */
         val photo: Boolean,
+        /** Explicit screenshot marker. It takes precedence over [photo] semantically. */
+        val screenshot: Boolean,
         private val expect: Int,
         private val total: Int,
     ) {
@@ -198,7 +210,7 @@ object Images {
                 require(header.chunkCount == expect) {
                     "header claims ${header.chunkCount} chunks, $total B in $chunk B needs $expect"
                 }
-                return Assembly(header.headerId, header.photo, expect, total)
+                return Assembly(header.headerId, header.photo, header.screenshot, expect, total)
             }
         }
     }

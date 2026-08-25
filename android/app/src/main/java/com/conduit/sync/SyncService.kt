@@ -85,6 +85,7 @@ class SyncService : Service() {
     private lateinit var link: Link
     private lateinit var discovery: Discovery
     private lateinit var photos: Photos
+    private lateinit var screenshots: Screenshots
     private lateinit var clipboard: ClipboardManager
     private lateinit var connectivity: ConnectivityManager
     private val main = Handler(Looper.getMainLooper())
@@ -188,7 +189,8 @@ class SyncService : Service() {
 
                 override fun onText(text: String) = onRemoteText(text)
 
-                override fun onImage(png: ByteArray, photo: Boolean) = onRemoteImage(png, photo)
+                override fun onImage(png: ByteArray, photo: Boolean, screenshot: Boolean) =
+                    onRemoteImage(png, photo, screenshot)
 
                 override fun onPeer(deviceId: String) = rememberPeer(deviceId)
 
@@ -209,6 +211,7 @@ class SyncService : Service() {
             onEmpty = { dialRelay() },
         )
         photos = Photos(this, link).apply { start() }
+        screenshots = Screenshots(this, link).apply { start() }
         activeLink = link
 
         clipboard.addPrimaryClipChangedListener(clipListener)
@@ -262,6 +265,7 @@ class SyncService : Service() {
         activeLink = null
         clipboard.removePrimaryClipChangedListener(clipListener)
         connectivity.unregisterNetworkCallback(network)
+        screenshots.stop()
         photos.stop()
         discovery.stop()
         link.close()
@@ -476,13 +480,12 @@ class SyncService : Service() {
         link.sendImage("clip image") { Images.fromClipboard(this, clip) }
     }
 
-    private fun onRemoteImage(png: ByteArray, photo: Boolean) {
-        if (photo) {
-            // photo=true only ever travels the other way, phone to desktop, where it
-            // becomes a Windows toast. Arriving here means the desktop sent one, which
-            // nothing does; dropping it is the safe reading either way, because a photo
-            // is not a clipboard event and must not overwrite what the user copied.
-            Log.i(TAG, "photo in: ${png.size} B, dropped; the desktop does not send these")
+    private fun onRemoteImage(png: ByteArray, photo: Boolean, screenshot: Boolean) {
+        if (photo || screenshot) {
+            // Capture images only ever travel phone -> desktop. The compatibility photo bit
+            // is also set on screenshots, so either marker means "never touch clipboard".
+            val kind = if (screenshot) "screenshot" else "photo"
+            Log.i(TAG, "$kind in: ${png.size} B, dropped; the desktop does not send captures")
             return
         }
         Log.i(TAG, "clip image in: ${png.size} B")

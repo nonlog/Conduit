@@ -40,11 +40,11 @@ const AUMID: &str = "Conduit.Desktop";
 /// phone's tag alone identifies a notification within it.
 const GROUP: &str = "conduit";
 
-/// ponytail: one photo toast at a time, so the tag is fixed rather than derived. That
+/// ponytail: one phone-capture toast at a time, so the tag is fixed rather than derived. That
 /// bounds the staged file and the outstanding broker token at one each, which is the
-/// property this project actually cares about; a burst of photos costs you the earlier
-/// toasts. Give each photo a hashed tag and its own file if that ever matters.
-const PHOTO_TAG: &str = "photo";
+/// property this project actually cares about; a burst of photos/screenshots costs you the
+/// earlier toast. The value stays `photo` for compatibility with an already-visible old toast.
+const CAPTURE_TAG: &str = "photo";
 
 /// How many contact avatars are kept on disk.
 ///
@@ -156,6 +156,11 @@ pub enum Cmd {
     /// A photo just taken on the phone, already staged at [`path`]. Shown with the
     /// picture in it; clicking hands the file to Snipping Tool.
     Photo {
+        path: PathBuf,
+    },
+    /// A screenshot just taken on the phone. Same bounded capture slot as a camera photo,
+    /// but its user-facing semantics must say screenshot rather than photo.
+    Screenshot {
         path: PathBuf,
     },
     /// A file the phone shared, already written to Downloads. Clicking opens the folder.
@@ -323,8 +328,8 @@ impl Drop for Notifier {
 }
 
 fn pump(notifier: &ToastNotifier, cache: &Cache, rx: mpsc::Receiver<Cmd>) {
-    // The broker token for the photo currently on screen. At most one is ever
-    // outstanding, because a new photo replaces the toast that named the old one — so
+    // The broker token for the phone capture currently on screen. At most one is ever
+    // outstanding, because a new capture replaces the toast that named the old one — so
     // this is a slot, not a collection, and it cannot grow over a long run.
     let mut staged: Option<String> = None;
     while let Ok(cmd) = rx.recv() {
@@ -350,7 +355,8 @@ fn pump(notifier: &ToastNotifier, cache: &Cache, rx: mpsc::Receiver<Cmd>) {
             }
             Cmd::Update { key, title, body } => update(notifier, &key, &title, &body),
             Cmd::Hide { key } => hide(&key),
-            Cmd::Photo { path } => show_photo(notifier, &path, &mut staged),
+            Cmd::Photo { path } => show_capture(notifier, &path, &mut staged, false),
+            Cmd::Screenshot { path } => show_capture(notifier, &path, &mut staged, true),
             Cmd::File { path } => show_file(notifier, &path),
         };
         if let Err(e) = result {
@@ -418,39 +424,67 @@ fn show_xml(app: &str, logo: Option<&Path>) -> String {
     )
 }
 
-/// The photo toast: the picture itself, and a click that opens it in Snipping Tool.
+/// A phone-capture toast: the picture itself, and a click that opens it in Snipping Tool.
 ///
-/// No bound data and no [`NotificationData`], because nothing ever updates a photo — a
+/// No bound data and no [`NotificationData`], because nothing ever updates a capture — a
 /// newer one replaces it wholesale. `activationType="protocol"` is what keeps this cheap:
 /// Windows resolves the URI itself, so there is no COM activator to register and no
 /// callback for the daemon to stay alive for.
-fn show_photo(notifier: &ToastNotifier, path: &Path, staged: &mut Option<String>) -> Result<()> {
+fn show_capture(
+    notifier: &ToastNotifier,
+    path: &Path,
+    staged: &mut Option<String>,
+    screenshot: bool,
+) -> Result<()> {
     let token = share(path)?;
     let xml = XmlDocument::new()?;
-    xml.LoadXml(&HSTRING::from(photo_xml(&token, path)))?;
+    let markup = if screenshot {
+        screenshot_xml(&token, path)
+    } else {
+        photo_xml(&token, path)
+    };
+    xml.LoadXml(&HSTRING::from(markup))?;
 
     let toast = ToastNotification::CreateToastNotification(&xml)?;
-    toast.SetTag(&HSTRING::from(PHOTO_TAG))?;
+    toast.SetTag(&HSTRING::from(CAPTURE_TAG))?;
     toast.SetGroup(&HSTRING::from(GROUP))?;
     notifier.Show(&toast)?;
     // Only now is the previous one certainly off screen, so only now is its token dead.
     if let Some(old) = staged.replace(token) {
         release(&old);
     }
-    info!(path = %path.display(), "photo toast shown");
+    info!(path = %path.display(), screenshot, "capture toast shown");
     Ok(())
 }
 
-/// Split out from [`show_photo`] so the markup can be checked without a notifier, a
+/// Split out from [`show_capture`] so the markup can be checked without a notifier, a
 /// staged file or a broker token.
 fn photo_xml(token: &str, path: &Path) -> String {
+    capture_xml(
+        token,
+        path,
+        "New photo",
+        "Select to open it in Snipping Tool.",
+    )
+}
+
+fn screenshot_xml(token: &str, path: &Path) -> String {
+    capture_xml(
+        token,
+        path,
+        "New screenshot",
+        "Select to open it in Snipping Tool.",
+    )
+}
+
+fn capture_xml(token: &str, path: &Path, title: &str, body: &str) -> String {
     format!(
         r#"<toast activationType="protocol" launch="{launch}">
              <visual>
                <binding template="ToastGeneric">
                  <image placement="hero" src="{hero}"/>
-                 <text>New photo</text>
-                 <text>Select to open it in Snipping Tool.</text>
+                 <text>{title}</text>
+                 <text>{body}</text>
                  <text placement="attribution">Conduit</text>
                </binding>
              </visual>
@@ -459,10 +493,12 @@ fn photo_xml(token: &str, path: &Path) -> String {
         // here is only turning the two literal query separators into entities.
         launch = escape(&snip_url(token)),
         hero = file_url(path),
+        title = escape(title),
+        body = escape(body),
     )
 }
 
-/// Registers the staged photo with the shared-storage broker and returns the token that
+/// Registers the staged capture with the shared-storage broker and returns the token that
 /// names it.
 ///
 /// This is the whole reason a plain file path will not do. Snipping Tool is a packaged
@@ -478,7 +514,7 @@ fn share(path: &Path) -> Result<String> {
     ))?)
     .with_context(|| format!("opening {} as a StorageFile", path.display()))?;
     Ok(SharedStorageAccessManager::AddFile(&file)
-        .context("adding the photo to shared storage")?
+        .context("adding the capture to shared storage")?
         .to_string())
 }
 
@@ -790,6 +826,22 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn screenshot_markup_keeps_capture_semantics_and_the_same_snipping_handoff() -> Result<()> {
+        crate::image::ensure_mta();
+        let token = "capture-token";
+        let path = Path::new(r"C:\Users\a b\Conduit\capture.png");
+        let xml = XmlDocument::new()?;
+        xml.LoadXml(&HSTRING::from(screenshot_xml(token, path)))?;
+        let root = xml.DocumentElement()?;
+
+        assert_eq!(root.GetAttribute(&HSTRING::from("launch"))?.to_string(), snip_url(token));
+        let texts = xml.GetElementsByTagName(&HSTRING::from("text"))?;
+        assert_eq!(texts.GetAt(0)?.InnerText()?.to_string(), "New screenshot");
+        assert_eq!(texts.GetAt(2)?.InnerText()?.to_string(), "Conduit");
+        Ok(())
+    }
+
     /// A 32bpp `BI_RGB` DIB of one colour, so the ignored test below has a real image to
     /// stage without a fixture file. 16:9, because a hero image is letterboxed otherwise.
     #[cfg(test)]
@@ -835,7 +887,7 @@ mod tests {
         notifier.post(Cmd::Photo { path });
         std::thread::sleep(std::time::Duration::from_millis(2000));
         assert!(
-            in_history(PHOTO_TAG)?,
+            in_history(CAPTURE_TAG)?,
             "the photo toast never reached Action Center"
         );
         println!("toast is up — click it now");

@@ -68,10 +68,10 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
         fun onText(text: String)
 
         /**
-         * A complete image. [photo] distinguishes a camera photo, which must not touch
-         * the clipboard, from a clipboard copy, which must.
+         * A complete image. [photo] is the backward-compatible non-clipboard marker;
+         * [screenshot] distinguishes a screenshot from a camera photo on new peers.
          */
-        fun onImage(png: ByteArray, photo: Boolean)
+        fun onImage(png: ByteArray, photo: Boolean, screenshot: Boolean)
 
         /**
          * The peer's stable id, on every completed handshake. The service persists it
@@ -134,7 +134,12 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
      * there. Handing over a lambda keeps that work on the one thread already dedicated
      * to outbound frames, and keeps this class free of Android's content APIs.
      */
-    fun sendImage(what: String, photo: Boolean = false, load: () -> Images.Payload?) =
+    fun sendImage(
+        what: String,
+        photo: Boolean = false,
+        screenshot: Boolean = false,
+        load: () -> Images.Payload?,
+    ) =
         sender.execute {
             val live = session
             if (live == null) {
@@ -146,7 +151,7 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
                 .getOrNull()
             if (payload == null || payload.bytes.isEmpty()) return@execute
             try {
-                Images.send(live, payload, photo)
+                Images.send(live, payload, photo, screenshot)
             } catch (e: Exception) {
                 // Same rule as a failed text write: the socket is gone, so let the reader
                 // notice and unwind rather than half-finishing the transfer.
@@ -347,8 +352,12 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
                     .getOrNull()
                     ?.let { png ->
                         incoming = null
-                        Log.i(TAG, "image in: ${png.size} B, photo=${assembly.photo}")
-                        events.onImage(png, assembly.photo)
+                        Log.i(
+                            TAG,
+                            "image in: ${png.size} B, photo=${assembly.photo} " +
+                                "screenshot=${assembly.screenshot}",
+                        )
+                        events.onImage(png, assembly.photo, assembly.screenshot)
                     }
             }
 
