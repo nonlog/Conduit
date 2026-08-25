@@ -203,21 +203,38 @@ class NoiseXX(
         for (token in PATTERNS[messageIndex]) {
             when (token) {
                 "e" -> {
-                    val ephemeral = message.copyOfRange(off, off + DHLEN)
+                    val ephemeral = message.at(off, DHLEN)
                     off += DHLEN
                     re = ephemeral
                     mixHash(ephemeral)
                 }
                 "s" -> {
                     val len = DHLEN + if (cipher.hasKey()) TAGLEN else 0
-                    remoteStatic = decryptAndHash(message.copyOfRange(off, off + len))
+                    remoteStatic = decryptAndHash(message.at(off, len))
                     off += len
                 }
                 else -> mixKey(diffieHellman(token))
             }
         }
         messageIndex++
-        return decryptAndHash(message.copyOfRange(off, message.size))
+        return decryptAndHash(message.at(off, message.size - off))
+    }
+
+    /**
+     * [len] bytes at [off], or a protocol error that says what was short.
+     *
+     * A handshake message is bytes off the network, so one that is too short is untrusted
+     * input, not an internal bug — and `copyOfRange` would raise IndexOutOfBoundsException,
+     * which reads in a log like a defect in this class rather than a peer sending nonsense.
+     *
+     * It happens for real: a relay that splices two *initiators* to each other hands each one
+     * the other's 32-byte first message where an 80-byte second one was due.
+     */
+    private fun ByteArray.at(off: Int, len: Int): ByteArray {
+        require(off >= 0 && len >= 0 && off + len <= size) {
+            "handshake message $messageIndex is $size B, needs ${off + len} B"
+        }
+        return copyOfRange(off, off + len)
     }
 
     fun intoTransport(): NoiseSession {
