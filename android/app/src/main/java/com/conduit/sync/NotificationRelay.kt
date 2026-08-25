@@ -1,7 +1,11 @@
 package com.conduit.sync
 
 import android.app.Notification
+import android.app.NotificationManager
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.drawable.Drawable
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
@@ -9,12 +13,14 @@ import com.conduit.sync.proto.Kind
 import com.conduit.sync.proto.NotifNew
 import com.conduit.sync.proto.NotifRemove
 import com.conduit.sync.proto.NotifUpdate
+import com.google.protobuf.ByteString
+import java.io.ByteArrayOutputStream
 
 private const val TAG = "conduit.notif"
 
 /** A toast shows two short lines; anything past this is padding nobody reads. */
-private const val MAX_TITLE = 200
-private const val MAX_TEXT = 2_000
+internal const val NOTIF_MAX_TITLE = 200
+internal const val NOTIF_MAX_TEXT = 2_000
 
 /**
  * Keys we have already posted, so a repost becomes an update rather than a second toast.
@@ -23,6 +29,34 @@ private const val MAX_TEXT = 2_000
  * 256 is far past any real shade.
  */
 private const val REMEMBERED_KEYS = 256
+
+/** Packages whose icon has already gone across. One per installed app that ever notifies. */
+private const val REMEMBERED_PACKAGES = 64
+
+/**
+ * Windows draws `appLogoOverride` at 48 px on a standard-DPI toast, so 96 is already a
+ * generous source and the bytes are the thing being economised.
+ */
+private const val ICON_PX = 96
+
+/**
+ * Per-icon byte ceiling, and the reason it is not a comfort setting: [WireSession.send]
+ * *throws* on a payload past [MAX_PLAINTEXT], and [Link.send] turns any throw into a
+ * teardown. Two of these plus the text fields have to leave that ceiling untroubled, or a
+ * single fat avatar ends a session that is also carrying the clipboard. An icon over the
+ * cap is dropped instead.
+ */
+internal const val ICON_MAX_BYTES = 24_000
+
+/**
+ * What a mirrored notification says when [Settings.hideNotificationContent] is on.
+ *
+ * Deliberately not Android's own "Sensitive notification content", which is the string the
+ * platform substitutes when it decides a listener may not read a notification at all. Those
+ * two look identical on a toast and have completely different fixes — one is a switch in this
+ * app, the other is an appop — so they must not read the same.
+ */
+private const val HIDDEN_TITLE = "Notification hidden by Conduit"
 
 /**
  * Mirrors the shade to the desktop.
@@ -43,7 +77,24 @@ class NotificationRelay : NotificationListenerService() {
         override fun removeEldestEntry(eldest: Map.Entry<String, Boolean>) = size > REMEMBERED_KEYS
     }
 
+    /**
+     * Packages whose app icon the desktop already has on disk, so it is sent once instead
+     * of stapled to every notification — which for a day of chat is megabytes of the same
+     * 8 kB PNG over a cellular relay.
+     *
+     * Cleared with [posted] when the listener is rebound, which doubles as the repair path:
+     * if the desktop ever loses its icon cache, toggling notification access refills it.
+     */
+    private val iconSent = object : LinkedHashMap<String, Boolean>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: Map.Entry<String, Boolean>) =
+            size > REMEMBERED_PACKAGES
+    }
+
     override fun onListenerConnected() {
+        // The system binds this on its own schedule and can do so before either the activity
+        // or the service has run, so it loads the settings it reads rather than assuming
+        // someone else already did. Idempotent.
+        Settings.load(this)
         // Logged because "notifications do not work" is almost always this never firing.
         Log.i(TAG, "listener connected")
     }
@@ -51,6 +102,7 @@ class NotificationRelay : NotificationListenerService() {
     override fun onListenerDisconnected() {
         Log.w(TAG, "listener disconnected")
         posted.clear()
+        iconSent.clear()
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
@@ -58,18 +110,27 @@ class NotificationRelay : NotificationListenerService() {
         if (!worthMirroring(sbn)) return
 
         val notification = sbn.notification
-        val title = notification.extras.text(Notification.EXTRA_TITLE).take(MAX_TITLE)
+        val hide = Settings.hideNotificationContent
+        val title = notification.extras.text(Notification.EXTRA_TITLE).take(NOTIF_MAX_TITLE)
         val body = notification.extras.text(Notification.EXTRA_TEXT)
             .ifEmpty { notification.extras.text(Notification.EXTRA_BIG_TEXT) }
-            .take(MAX_TEXT)
+            .take(NOTIF_MAX_TEXT)
         // Nothing to render. A media-session or progress-only notification lands here.
         if (title.isEmpty() && body.isEmpty()) return
+
+        // Redaction is applied here rather than by dropping the notification, so the desktop
+        // still says *that* something arrived and from which app — the app name travels
+        // separately and becomes the toast's attribution line. Applied after the emptiness
+        // check above, so hiding cannot turn a notification worth nothing into one worth a
+        // toast.
+        val outTitle = if (hide) HIDDEN_TITLE else title
+        val outBody = if (hide) "" else body
 
         // The same key posting again is an update — a chat thread gaining a message, a
         // download changing percentage — and must not pop a second toast.
         if (posted.put(sbn.key, true) != null) {
             val update = NotifUpdate.newBuilder()
-                .setKey(sbn.key).setTitle(title).setText(body).build()
+                .setKey(sbn.key).setTitle(outTitle).setText(outBody).build()
             link.send(Kind.NOTIF_UPDATE, update.toByteArray(), "notif update")
             return
         }
@@ -80,12 +141,19 @@ class NotificationRelay : NotificationListenerService() {
             .setAppName(appLabel(sbn.packageName))
             .setTag(sbn.tag.orEmpty())
             .setGroupKey(notification.group.orEmpty())
-            .setTitle(title)
-            .setText(body)
+            .setTitle(outTitle)
+            .setText(outBody)
             .setTimestampMs(sbn.postTime)
-            .build()
-        Log.i(TAG, "notif out ${sbn.packageName} ${title.take(40)}")
-        link.send(Kind.NOTIF_NEW, new.toByteArray(), "notif")
+        // A contact photo is content too, so hiding covers it. The app icon is not — it
+        // says no more than the attribution line already does.
+        if (!hide) face(notification)?.let { new.largeIconPng = ByteString.copyFrom(it) }
+        // Marked sent even when the rasterise fails: the same package will fail the same
+        // way, and retrying it on every notification buys nothing but the work.
+        if (iconSent.put(sbn.packageName, true) == null) {
+            appIcon(sbn.packageName)?.let { new.appIconPng = ByteString.copyFrom(it) }
+        }
+        Log.i(TAG, "notif out ${sbn.packageName} ${outTitle.take(40)}")
+        link.send(Kind.NOTIF_NEW, new.build().toByteArray(), "notif")
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
@@ -105,10 +173,42 @@ class NotificationRelay : NotificationListenerService() {
      */
     private fun worthMirroring(sbn: StatusBarNotification): Boolean {
         if (sbn.packageName == packageName) return false // our own ongoing link notice
-        val flags = sbn.notification.flags
+        val notification = sbn.notification
+        val flags = notification.flags
         if (flags and Notification.FLAG_ONGOING_EVENT != 0) return false
         if (flags and Notification.FLAG_GROUP_SUMMARY != 0) return false
+        if (isMedia(notification)) return false
+        if (isSilent(sbn)) return false
         return true
+    }
+
+    /**
+     * A now-playing notification, which is a remote control rather than an event.
+     *
+     * The ongoing flag catches most of them, but not all: a scrobbler or a player that
+     * refreshes its notification per track posts a fresh, non-ongoing one each time, which
+     * would be a toast per song. The media session extra is the definitive marker — it is what
+     * `MediaStyle` puts there and what the shade itself keys its player UI off.
+     */
+    private fun isMedia(notification: Notification): Boolean =
+        notification.category == Notification.CATEGORY_TRANSPORT ||
+            notification.extras.containsKey(Notification.EXTRA_MEDIA_SESSION)
+
+    /**
+     * Posted below [NotificationManager.IMPORTANCE_DEFAULT], which is Android's own definition
+     * of silent: it makes no sound on the phone and sits quietly in the shade.
+     *
+     * Something the phone deliberately declined to interrupt for has not earned a toast on the
+     * desktop either. Read off the ranking map the platform hands the listener, so it costs no
+     * binder call — asking the channel its importance would be one per notification.
+     *
+     * A key missing from the map mirrors, rather than being dropped: not knowing is not a
+     * reason to lose a message.
+     */
+    private fun isSilent(sbn: StatusBarNotification): Boolean {
+        val ranking = NotificationListenerService.Ranking()
+        if (!currentRanking.getRanking(sbn.key, ranking)) return false
+        return ranking.importance < NotificationManager.IMPORTANCE_DEFAULT
     }
 
     /** Falls back to the package name, which is still better than an empty toast source. */
@@ -117,6 +217,64 @@ class NotificationRelay : NotificationListenerService() {
             packageManager.getApplicationInfo(pkg, PackageManager.ApplicationInfoFlags.of(0)),
         ).toString()
     }.getOrDefault(pkg)
+
+    /**
+     * The face for the toast, when the notification has one.
+     *
+     * The large icon, because that is the avatar Android's own shade draws: WhatsApp,
+     * Signal, Telegram, WeChat and Messages all put the contact photo there for a
+     * one-to-one chat, and the group's picture there for a group — which is the right face
+     * for a group thread. `MessagingStyle`'s per-message sender would be more specific and
+     * usually worse, and the only extractor for it is androidx's, not the platform's.
+     *
+     * Caught, because this is another app's [Icon] pointing at another app's resources and
+     * a notification must not be able to bring the listener down. A resource-type icon
+     * remembers the package that created it, so `loadDrawable` resolves it against that
+     * package and needs no context beyond ours.
+     */
+    private fun face(notification: Notification): ByteArray? = runCatching {
+        notification.getLargeIcon()?.loadDrawable(this)?.let { png(it) }
+    }.getOrNull()
+
+    private fun appIcon(pkg: String): ByteArray? =
+        runCatching { png(packageManager.getApplicationIcon(pkg)) }.getOrNull()
+
+    /**
+     * Rasterises to a square PNG, or null if it came out over [ICON_MAX_BYTES].
+     *
+     * Runs on the main thread, like every callback here — a 96 px bitmap and its PNG
+     * encode are a couple of milliseconds, and only on a notification that is new. The
+     * alternative is a thread to do two `draw` calls on, which is the sort of thing this
+     * project exists to not have.
+     */
+    private fun png(drawable: Drawable): ByteArray? {
+        val bitmap = Bitmap.createBitmap(ICON_PX, ICON_PX, Bitmap.Config.ARGB_8888)
+        // Aspect preserved and centred. A vector with no intrinsic size reports -1, which
+        // coerces to a square and fills the canvas; a 4:3 contact photo stretched into a
+        // square instead would give everyone a wide face, and Windows then crops a circle
+        // out of the middle of that.
+        val w = drawable.intrinsicWidth.coerceAtLeast(1)
+        val h = drawable.intrinsicHeight.coerceAtLeast(1)
+        val scale = ICON_PX.toFloat() / maxOf(w, h)
+        val dw = (w * scale).toInt().coerceAtLeast(1)
+        val dh = (h * scale).toInt().coerceAtLeast(1)
+        drawable.setBounds(
+            (ICON_PX - dw) / 2,
+            (ICON_PX - dh) / 2,
+            (ICON_PX + dw) / 2,
+            (ICON_PX + dh) / 2,
+        )
+        drawable.draw(Canvas(bitmap))
+        val out = ByteArrayOutputStream()
+        bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+        bitmap.recycle()
+        val bytes = out.toByteArray()
+        if (bytes.size > ICON_MAX_BYTES) {
+            Log.i(TAG, "icon is ${bytes.size} B, past the frame budget; sending none")
+            return null
+        }
+        return bytes
+    }
 }
 
 /** Extras are `CharSequence`, sometimes spanned, and very often absent. */

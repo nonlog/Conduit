@@ -6,6 +6,7 @@
 
 mod advert;
 mod clip;
+mod file;
 mod image;
 mod toast;
 mod wire;
@@ -87,7 +88,7 @@ async fn main() -> Result<()> {
     let bridge = Arc::new(clip::Bridge::start()?);
     // Likewise one toast thread. A failure here is not fatal: clipboard sync is still
     // worth having on a machine where the notification platform will not cooperate.
-    let toasts = match toast::Notifier::start() {
+    let toasts = match toast::Notifier::start(&dir) {
         Ok(notifier) => Some(Arc::new(notifier)),
         Err(e) => {
             warn!(error = %e, "toasts unavailable, mirroring notifications is disabled");
@@ -201,12 +202,29 @@ async fn serve(
 
     let mut session = Session::handshake(&mut stream, local_priv, false).await?;
     info!(%peer, id = %wire::device_id(&session.peer_static), via = path, "session up");
+    // The phone has no other way to learn this machine's name. mDNS carries it, but a
+    // relay session never sees an mDNS record — and off-LAN is precisely when a phone
+    // showing "the desktop" instead of a name is least useful. Sent unprompted and
+    // unanswered: the handshake already settled who the peer is.
+    let hello = pb::PairRequest {
+        device_id: wire::device_id(&session.peer_static),
+        device_name: advert::hostname(),
+        static_pub: Vec::new(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    };
+    session
+        .send(&mut stream, pb::Kind::PairRequest, &hello.encode_to_vec())
+        .await?;
+    metrics.frames_out.fetch_add(1, Ordering::Relaxed);
     // Subscribed after the handshake so the session does not replay clips copied
     // while it was still connecting.
     let mut clips = bridge.subscribe();
     // At most one image in flight, and it dies with the session: a peer that vanishes
     // mid-transfer cannot leave a partial buffer behind for the next one to inherit.
     let mut incoming: Option<image::Assembly> = None;
+    // Same rule for a file, with teeth: `Incoming`'s Drop deletes the partial, so a
+    // session ending mid-transfer cannot leave scratch files in Downloads.
+    let mut arriving: Option<file::Incoming> = None;
 
     loop {
         // Time left before this side owes the peer a frame. Measured from our last
@@ -360,9 +378,12 @@ async fn serve(
                 if let Some(toasts) = toasts {
                     toasts.post(toast::Cmd::Show {
                         key: notif.key,
+                        package: notif.package.clone(),
                         app: if notif.app_name.is_empty() { notif.package } else { notif.app_name },
                         title: notif.title,
                         body: notif.text,
+                        app_icon: notif.app_icon_png,
+                        avatar: notif.large_icon_png,
                     });
                 }
             }
@@ -380,6 +401,65 @@ async fn serve(
                 let notif = pb::NotifRemove::decode(&envelope.payload[..])?;
                 if let Some(toasts) = toasts {
                     toasts.post(toast::Cmd::Hide { key: notif.key });
+                }
+            }
+            // The phone announcing itself. Nothing to do with it on this side yet — the
+            // desktop already knows which peer it is talking to — but decoding it keeps it
+            // out of the "unhandled kind" log.
+            pb::Kind::PairRequest => {
+                let hello = pb::PairRequest::decode(&envelope.payload[..])?;
+                info!(name = %hello.device_name, version = %hello.version, "peer named itself");
+            }
+            // A file, same leniency as an image: a refused offer costs the transfer and
+            // nothing else. The session is also carrying the clipboard, and a phone that
+            // shares a 600 MB video must not knock it out.
+            pb::Kind::FileOffer => {
+                let offer = pb::FileOffer::decode(&envelope.payload[..])?;
+                let dir = match file::downloads() {
+                    Ok(dir) => dir,
+                    Err(e) => {
+                        warn!(error = %e, "no Downloads folder, file refused");
+                        arriving = None;
+                        continue;
+                    }
+                };
+                match file::Incoming::begin(&offer, &dir) {
+                    Ok(rx) => {
+                        info!(
+                            name = rx.name(),
+                            bytes = offer.total_bytes,
+                            chunks = offer.chunk_count,
+                            mime = %offer.mime,
+                            "file in, receiving"
+                        );
+                        arriving = Some(rx);
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "refused a file offer");
+                        arriving = None;
+                    }
+                }
+            }
+            pb::Kind::FileChunk => {
+                let chunk = pb::FileChunk::decode(&envelope.payload[..])?;
+                let Some(rx) = arriving.as_mut() else {
+                    warn!(index = chunk.index, "file chunk with no offer, dropped");
+                    continue;
+                };
+                match rx.push(&chunk) {
+                    Ok(None) => {}
+                    Ok(Some(path)) => {
+                        arriving = None;
+                        match toasts {
+                            Some(toasts) => toasts.post(toast::Cmd::File { path }),
+                            None => info!("file arrived, but toasts are unavailable to say so"),
+                        }
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "file transfer dropped");
+                        // Assigning None runs the Drop that deletes the partial.
+                        arriving = None;
+                    }
                 }
             }
             other => warn!(?other, "unhandled kind"),

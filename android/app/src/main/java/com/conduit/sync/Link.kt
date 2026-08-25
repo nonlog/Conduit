@@ -6,6 +6,7 @@ import com.conduit.sync.proto.ClipImageHeader
 import com.conduit.sync.proto.ClipText
 import com.conduit.sync.proto.Envelope
 import com.conduit.sync.proto.Kind
+import com.conduit.sync.proto.PairRequest
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.util.concurrent.ArrayBlockingQueue
@@ -32,6 +33,9 @@ private const val RELAY_READ_DEADLINE_MS = 600_000
 
 private const val CONNECT_TIMEOUT_MS = 5_000
 private const val JOIN_TIMEOUT_MS = 2_000L
+
+/** A hostname, not an essay. Long enough for any real machine name. */
+private const val PEER_NAME_MAX = 64
 
 /**
  * The relay preamble's magic. `CDT1` then a 43-character rendezvous id is a fixed 47
@@ -75,6 +79,15 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
          * one direct session has said what it is.
          */
         fun onPeer(deviceId: String)
+
+        /**
+         * The desktop's own name for itself, announced once per session.
+         *
+         * Separate from [onPeer] because the id is derived from a key and the name is
+         * whatever the desktop is called — the phone shows the name and rendezvous with
+         * the id, and only one of the two is worth reading out loud.
+         */
+        fun onPeerName(name: String)
 
         /**
          * A session that was actually up has gone. A dial that never completed its
@@ -142,9 +155,38 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
             }
         }
 
+    /**
+     * Streams one file to the desktop on the sender thread.
+     *
+     * [open] is a lambda for the same reason [sendImage]'s [load] is, and more so: resolving
+     * the file's size and opening its stream are both binder calls into whichever app owns
+     * the URI, and the caller is a share intent arriving on the main thread. [what] only
+     * names the transfer in the log until the real name is known.
+     *
+     * The stream is closed on every exit, including the throw a short read raises.
+     */
+    fun sendFile(what: String, open: () -> Files.Source?) = sender.execute {
+        val live = session
+        if (live == null) {
+            Log.d(TAG, "$what dropped, no session")
+            return@execute
+        }
+        val source = runCatching { open() }
+            .onFailure { Log.w(TAG, "could not read $what", it) }
+            .getOrNull() ?: return@execute
+        try {
+            source.stream.use { Files.send(live, it, source.meta) }
+        } catch (e: Exception) {
+            // Same rule as an image: the offer is already out and the desktop is committed
+            // to a total, so there is nothing to salvage. Let the session unwind — the
+            // desktop's transfer dies with it and deletes its own partial file.
+            Log.w(TAG, "${source.meta.name} transfer failed", e)
+            teardown()
+        }
+    }
+
     /** Dials on the reader thread. A no-op while a connection is already up. */
     fun connect(address: InetSocketAddress) = dial(address, null)
-
     /**
      * Parks at the relay under [rendezvous] and waits to be spliced onto the desktop.
      *
@@ -275,6 +317,13 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
             // Posted, not written: only the sender thread may touch the send counter.
             Kind.PING -> sender.execute { runCatching { session?.send(Kind.PONG) } }
             Kind.PONG -> {}
+            // Capped, because it is peer-supplied text on its way to a launcher shortcut
+            // label and a notification. A desktop is not hostile, but a relay session is
+            // reachable by anything that guesses a rendezvous.
+            Kind.PAIR_REQUEST -> PairRequest.parseFrom(envelope.payload).deviceName
+                .take(PEER_NAME_MAX)
+                .takeIf { it.isNotBlank() }
+                ?.let { events.onPeerName(it) }
             Kind.CLIP_TEXT -> events.onText(ClipText.parseFrom(envelope.payload).text)
             // Reassembly state lives on this thread and nowhere else, so it needs no
             // lock and cannot outlive the session that is filling it.

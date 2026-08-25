@@ -26,6 +26,10 @@ noise_static.bin
 trusted_peers.json
 conduit.toml
 
+# Screenshots and crops pulled off the phone while testing. Nothing at the repo root is
+# an image the build wants — app resources live under android/app/src/main/res.
+/*.png
+
 # Editors
 .idea/
 .vscode/

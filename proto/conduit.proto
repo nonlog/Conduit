@@ -28,6 +28,8 @@ enum Kind {
   NOTIF_UPDATE       = 21;
   NOTIF_REMOVE       = 22;
   NOTIF_ACTION       = 23;
+  FILE_OFFER         = 30;
+  FILE_CHUNK         = 31;
 }
 
 message Envelope {
@@ -39,10 +41,15 @@ message Envelope {
 
 // --- pairing (Noise XX; fingerprint confirmed out of band) ---
 
+// Sent once per session, straight after the handshake, by the side that has a name worth
+// showing. Not a request for anything — the Noise handshake already decided whether the
+// peer is who it claims — so nothing answers it. The phone has no way to learn the
+// desktop's name otherwise: mDNS carries it, but a relay session never sees an mDNS
+// record, and that is exactly the case where the name matters most.
 message PairRequest {
   string device_id   = 1;  // BASE64URL(SHA256(static_pub)), lowercase
   string device_name = 2;
-  bytes  static_pub  = 3;
+  bytes  static_pub  = 3;  // empty over an established session: the handshake carried it
   string version     = 4;
 }
 
@@ -77,6 +84,35 @@ message ClipImageChunk {
   bytes  data      = 2;
   bytes  header_id = 3;
   uint32 stream_id = 4;  // so a ClipText arriving mid-image does not head-of-line block
+}
+
+// --- files ---
+//
+// Deliberately not ClipImageHeader with a flag on it. Three things differ and every one
+// of them matters: total_bytes is 64-bit because a file is not a screenshot, nothing here
+// ever touches the clipboard, and the receiver writes each chunk straight to disk instead
+// of assembling the whole transfer in memory. Reusing the image path would have put a
+// 500 MB Vec in a daemon whose entire selling point is bounded memory.
+//
+// One transfer at a time per session, so there is no windowing and no ack: the chunks are
+// already ordered and already reliable inside one Noise session on one TCP stream. A
+// transfer dies with its session, which is what stops a half-written file from being
+// inherited by the next one.
+
+message FileOffer {
+  string name         = 1;  // basename; the receiver sanitises it regardless
+  string mime         = 2;
+  uint64 total_bytes  = 3;
+  uint32 chunk_size   = 4;  // 32 KiB, same ceiling as an image chunk
+  uint64 chunk_count  = 5;  // ceil(total_bytes / chunk_size)
+  bytes  transfer_id  = 6;  // chunks reference it, so a stale chunk cannot join a new file
+  uint64 timestamp_ms = 7;
+}
+
+message FileChunk {
+  uint64 index       = 1;
+  bytes  data        = 2;
+  bytes  transfer_id = 3;
 }
 
 // --- notifications ---

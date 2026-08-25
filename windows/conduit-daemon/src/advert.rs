@@ -57,6 +57,6 @@ impl Drop for Advert {
 }
 
 /// The instance name shown on the phone. Not a security boundary, so a fallback is fine.
-fn hostname() -> String {
+pub fn hostname() -> String {
     std::env::var("COMPUTERNAME").unwrap_or_else(|_| "conduit-desktop".to_string())
 }

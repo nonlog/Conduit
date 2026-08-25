@@ -51,6 +51,29 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Read by the framework, not by us: it is what pairs the runtime shortcut
+                 ShareTarget publishes with ShareActivity, so the share sheet's Direct Share
+                 row shows the desktop's name rather than the manifest label "Conduit". -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
+        </activity>
+        <!-- No UI at all: it reads the share intent, hands the URIs to the service and
+             finishes, so the translucent theme is what the user never sees. The `*/*`
+             filter is the fallback entry in the app list; the labelled Direct Share row
+             above it is the shortcut's. -->
+        <activity
+            android:name=".ShareActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
         </activity>
         <service
             android:name=".SyncService"

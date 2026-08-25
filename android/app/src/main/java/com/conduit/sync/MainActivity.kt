@@ -31,6 +31,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -79,6 +80,12 @@ object LinkStatus {
      */
     var peer by mutableStateOf<String?>(null)
 
+    /**
+     * The desktop's own name for itself, which is the one thing here a human recognises.
+     * Survives a restart, so it is on screen before the first session of the day connects.
+     */
+    var peerName by mutableStateOf<String?>(null)
+
     /** "LAN", "Relay" or "Direct": which route the current attempt is taking. */
     var path by mutableStateOf<String?>(null)
     var fingerprint by mutableStateOf("-- : -- : -- : -- : -- : -- : -- : --")
@@ -101,9 +108,13 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // Shown before anything is running, so the desktop can be paired against it.
         LinkStatus.fingerprint = Identity.fingerprint(Identity.loadOrCreate(filesDir).public)
+        // Same reason as History below: the activity can be the first component to run, and
+        // an empty desktop name until the service happens to start reads as "never paired".
+        if (LinkStatus.peerName == null) LinkStatus.peerName = Identity.peerName(filesDir)
         // The activity can be the first component to run, so it loads history too rather
         // than showing an empty list until the service happens to start.
         History.load(this)
+        Settings.load(this)
         request()
         // A host on the launch intent pins the address and links straight away. It has to
         // go through the activity: Android 12+ refuses a foreground service started from
@@ -113,10 +124,13 @@ class MainActivity : ComponentActivity() {
             ConduitTheme {
                 HomeScreen(
                     fingerprint = LinkStatus.fingerprint,
+                    peerName = LinkStatus.peerName,
                     peerFingerprint = LinkStatus.peer,
                     path = LinkStatus.path,
                     state = LinkStatus.state,
                     history = History.entries,
+                    hideNotifications = Settings.hideNotificationContent,
+                    onHideNotifications = { Settings.hideNotificationContent = it },
                     onConnect = { send(ACTION_CONNECT) },
                     onDisconnect = { send(ACTION_DISCONNECT) },
                     onClearHistory = History::clear,
@@ -187,10 +201,13 @@ private fun ConduitTheme(content: @Composable () -> Unit) {
 @Composable
 private fun HomeScreen(
     fingerprint: String,
+    peerName: String?,
     peerFingerprint: String?,
     path: String?,
     state: LinkState,
     history: List<HistoryEntry>,
+    hideNotifications: Boolean,
+    onHideNotifications: (Boolean) -> Unit,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
     onClearHistory: () -> Unit,
@@ -203,8 +220,9 @@ private fun HomeScreen(
             contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            item { StatusCard(state, peerFingerprint, path, onConnect, onDisconnect) }
+            item { StatusCard(state, peerName, peerFingerprint, path, onConnect, onDisconnect) }
             item { IdentityCard(fingerprint) }
+            item { SettingsCard(hideNotifications, onHideNotifications) }
             item { HistoryHeader(history.isNotEmpty(), onClearHistory) }
             if (history.isEmpty()) {
                 item {
@@ -223,6 +241,7 @@ private fun HomeScreen(
 @Composable
 private fun StatusCard(
     state: LinkState,
+    peerName: String?,
     peerFingerprint: String?,
     path: String?,
     onConnect: () -> Unit,
@@ -258,6 +277,12 @@ private fun StatusCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+            }
+            // The desktop's name, which is the only line on this card a human recognises at
+            // a glance. Shown even while disconnected, because it is remembered — "Not
+            // linked / LOG" says considerably more than "Not linked" alone.
+            peerName?.let {
+                Text(it, style = MaterialTheme.typography.titleLarge)
             }
             peerFingerprint?.let {
                 Text(
@@ -351,6 +376,39 @@ private fun ClipRow(entry: HistoryEntry) {
         }
     }
     HorizontalDivider(color = Color.Transparent)
+}
+
+@Composable
+private fun SettingsCard(hideNotifications: Boolean, onHideNotifications: (Boolean) -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text("Settings", style = MaterialTheme.typography.titleSmall)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Hide notification content", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        // Says which redaction this is, because Android has one of its own
+                        // that looks the same on the desktop and is fixed somewhere else.
+                        "Mirror only the app name, never the message. Off by default — " +
+                            "Android's own \"Sensitive notification content\" is a separate " +
+                            "restriction this switch cannot lift.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.size(12.dp))
+                Switch(checked = hideNotifications, onCheckedChange = onHideNotifications)
+            }
+        }
+    }
 }
 
 @Composable

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  What makes Conduit appear in the share sheet's Direct Share row rather than only in the
+  app list below it. The framework reads this (API 29+, which is minSdk) and pairs any
+  dynamic shortcut carrying the matching category with the activity named here; the
+  shortcut's label is published at runtime by ShareTarget, which is how the row ends up
+  showing the desktop's name instead of "Conduit".
+
+  `*/*` because the point is to send a file, whatever it is. ShareActivity decides what to
+  do with what actually arrives.
+-->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <share-target android:targetClass="com.conduit.sync.ShareActivity">
+        <data android:mimeType="*/*" />
+        <category android:name="com.conduit.sync.category.SEND" />
+    </share-target>
+</shortcuts>

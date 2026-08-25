@@ -55,6 +55,9 @@ private const val RETRY_MAX_MS = 300_000L
 const val ACTION_CONNECT = "com.conduit.sync.CONNECT"
 const val ACTION_DISCONNECT = "com.conduit.sync.DISCONNECT"
 
+/** Sent by [ShareActivity]: URIs in the intent's ClipData, or text in EXTRA_TEXT. */
+const val ACTION_SHARE = "com.conduit.sync.SHARE"
+
 private const val PREFS = "link"
 private const val PREF_WANTED = "wanted"
 
@@ -103,6 +106,9 @@ class SyncService : Service() {
 
     /** The desktop we are paired with, so the relay rendezvous survives a restart. */
     @Volatile private var knownPeer: String? = null
+
+    /** Its name, so republishing the share-sheet shortcut happens on a rename and not per session. */
+    @Volatile private var knownPeerName: String? = null
 
     /**
      * Whether the user wants a link at all, persisted because [START_STICKY] means the
@@ -163,6 +169,8 @@ class SyncService : Service() {
         clipboard = getSystemService(ClipboardManager::class.java)
         connectivity = getSystemService(ConnectivityManager::class.java)
         knownPeer = Identity.peer(filesDir)
+        knownPeerName = Identity.peerName(filesDir)
+        LinkStatus.peerName = knownPeerName
         wanted = getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PREF_WANTED, true)
         History.load(this)
 
@@ -191,6 +199,8 @@ class SyncService : Service() {
                 override fun onImage(png: ByteArray, photo: Boolean) = onRemoteImage(png, photo)
 
                 override fun onPeer(deviceId: String) = rememberPeer(deviceId)
+
+                override fun onPeerName(name: String) = rememberPeerName(name)
 
                 override fun onSessionLost() {
                     // Deliberately does not dial: [onState] already scheduled a retry for
@@ -228,6 +238,7 @@ class SyncService : Service() {
         val host = intent?.getStringExtra("host")
         when {
             intent?.action == ACTION_DISCONNECT -> stopLink()
+            intent?.action == ACTION_SHARE -> onShare(intent)
             host != null -> {
                 setWanted(true)
                 cancelRetry()
@@ -378,8 +389,62 @@ class SyncService : Service() {
             .onFailure { Log.w(TAG, "could not store the peer id; relay stays unavailable", it) }
     }
 
-    private fun onLocalClip() {
-        val clip = clipboard.primaryClip
+    /**
+     * The desktop's name, which arrives once per session.
+     *
+     * Guarded on a change, because the shortcut is republished with it and the common case
+     * is the same desktop with the same name reconnecting all day. A rename is rare and
+     * cheap; doing this on every session would be a launcher IPC per reconnect.
+     */
+    private fun rememberPeerName(name: String) {
+        LinkStatus.peerName = name
+        if (name == knownPeerName) return
+        knownPeerName = name
+        Log.i(TAG, "the desktop calls itself '$name'")
+        Identity.rememberPeerName(filesDir, name)
+        ShareTarget.publish(this, name)
+    }
+
+    /**
+     * A share from [ShareActivity]: files in the intent's ClipData, or text in EXTRA_TEXT.
+     *
+     * Nothing here touches the URIs. Resolving a size and opening a stream are both binder
+     * calls into the app that owns the file, and this runs on the main thread — so each URI
+     * becomes a lambda evaluated later on [Link]'s sender thread, which is also where the
+     * grant this intent carried has to still be readable.
+     */
+    private fun onShare(intent: Intent) {
+        intent.getStringExtra(Intent.EXTRA_TEXT)?.takeIf { it.isNotBlank() }?.let { shared ->
+            val text = shared.replace("\r\n", "\n")
+            if (text.length > MAX_TEXT) {
+                Log.w(TAG, "shared text of ${text.length} chars is too large for one frame")
+                return
+            }
+            // Recorded as our own write, so the copy the desktop makes does not come back.
+            lastText = text
+            History.record(Direction.Sent, text)
+            link.sendText(text)
+            return
+        }
+        val clip = intent.clipData
+        if (clip == null || clip.itemCount == 0) {
+            Log.w(TAG, "share carried neither text nor a URI")
+            return
+        }
+        for (index in 0 until clip.itemCount) {
+            val uri = clip.getItemAt(index).uri ?: continue
+            Log.i(TAG, "sharing $uri")
+            link.sendFile(uri.toString()) {
+                // On the sender thread: History is safe from any thread and the name is only
+                // known once the provider has been asked.
+                Files.open(this, uri)?.also {
+                    History.record(Direction.Sent, "File: ${it.meta.name}")
+                }
+            }
+        }
+    }
+
+    private fun onLocalClip() {        val clip = clipboard.primaryClip
         val item = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)
         if (item == null) {
             // Expected on stock Android 10+: a background app is not allowed to read the

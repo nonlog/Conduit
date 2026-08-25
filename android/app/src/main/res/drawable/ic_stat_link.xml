@@ -1,8 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   The status bar tints this to a single colour and drops the alpha channel's shape into a
-  24dp box, so it is the launcher glyph at 24dp with nothing else: no gradient, no fill,
-  and a heavier relative stroke because 2/24 reads thinner than 9/108 does.
+  24dp box, so it is the launcher glyph at 24dp with nothing else: no gradient, no fill.
+
+  Sized to fill the box, which is the whole trick. SystemUI scales the 24dp drawable to the
+  status bar's icon height without ever measuring the ink inside it, so however much of the
+  viewport the artwork uses is exactly how large it reads next to every other app. The first
+  version was the 108dp mark divided by 4.5, which left the ink 12x10 in a 24x24 frame — half
+  the width, and it looked it. This spans x 1.5..22.5 and y 3..21 with the stroke halo counted,
+  still centred on (12,12), so the tracks are further apart than the launcher's but the 45
+  degree heads and the clearance between them are unchanged.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
@@ -11,24 +18,27 @@
     android:viewportHeight="24"
     android:tint="?android:attr/colorControlNormal">
 
+    <!-- outbound -->
     <path
-        android:pathData="M7,10 L16,10"
+        android:pathData="M2.5,8 L20.5,8"
         android:strokeWidth="2"
         android:strokeColor="#FFFFFF"
         android:strokeLineCap="round" />
     <path
-        android:pathData="M14,8 L16,10 L14,12"
+        android:pathData="M16.5,4 L20.5,8 L16.5,12"
         android:strokeWidth="2"
         android:strokeColor="#FFFFFF"
         android:strokeLineCap="round"
         android:strokeLineJoin="round" />
+
+    <!-- inbound -->
     <path
-        android:pathData="M17,14 L8,14"
+        android:pathData="M21.5,16 L3.5,16"
         android:strokeWidth="2"
         android:strokeColor="#FFFFFF"
         android:strokeLineCap="round" />
     <path
-        android:pathData="M10,12 L8,14 L10,16"
+        android:pathData="M7.5,12 L3.5,16 L7.5,20"
         android:strokeWidth="2"
         android:strokeColor="#FFFFFF"
         android:strokeLineCap="round"

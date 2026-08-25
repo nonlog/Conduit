@@ -46,6 +46,17 @@ const GROUP: &str = "conduit";
 /// toasts. Give each photo a hashed tag and its own file if that ever matters.
 const PHOTO_TAG: &str = "photo";
 
+/// How many contact avatars are kept on disk.
+///
+/// Only this directory needs a cap. App icons are keyed by package and overwritten in
+/// place, so that directory is bounded by the number of apps that have ever notified;
+/// avatars are keyed by content, so they grow with the number of distinct faces.
+///
+/// Eviction is almost free of consequence, which is why the policy is this crude: the
+/// phone attaches a face to every notification it has one for, so a dropped file simply
+/// reappears the next time that person writes.
+const FACES_MAX: usize = 128;
+
 /// Snipping Tool's own protocol, read out of its binaries rather than guessed:
 /// `ms-screensketch://edit/?source=…&isTemporary=…&sharedAccessToken=…`. `source=Toast`
 /// is one of the values it ships with, which is the case this is.
@@ -65,7 +76,13 @@ fn snip_url(token: &str) -> String {
 /// — routinely exceed that, so the tag is a digest of the key rather than the key. It is
 /// derived, not remembered, which is why update and removal need no state on this side.
 fn tag_for(key: &str) -> String {
-    Sha256::digest(key.as_bytes())[..8]
+    digest(key.as_bytes())
+}
+
+/// 64 bits of SHA-256, hex. Long enough to name a cache file by its contents without a
+/// collision anyone will ever see, short enough to stay inside the tag limit above.
+fn digest(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)[..8]
         .iter()
         .fold(String::with_capacity(16), |mut acc, b| {
             use std::fmt::Write as _;
@@ -116,9 +133,15 @@ fn file_url(path: &Path) -> String {
 pub enum Cmd {
     Show {
         key: String,
+        /// Names the app-icon cache file; the phone sends the bytes only on first sight.
+        package: String,
         app: String,
         title: String,
         body: String,
+        /// Empty after the first notification from a package — the cached file stands in.
+        app_icon: Vec<u8>,
+        /// The contact photo, when the notification carried one. Empty otherwise.
+        avatar: Vec<u8>,
     },
     /// Same key, new text. Silent — Windows does not re-alert on an update, which is the
     /// point: a chat thread gaining a message should not pop a second time.
@@ -135,6 +158,93 @@ pub enum Cmd {
     Photo {
         path: PathBuf,
     },
+    /// A file the phone shared, already written to Downloads. Clicking opens the folder.
+    File {
+        path: PathBuf,
+    },
+}
+
+/// The on-disk icon cache.
+///
+/// A toast image has to be a file — `appLogoOverride` takes a URI, and there is no way to
+/// inline bytes — so the phone's PNGs are written out and named in the XML. The directory
+/// is the whole of the state: nothing is remembered in memory, so a restart inherits every
+/// icon it had before and the two lookups are a `join` and an `exists`.
+struct Cache {
+    /// App icons, one file per package, overwritten in place. Bounded by the number of
+    /// apps that have ever notified, which is why it needs no eviction.
+    icons: PathBuf,
+    /// Contact photos, named by their own bytes so one face is one file however many
+    /// notifications carry it.
+    faces: PathBuf,
+}
+
+impl Cache {
+    fn prepare(root: &Path) -> Result<Self> {
+        let cache = Self {
+            icons: root.join("icons"),
+            faces: root.join("faces"),
+        };
+        std::fs::create_dir_all(&cache.icons)?;
+        std::fs::create_dir_all(&cache.faces)?;
+        Ok(cache)
+    }
+
+    /// Stores whatever art arrived and returns the file the toast should show.
+    ///
+    /// The avatar wins when there is one: for a chat the person who wrote is the point,
+    /// and the app is named in the toast's attribution line either way. The app icon is
+    /// what everything without a person attached falls back to.
+    fn logo(&self, package: &str, app_icon: &[u8], avatar: &[u8]) -> Result<Option<PathBuf>> {
+        let icon = self.icons.join(format!("{}.png", digest(package.as_bytes())));
+        // An empty `app_icon` on a later notification means "you already have it", not
+        // "there is none" — the phone sends it once per package precisely so a day of chat
+        // does not carry the same 8 kB PNG over a cellular relay a thousand times.
+        if !app_icon.is_empty() {
+            std::fs::write(&icon, app_icon)
+                .with_context(|| format!("caching {}", icon.display()))?;
+        }
+
+        let face = if avatar.is_empty() {
+            None
+        } else {
+            let path = self.faces.join(format!("{}.png", digest(avatar)));
+            // Content-addressed, so a thread's hundredth message finds the file already
+            // there. Skipping the rewrite is not just an optimisation: truncating a file
+            // the shell may be rendering an on-screen toast from is how you get a blank
+            // avatar in Action Center.
+            if !path.exists() {
+                self.evict()?;
+                std::fs::write(&path, avatar)
+                    .with_context(|| format!("caching {}", path.display()))?;
+            }
+            Some(path)
+        };
+
+        Ok(face.or_else(|| icon.is_file().then_some(icon)))
+    }
+
+    /// Makes room for one more face.
+    ///
+    /// ponytail: a `read_dir` and a sort, but only when a face that has never been seen
+    /// arrives — a chat with someone you already talk to costs an `exists` and nothing
+    /// else. Keep an in-memory index if this ever needs to hold thousands.
+    ///
+    /// Losing a face is close to consequence-free, which is what lets the policy be this
+    /// crude: the phone attaches one to every notification that has one, so an evicted
+    /// file is written again the next time that person writes.
+    fn evict(&self) -> Result<()> {
+        let mut faces: Vec<_> = std::fs::read_dir(&self.faces)?.flatten().collect();
+        if faces.len() < FACES_MAX {
+            return Ok(());
+        }
+        faces.sort_by_key(|face| face.metadata().and_then(|m| m.modified()).ok());
+        for face in &faces[..faces.len() - FACES_MAX + 1] {
+            let _ = std::fs::remove_file(face.path());
+        }
+        debug!(kept = FACES_MAX - 1, "trimmed the face cache");
+        Ok(())
+    }
 }
 
 pub struct Notifier {
@@ -145,8 +255,11 @@ pub struct Notifier {
 }
 
 impl Notifier {
-    pub fn start() -> Result<Self> {
+    /// `cache` is where the phone's icons are written; a toast image can only be named by
+    /// URI, so they have to land somewhere the shell can read them.
+    pub fn start(cache: &Path) -> Result<Self> {
         register_aumid().context("registering the toast AppUserModelID")?;
+        let cache = Cache::prepare(cache).context("preparing the toast icon cache")?;
 
         let (tx, rx) = mpsc::channel();
         // The notifier is built on the thread that will use it, and only the outcome
@@ -165,7 +278,7 @@ impl Notifier {
                 match ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(AUMID)) {
                     Ok(notifier) => {
                         if ready_tx.send(Ok(())).is_ok() {
-                            pump(&notifier, rx);
+                            pump(&notifier, &cache, rx);
                         }
                     }
                     Err(e) => {
@@ -209,7 +322,7 @@ impl Drop for Notifier {
     }
 }
 
-fn pump(notifier: &ToastNotifier, rx: mpsc::Receiver<Cmd>) {
+fn pump(notifier: &ToastNotifier, cache: &Cache, rx: mpsc::Receiver<Cmd>) {
     // The broker token for the photo currently on screen. At most one is ever
     // outstanding, because a new photo replaces the toast that named the old one — so
     // this is a slot, not a collection, and it cannot grow over a long run.
@@ -218,13 +331,27 @@ fn pump(notifier: &ToastNotifier, rx: mpsc::Receiver<Cmd>) {
         let result = match cmd {
             Cmd::Show {
                 key,
+                package,
                 app,
                 title,
                 body,
-            } => show(notifier, &key, &app, &title, &body),
+                app_icon,
+                avatar,
+            } => {
+                // A cache write that fails costs the toast its picture, nothing more, so
+                // the logo is resolved leniently and the toast still shows.
+                let logo = cache
+                    .logo(&package, &app_icon, &avatar)
+                    .unwrap_or_else(|e| {
+                        warn!(error = %e, "could not cache the notification icon");
+                        None
+                    });
+                show(notifier, &key, &app, &title, &body, logo.as_deref())
+            }
             Cmd::Update { key, title, body } => update(notifier, &key, &title, &body),
             Cmd::Hide { key } => hide(&key),
             Cmd::Photo { path } => show_photo(notifier, &path, &mut staged),
+            Cmd::File { path } => show_file(notifier, &path),
         };
         if let Err(e) = result {
             warn!(error = %e, "toast failed");
@@ -239,20 +366,16 @@ fn pump(notifier: &ToastNotifier, rx: mpsc::Receiver<Cmd>) {
 
 /// `{title}` and `{body}` are data-bound placeholders, which is what makes
 /// [`update`] possible at all: `ToastNotifier::Update` can only touch bound values.
-fn show(notifier: &ToastNotifier, key: &str, app: &str, title: &str, body: &str) -> Result<()> {
+fn show(
+    notifier: &ToastNotifier,
+    key: &str,
+    app: &str,
+    title: &str,
+    body: &str,
+    logo: Option<&Path>,
+) -> Result<()> {
     let xml = XmlDocument::new()?;
-    xml.LoadXml(&HSTRING::from(format!(
-        r#"<toast>
-             <visual>
-               <binding template="ToastGeneric">
-                 <text>{{title}}</text>
-                 <text>{{body}}</text>
-                 <text placement="attribution">{}</text>
-               </binding>
-             </visual>
-           </toast>"#,
-        escape(app)
-    )))?;
+    xml.LoadXml(&HSTRING::from(show_xml(app, logo)))?;
 
     let toast = ToastNotification::CreateToastNotification(&xml)?;
     let tag = tag_for(key);
@@ -260,8 +383,39 @@ fn show(notifier: &ToastNotifier, key: &str, app: &str, title: &str, body: &str)
     toast.SetGroup(&HSTRING::from(GROUP))?;
     toast.SetData(&data(title, body)?)?;
     notifier.Show(&toast)?;
-    debug!(%tag, "toast shown");
+    debug!(%tag, logo = logo.is_some(), "toast shown");
     Ok(())
+}
+
+/// Split out so the markup can be checked without a notifier, the same as [`photo_xml`].
+///
+/// The image is inlined rather than bound, because only text and progress values can be
+/// bound — which also settles what [`update`] can do: a later message in the same thread
+/// rewrites the text and keeps the picture the first one arrived with. Re-showing to change
+/// a face would pop and re-alert, which is the thing update exists to avoid.
+fn show_xml(app: &str, logo: Option<&Path>) -> String {
+    let image = match logo {
+        // Circle-cropped because that is what the slot is for, and because an Android
+        // adaptive icon has already been drawn through the platform's own round mask.
+        Some(path) => format!(
+            r#"<image placement="appLogoOverride" hint-crop="circle" src="{}"/>"#,
+            file_url(path)
+        ),
+        None => String::new(),
+    };
+    format!(
+        r#"<toast>
+             <visual>
+               <binding template="ToastGeneric">
+                 {image}
+                 <text>{{title}}</text>
+                 <text>{{body}}</text>
+                 <text placement="attribution">{}</text>
+               </binding>
+             </visual>
+           </toast>"#,
+        escape(app)
+    )
 }
 
 /// The photo toast: the picture itself, and a click that opens it in Snipping Tool.
@@ -335,6 +489,49 @@ fn release(token: &str) {
         Ok(()) => debug!("returned a shared-file token"),
         Err(e) => debug!(error = %e, "shared-file token was already gone"),
     }
+}
+
+/// The file toast: what arrived, and a click that opens the folder it landed in.
+///
+/// Tagged by path rather than sharing one slot like the photo toast, because several files
+/// can arrive in a row and each is a separate thing the user may want to go and find.
+fn show_file(notifier: &ToastNotifier, path: &Path) -> Result<()> {
+    let xml = XmlDocument::new()?;
+    xml.LoadXml(&HSTRING::from(file_xml(path)))?;
+
+    let toast = ToastNotification::CreateToastNotification(&xml)?;
+    let tag = digest(path.to_string_lossy().as_bytes());
+    toast.SetTag(&HSTRING::from(&tag))?;
+    toast.SetGroup(&HSTRING::from(GROUP))?;
+    notifier.Show(&toast)?;
+    info!(path = %path.display(), "file toast shown");
+    Ok(())
+}
+
+/// Split out from [`show_file`] so the markup can be checked without a notifier.
+///
+/// Opens the *folder*, not the file. A received file's name and extension are chosen by
+/// the peer, and a toast whose click runs whatever arrived is a worse idea than one that
+/// shows the user where it is and lets them decide.
+fn file_xml(path: &Path) -> String {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let folder = path.parent().unwrap_or(Path::new("."));
+    format!(
+        r#"<toast activationType="protocol" launch="{launch}">
+             <visual>
+               <binding template="ToastGeneric">
+                 <text>File received</text>
+                 <text>{name}</text>
+                 <text placement="attribution">Conduit</text>
+               </binding>
+             </visual>
+           </toast>"#,
+        launch = escape(&file_url(folder)),
+        name = escape(&name),
+    )
 }
 
 fn update(notifier: &ToastNotifier, key: &str, title: &str, body: &str) -> Result<()> {
@@ -434,6 +631,135 @@ mod tests {
         );
     }
 
+    /// A file name is peer-chosen text going straight into the markup, so the two things
+    /// worth checking are that it cannot break out of it and that the click still points at
+    /// the folder rather than at the file.
+    #[test]
+    fn file_markup_parses_and_points_at_the_folder() -> Result<()> {
+        crate::image::ensure_mta();
+        let path = Path::new(r"C:\Users\a b\Downloads\quarterly & final <report>.pdf");
+
+        let xml = XmlDocument::new()?;
+        xml.LoadXml(&HSTRING::from(file_xml(path)))?;
+        let root = xml.DocumentElement()?;
+
+        assert_eq!(
+            root.GetAttribute(&HSTRING::from("launch"))?.to_string(),
+            file_url(Path::new(r"C:\Users\a b\Downloads")),
+            "the click would not open the folder the file landed in"
+        );
+        let texts = xml.GetElementsByTagName(&HSTRING::from("text"))?;
+        assert_eq!(
+            texts.GetAt(1)?.InnerText()?.to_string(),
+            "quarterly & final <report>.pdf",
+            "the parser did not give back the name we escaped"
+        );
+        Ok(())
+    }
+
+    /// A directory of this test's own, wiped first so a previous run cannot be mistaken
+    /// for cached state — which is exactly what these tests are about.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("conduit-cache-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    fn count(dir: &Path) -> usize {
+        std::fs::read_dir(dir).map(|d| d.count()).unwrap_or(0)
+    }
+
+    /// The contract the whole icon feature rests on: the phone sends an app icon *once*
+    /// per package, so a later notification arriving with no bytes must still find the
+    /// picture. Get this wrong and every notification but the first is bare.
+    #[test]
+    fn an_app_icon_sent_once_is_found_again_with_no_bytes() -> Result<()> {
+        let cache = Cache::prepare(&scratch("once"))?;
+
+        let first = cache.logo("com.tencent.mm", b"icon-bytes", b"")?;
+        assert!(first.is_some(), "the first notification cached nothing");
+        // The next hundred notifications from this app carry no icon at all.
+        let later = cache.logo("com.tencent.mm", b"", b"")?;
+        assert_eq!(later, first, "the cached icon was not reused");
+        assert_eq!(std::fs::read(later.unwrap())?, b"icon-bytes");
+
+        // A package that has never sent one gets no picture rather than someone else's.
+        assert_eq!(cache.logo("org.other.app", b"", b"")?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn a_face_beats_the_app_icon_and_is_stored_once_per_face() -> Result<()> {
+        let dir = scratch("faces");
+        let cache = Cache::prepare(&dir)?;
+        cache.logo("im.app", b"app-icon", b"")?;
+
+        let face = cache.logo("im.app", b"", b"alice-photo")?.unwrap();
+        assert_eq!(
+            std::fs::read(&face)?,
+            b"alice-photo",
+            "the toast would have shown the app icon instead of the contact"
+        );
+        // Content-addressed: the same person writing again names the same file, which is
+        // what keeps a chat thread from filling the cache.
+        assert_eq!(cache.logo("im.app", b"", b"alice-photo")?.as_ref(), Some(&face));
+        assert_ne!(cache.logo("im.app", b"", b"bob-photo")?.unwrap(), face);
+        assert_eq!(count(&dir.join("faces")), 2);
+
+        // And with no face on this one, the app icon is still there to fall back to.
+        assert_eq!(std::fs::read(cache.logo("im.app", b"", b"")?.unwrap())?, b"app-icon");
+        Ok(())
+    }
+
+    #[test]
+    fn the_face_cache_stops_growing() -> Result<()> {
+        let dir = scratch("evict");
+        let cache = Cache::prepare(&dir)?;
+        // Well past the cap, every face distinct so none of them dedupe.
+        for i in 0..(FACES_MAX * 2) {
+            cache.logo("im.app", b"", format!("face-{i}").as_bytes())?;
+        }
+        assert!(
+            count(&dir.join("faces")) <= FACES_MAX,
+            "the cache grew past its cap"
+        );
+        Ok(())
+    }
+
+    /// The image is inlined into the markup rather than bound, so a broken path or a
+    /// stray character here is a toast that renders without its icon and says nothing
+    /// about why. Both shapes have to parse.
+    #[test]
+    fn the_logo_is_named_in_markup_that_parses() -> Result<()> {
+        crate::image::ensure_mta();
+        let logo = Path::new(r"C:\Users\a b\Conduit\icons\deadbeef.png");
+
+        let xml = XmlDocument::new()?;
+        xml.LoadXml(&HSTRING::from(show_xml("WeChat", Some(logo))))?;
+        let images = xml.GetElementsByTagName(&HSTRING::from("image"))?;
+        assert_eq!(images.Length()?, 1, "the toast has no logo element");
+        let image = images.GetAt(0)?;
+        assert_eq!(
+            image.Attributes()?.GetNamedItem(&HSTRING::from("src"))?.InnerText()?.to_string(),
+            file_url(logo),
+            "the parser did not give back the path we escaped"
+        );
+        assert_eq!(
+            image
+                .Attributes()?
+                .GetNamedItem(&HSTRING::from("placement"))?
+                .InnerText()?
+                .to_string(),
+            "appLogoOverride"
+        );
+
+        // No icon yet: still a valid toast, just a bare one.
+        let plain = XmlDocument::new()?;
+        plain.LoadXml(&HSTRING::from(show_xml("WeChat", None)))?;
+        assert_eq!(plain.GetElementsByTagName(&HSTRING::from("image"))?.Length()?, 0);
+        Ok(())
+    }
+
     /// The load-bearing check on the photo path that needs no toast: the markup parses,
     /// and the launch URI the parser hands back is byte-for-byte the one we built. That
     /// is what proves percent-encoding and XML escaping compose instead of colliding —
@@ -505,7 +831,7 @@ mod tests {
         println!("token: {token}");
         println!("launch: {}", snip_url(&token));
 
-        let notifier = Notifier::start()?;
+        let notifier = Notifier::start(&scratch("photo"))?;
         notifier.post(Cmd::Photo { path });
         std::thread::sleep(std::time::Duration::from_millis(2000));
         assert!(
@@ -530,13 +856,20 @@ mod tests {
     fn a_toast_shows_updates_and_withdraws() -> Result<()> {
         let key = "0|com.conduit.test|1|null|10000";
         let tag = tag_for(key);
-        let notifier = Notifier::start()?;
+        let notifier = Notifier::start(&scratch("live"))?;
+        // A real 96 px square, the size the phone sends, so the logo slot is exercised by
+        // something the shell will actually decode rather than a path to nothing.
+        crate::image::ensure_mta();
+        let icon = crate::image::dib_to_png(&solid_dib(96, 96, [64, 64, 220, 255]))?;
 
         notifier.post(Cmd::Show {
             key: key.into(),
+            package: "com.conduit.test".into(),
             app: "conduit self-test".into(),
             title: "First title".into(),
             body: "If this reads First title, data binding renders.".into(),
+            app_icon: icon,
+            avatar: Vec::new(),
         });
         std::thread::sleep(std::time::Duration::from_millis(1500));
         assert!(in_history(&tag)?, "Show did not reach Action Center");

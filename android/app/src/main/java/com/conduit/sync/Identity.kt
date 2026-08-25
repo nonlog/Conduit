@@ -17,6 +17,13 @@ object Identity {
     /** The desktop's [deviceId], which is also the relay rendezvous. */
     private const val PEER_FILE = "peer.txt"
 
+    /**
+     * The desktop's own name for itself. Stored next to its id because the two arrive
+     * together and both have to survive a restart: the id so the relay has a rendezvous, the
+     * name so the share sheet has a label before the first session of the day connects.
+     */
+    private const val PEER_NAME_FILE = "peer-name.txt"
+
     fun loadOrCreate(dir: File): KeyPair {
         val file = File(dir, FILE)
         val raw = if (file.isFile) file.readBytes() else null
@@ -66,6 +73,17 @@ object Identity {
     fun peer(dir: File): String? = runCatching { File(dir, PEER_FILE).readText().trim() }
         .getOrNull()
         ?.takeIf { it.length == ID_LEN }
+
+    /** Best effort: a name that will not store costs a share-sheet label, nothing more. */
+    fun rememberPeerName(dir: File, name: String) {
+        runCatching { File(dir, PEER_NAME_FILE).writeText(name) }
+    }
+
+    /** The remembered desktop's name, or null if it has never announced one. */
+    fun peerName(dir: File): String? =
+        runCatching { File(dir, PEER_NAME_FILE).readText().trim() }
+            .getOrNull()
+            ?.takeIf { it.isNotEmpty() }
 }
 
 /** BASE64URL of a SHA-256 digest, unpadded, is always this long. */
