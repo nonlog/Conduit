@@ -130,6 +130,10 @@ pub struct Incoming {
     dir: PathBuf,
     scratch: PathBuf,
     file: Option<File>,
+    /// True only after the scratch file has become the final destination. `file == None`
+    /// is not enough: the handle is deliberately closed before publication, and any error
+    /// between close and rename must still make Drop remove the partial.
+    published: bool,
     name: String,
     id: Vec<u8>,
     next: u64,
@@ -176,6 +180,7 @@ impl Incoming {
             dir: dir.to_path_buf(),
             scratch,
             file: Some(file),
+            published: false,
             name,
             id: offer.transfer_id.clone(),
             next: 0,
@@ -228,11 +233,8 @@ impl Incoming {
         file.flush().context("flushing the received file")?;
         drop(file);
 
-        let path = reserve(&self.dir, &self.name)?;
-        // `reserve` just created that file, so replacing it is replacing our own
-        // placeholder — which is the only reason overwriting here is safe.
-        std::fs::rename(&self.scratch, &path)
-            .with_context(|| format!("moving the transfer into {}", path.display()))?;
+        let path = publish(&self.scratch, &self.dir, &self.name)?;
+        self.published = true;
         info!(path = %path.display(), bytes = self.total, "file received");
         Ok(Some(path))
     }
@@ -240,9 +242,11 @@ impl Incoming {
 
 impl Drop for Incoming {
     fn drop(&mut self) {
-        // `file` is None only on the success path, where the scratch file has been renamed
-        // away and there is nothing left to clean.
-        if self.file.take().is_some() {
+        // Closing the handle is necessary before Windows can publish/remove the scratch,
+        // but closing it is *not* success. A reserve/rename failure happens after file.take(),
+        // so publication has its own explicit bit rather than being inferred from the handle.
+        let _ = self.file.take();
+        if !self.published {
             warn!(
                 name = %self.name,
                 got = self.written,
@@ -250,6 +254,29 @@ impl Drop for Incoming {
                 "file transfer abandoned, dropping the partial"
             );
             let _ = std::fs::remove_file(&self.scratch);
+        }
+    }
+}
+
+/// Atomically reserves a collision-free final name and moves the completed scratch into it.
+///
+/// `reserve` creates a zero-byte placeholder so an external process cannot win the filename
+/// between an `exists` check and our rename. If the rename itself fails, that placeholder is
+/// ours and must be removed before returning the error; otherwise a failed transfer leaves a
+/// convincing-looking empty destination behind.
+fn publish(scratch: &Path, dir: &Path, name: &str) -> Result<PathBuf> {
+    let path = reserve(dir, name)?;
+    match std::fs::rename(scratch, &path) {
+        Ok(()) => Ok(path),
+        Err(e) => {
+            if let Err(cleanup) = std::fs::remove_file(&path) {
+                warn!(
+                    path = %path.display(),
+                    error = %cleanup,
+                    "could not remove a failed transfer's reserved placeholder"
+                );
+            }
+            Err(e).with_context(|| format!("moving the transfer into {}", path.display()))
         }
     }
 }
@@ -358,6 +385,34 @@ mod tests {
         assert_eq!(std::fs::read(&path)?, b"abcdefghij");
         // Nothing left behind: one file in the directory, and it is not a `.part`.
         assert_eq!(std::fs::read_dir(&dir)?.count(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn a_publication_failure_does_not_leave_its_placeholder() -> Result<()> {
+        let dir = scratch("publish-fail");
+        let missing = dir.join("does-not-exist.part");
+        assert!(publish(&missing, &dir, "result.bin").is_err());
+        assert!(
+            !dir.join("result.bin").exists(),
+            "failed rename left its zero-byte reserved destination behind"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_finalisation_error_still_deletes_the_partial() -> Result<()> {
+        let dir = scratch("finish-cleanup");
+        let mut rx = Incoming::begin(&offer("finish.bin", 4), &dir)?;
+        let part = rx.scratch.clone();
+        assert!(part.is_file(), "begin did not create the scratch file");
+
+        // Force reserve() to fail *after* push has closed/taken the file handle. This is the
+        // exact window the old Drop logic missed because it equated `file == None` with success.
+        rx.dir = dir.join("missing-parent");
+        assert!(rx.push(&chunk(0, b"abcd")).is_err());
+        drop(rx);
+        assert!(!part.exists(), "finalisation error leaked the completed .part file");
         Ok(())
     }
 
