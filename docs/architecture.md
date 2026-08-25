@@ -157,7 +157,7 @@ new peers correct user-facing semantics.
 | Clipboard history | 100 previews, each at most 200 characters; stored in `filesDir/history.json`. |
 | Android settings | Two `key=value` settings in `filesDir/settings.txt`; `SharedPreferences` is not used on the tested device. |
 | Images | Header validation and a 10 MiB ceiling; chunked transfer prevents oversized Noise frames. |
-| Files | One transfer per session, 32 KiB chunks, 512 MiB maximum; partial files are deleted by `Drop`. |
+| Files | One transfer per session, 32 KiB chunks, 512 MiB maximum; partial files are deleted by `Drop`, including failures after the receive handle has already been closed for final publication. |
 | Windows toast cache | App icon files are package-keyed; contact-avatar cache is capped at 128 files. |
 | Capture activation | Camera photos and screenshots share one staged capture file, one toast tag, and one shared-storage token at a time. |
 | Relay waiters | Maximum 256 waiting sockets, with bounded preamble read deadline. |
@@ -177,9 +177,11 @@ new peers correct user-facing semantics.
 - **Share URIs:** an incoming share can reference an unreadable or non-regrantable `content://`
   URI.  `ShareActivity` forwards a read grant with `ClipData`, uses `newRawUri`, and catches
   failure so a bad share cannot terminate a live session.
-- **Remote content:** image/file headers are validated before allocation or writing.  File
-  names are sanitised and reserved with `create_new`; a toast for a received file opens its
-  folder, never executes the peer-chosen file.  Toast XML escapes peer-derived markup.
+- **Remote content:** image/file headers are validated before allocation or writing. File names
+  are sanitised and reserved with `create_new`; the final scratch→destination publication owns
+  and removes its placeholder on failure, and `Drop` cleans an unpublished scratch even after
+  its handle was closed. A toast for a received file opens its folder, never executes the
+  peer-chosen file. Toast XML escapes peer-derived markup.
 - **Persistence:** identity, settings, peer metadata, and history are app-private files.
   History uses a bounded whole-file rewrite; it is intentionally not yet an atomic rename.
 

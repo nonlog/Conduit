@@ -492,6 +492,29 @@ value and image by length. Android compares the clipboard URI's authority agains
 provider, which is exact and costs a string comparison instead of reading the file back on
 the main thread to discover we wrote it.
 
+## Phone → PC file publication and the false missing-file alarm
+
+The receiver streams directly into one `conduit-<transfer-id>.part` file under the actual
+Windows Downloads known folder, then publishes it only after the declared byte/chunk counts are
+complete. The final name is sanitised and collision-reserved with `create_new`; a completed-file
+toast opens the containing folder rather than executing peer-selected content.
+
+A “missing file” investigation turned out to be timing, not post-completion deletion. On the
+production relay, a 259,737-byte/eight-chunk transfer can take roughly 7–9 seconds from offer to
+`file received`. Both an artificial exact-size probe and the original 259,737-byte phone
+screenshot were invisible at their final filename through six seconds and present by eight;
+both matched source SHA-256 exactly. Preserved evidence from an earlier 362,534-byte case showed
+the same shape: an early check saw the zero-byte scratch, followed by normal completion and
+scratch removal. Treat `file in, receiving` as initialization only; `file received path=...` is
+the publication boundary.
+
+The audit did uncover one real error-path issue. The receiver used `file == None` as a proxy for
+successful publication, but the handle is intentionally taken and closed *before* final
+reserve/rename. A reserve or rename failure in that window could therefore bypass `Drop` cleanup,
+and a failed rename could leave the zero-byte reserved destination. Commit `d5554ec` adds an
+explicit `published` state, cleans unpublished scratch files regardless of handle state, and
+removes the owned placeholder on rename failure. Regression tests cover both failure windows.
+
 ## A phone photo becomes a Snipping Tool snip
 
 The ask was Phone Link's behaviour: take a photo, and Windows offers it as though you had

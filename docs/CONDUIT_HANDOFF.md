@@ -106,15 +106,18 @@ See `docs/architecture.md` for full data flow and trust boundaries.
 - M0/M2 endurance gates are not passed: a 48-hour zero-delta lifecycle/resource run and
   network-flap proof remain outstanding.
 - Actual Nagram XF contact-avatar rendering has not yet been proven with a genuine notification.
-- One approximately 259,737-byte file was logged completed but was absent from disk later;
-  this needs reproduction and diagnosis.
+- The former 259,737-byte “missing received file” caveat is resolved. The exact historical
+  screenshot was replayed over the production relay: it was absent through six seconds,
+  appeared by eight seconds, and matched the phone SHA-256 exactly. Earlier evidence showed the
+  same mid-transfer observation pattern. Commit `d5554ec` also fixes cleanup after finalisation
+  errors.
 - Device/daemon logs can be stale/buffered; do not diagnose current connectivity from old temp
   logs alone.
 
 ## Latest evidence
 
 - Android JVM tests: **16 passed, 0 failed**.
-- Windows daemon normal test run: **37 passed, 2 ignored, 0 failed**.
+- Windows daemon normal test run: **39 passed, 2 ignored, 0 failed**.
 - Compatible relay migration: **9 passed, 0 failed**, including legacy↔legacy, both mixed
   upgrade orders, explicit stale-role replacement, and legacy stale-phone replacement.
 - Last sampled daemon: about **9 threads**, **247 handles**, **24.1 MB working set**, about
@@ -197,9 +200,9 @@ The two stale-waiter regressions are `a_peer_is_never_spliced_to_a_stale_copy_of
 ## Recommended next non-deployment work
 
 Until relay deployment is explicitly approved, continue correctness work that does not change
-the production protocol. The highest-value candidates are the logged-but-missing phone → PC file
-incident and endurance instrumentation/evidence. Do not install the newly built role-aware APK
-or restart the daemon from new source against the old production relay just for unrelated tests.
+the production protocol. The highest-value remaining P0 work is endurance
+instrumentation/evidence. Do not install the newly built role-aware APK or restart the daemon
+from new source against the old production relay just for unrelated tests.
 
 ## Useful commands
 

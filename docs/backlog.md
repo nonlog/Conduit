@@ -37,50 +37,35 @@ It does not understand the extra role byte. No production rollout has been perfo
 - Treat logs as evidence only when they are current.  Measure live process state and force real
   peer/socket loss; removing a forwarding rule alone does not close an established session.
 
-### 3. Diagnose relay fresh-park refusal/recovery
-
-A production relay period appeared to refuse new parks and later recovered.  Capture current
-server process state, socket count, and timestamped logs around the next recurrence.  Determine
-whether the cause is waiter-map capacity, stale connections, upstream networking, or logging
-misinterpretation before changing timeout/retry policy.
-
-### 4. Resolve the logged-but-missing received-file incident
-
-A roughly 259,737-byte file was logged as written yet was not found on disk.  Reproduce with a
-known destination and timestamped trace, then account for all paths: Downloads resolution,
-rename, collision suffixes, toast location, antivirus/indexer involvement, and post-transfer
-observation timing.  Do not describe phone → PC file transfer as fully reliable until this is
-understood.
-
 ## P1 — verification and operational quality
 
-### 5. Prove Nagram XF contact-avatar rendering end to end
+### 3. Prove Nagram XF contact-avatar rendering end to end
 
 The extractor and Windows cache path exist.  Capture a genuine incoming Nagram XF notification
 with a large contact icon and verify that the Windows toast shows the contact/avatar rather
 than only the app icon.  If it fails, preserve payload/log evidence before changing extraction.
 
-### 6. Correct Android light-surface status-bar icon contrast
+### 4. Correct Android light-surface status-bar icon contrast
 
 The system notification's monochrome `ic_stat_link` visual size was already corrected.  This
 remaining issue is different: the Android app’s own light surface has incorrect white
 status-bar icons.  Fix only the app-window system-bar appearance; do not regress the
 foreground-service notification artwork.
 
-### 7. Add Windows daemon autostart at sign-in
+### 5. Add Windows daemon autostart at sign-in
 
 Keep the daemon headless and non-resident in UI terms.  Design the smallest Windows-native
 sign-in mechanism that starts one daemon process, reports failure honestly, and avoids creating
 multiple listeners/relay parkers on repeated login or manual launch.
 
-### 8. Add a thin Fluent Windows control surface
+### 6. Add a thin Fluent Windows control surface
 
 The intended shape is a separate, non-resident tray/settings process, not a UI framework linked
 into `conduit-daemon`.  It should eventually surface pairing identity, status, diagnostics, and
 configuration without becoming another transport owner.  Reference Sefirah only for visual
 language; preserve the clean implementation and non-GPL licensing options.
 
-### 9. Re-run device-specific persistence/permission checks after platform changes
+### 7. Re-run device-specific persistence/permission checks after platform changes
 
 - Verify `filesDir` persistence after an app reinstall/update.
 - Re-grant and test `RECEIVE_SENSITIVE_NOTIFICATIONS` after every reinstall on Android 15+.
@@ -110,3 +95,11 @@ desktop naming, camera-photo toast activation, and screenshot → native toast �
 The screenshot path was verified on the target CPH2573 with clipboard non-interference and a
 duplicate scanner callback check; consult [progress.md](progress.md) for the evidence level and
 caveats rather than treating feature presence as blanket milestone completion.
+
+Two prior P0 investigations are now folded into completed evidence rather than left as parallel
+backlog items. The old relay's transient fresh-park refusal was reproduced during a daemon
+restart and matches the same-role stale-waiter failure already addressed by the compatible
+role-byte migration; real confirmation belongs to that rollout. The supposed 259,737-byte
+missing-file incident was replayed with the exact phone screenshot and proved to be an early
+mid-transfer check: the final file appeared at eight seconds with an exact SHA-256 match. Commit
+`d5554ec` additionally closes the genuine cleanup hole found in finalisation-error paths.

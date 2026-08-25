@@ -26,7 +26,7 @@ compatible relay is deployed first.
 | Area | Last recorded result | What it establishes | Limitation |
 | --- | --- | --- | --- |
 | Android JVM suite | **16 passed, 0 failed** | Noise transcript, frame limits, bounded history, file/image validation including capture flags, notification payload budget, wire behaviours, and explicit initiator relay preamble. | No actual system-server hook, notification listener, or device radio lifecycle. |
-| Windows daemon | **37 passed, 2 ignored, 0 failed** on the last full normal run | Rust transport, clipboard/image/file/toast helpers, screenshot semantics, resource-bound assertions, and explicit responder relay preamble. | Ignored tests show real toasts and require interactive validation. |
+| Windows daemon | **39 passed, 2 ignored, 0 failed** on the last full normal run | Rust transport, clipboard/image/file/toast helpers, file-finalisation cleanup failures, screenshot semantics, resource-bound assertions, and explicit responder relay preamble. | Ignored tests show real toasts and require interactive validation. |
 | Compatible relay migration | **9 passed, 0 failed** | Explicit-role splice, legacy 47-byte role inference without consuming Noise, both mixed upgrade orders, stale same-role replacement for new and legacy phones, dead-waiter recovery, and rendezvous isolation. | Production still runs the old relay; server-first rollout and live stale/flap proof remain. |
 | Noise interoperability | JVM transcript test + Rust `snow` fixture | The hand-written Android Noise XX agrees byte-for-byte with a reference implementation. | Does not replace live-network testing. |
 
@@ -71,10 +71,40 @@ cover both explicit-role peers and a deployed-format legacy phone reconnect.
 | Notification filtering | Device-shade inspection confirmed normal Play Store notification mirroring while media playback and Pano Scrobbler silent notifications were dropped. | Test other OEM/ranking edge cases when encountered. |
 | Notification privacy setting | User-owned hide switch persists and defaults off. | Android listener redaction still needs the post-install AppOp. |
 | Notification app icons / avatars | App icon and large-icon cache paths are implemented. | A genuine Nagram XF contact-avatar notification still needs end-to-end proof. |
-| Phone → PC file share | Implemented; at least one transfer was verified byte-for-byte. | One logged approximately 259,737-byte completed transfer was later absent from disk; cause unresolved. |
+| Phone → PC file share | Implemented and re-verified byte-for-byte over the production relay, including the exact historical 259,737-byte screenshot source. | A transfer is not visible at its final filename until all chunks arrive; UI/progress feedback is still intentionally minimal. |
 | Direct Share target | The remembered desktop name is published to Android’s share sheet. | Verify after desktop rename/reinstall scenarios as needed. |
 | Camera photo toast → Snipping Tool | Implementation exists: event-driven MediaStore watcher, staged image, shared-storage token, protocol activation. | Continue interactive checks after changes to the shared capture path. |
 | Screenshot → Windows toast → Snipping Tool | **Implemented and verified on CPH2573.** A real `Pictures/Screenshots/Screenshot_...png` produced exactly one native `New screenshot` toast; clicking it opened that image in Snipping Tool. | Keep the target-device path/name filter current after OEM/platform changes. |
+
+### Phone → PC file incident resolved — 2026-08-25
+
+The earlier backlog entry described a roughly 259,737-byte receive as “logged completed but
+missing”. Rechecking the preserved evidence and replaying the exact source shows that description
+was too strong: the observed gap was a **mid-transfer filesystem check**, not a confirmed file
+that disappeared after `file received`.
+
+- Windows' real Downloads known folder on this machine is `D:\Downloads`.
+- An independent 259,737-byte PNG probe was sent as eight 32 KiB chunks. At a six-second check
+  the final filename was still absent; the daemon logged `file received` about nine seconds after
+  the offer, then the file appeared at exactly 259,737 bytes. Source and destination SHA-256
+  matched.
+- The phone still contains the exact-size historical screenshot
+  `Screenshot_2026-08-24-23-17-29-22_com.tencent.mm.png` (MediaStore id `1000004651`, 259,737
+  bytes). Replaying that real source reproduced the timing: no final file at 2/4/6 seconds,
+  present at 8 seconds, `file received` after about 7.35 seconds, and desktop SHA-256 exactly
+  matched the phone (`318a0ab0...07edb2`).
+- An earlier 362,534-byte screenshot test preserved the same pattern: a four-second check saw
+  only the zero-byte scratch file, then the transfer completed and the scratch was replaced by
+  the full destination. There is no preserved evidence of a completed destination subsequently
+  being deleted.
+- Source review did expose a separate finalisation-error cleanup hole. Commit `d5554ec` tracks
+  publication independently from the open file handle, deletes `.part` after reserve/rename
+  errors, and removes a zero-byte reserved destination if rename fails. Two regression tests
+  cover those windows.
+
+Phone → PC file transfer can therefore be treated as reliable at the tested sizes; future
+failures should be diagnosed from timestamped `file in, receiving` versus `file received` lines,
+not from an early directory snapshot.
 
 ### Screenshot verification — 2026-08-25
 
@@ -161,8 +191,12 @@ evidence remain part of the release gate.
 
 ### Live-state caveats
 
-- A relay previously appeared to refuse fresh parks for a period, then self-healed.  Its cause
-  has not been established.
+- Restarting the legacy daemon reproduced one old-relay fresh-park refusal at
+  `13:29:59.932Z`, followed by a successful session on the normal retry at `13:30:15.441Z`.
+  This is consistent with the already-reproduced same-role stale-waiter bug in the id-only
+  47-byte relay: a new desktop can momentarily meet a stale desktop park. The compatible
+  role-aware relay replaces same-role waiters instead; live confirmation remains part of its
+  server-first rollout rather than a separate unknown-cause investigation.
 - Phone logs showed a parked relay attempt; a final post-reinstall session conclusion was not
   captured because ADB transport and live logging became unreliable.
 - Temporary daemon logs observed during testing were stale/buffered.  Timestamp and active
@@ -177,12 +211,10 @@ evidence remain part of the release gate.
 3. **Relay rollout:** deploy the compatible server first with explicit approval, then upgrade
    endpoints and validate real stale reconnect / opposite-role splice before retiring legacy
    inference.
-4. **File incident:** explain the logged-but-missing received file before calling phone → PC
-   files reliable at all sizes.
-5. **Avatar proof:** capture a real incoming Nagram XF notification carrying a contact icon.
-6. **UI polish:** fix light-surface status-bar icon appearance in the Android app itself.  This
+4. **Avatar proof:** capture a real incoming Nagram XF notification carrying a contact icon.
+5. **UI polish:** fix light-surface status-bar icon appearance in the Android app itself.  This
    is distinct from the already corrected monochrome foreground-service notification icon.
-7. **Windows operability:** add daemon autostart at login and later a non-resident Fluent UI.
+6. **Windows operability:** add daemon autostart at login and later a non-resident Fluent UI.
 
 ## Documentation maintenance
 
