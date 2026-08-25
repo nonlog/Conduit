@@ -9,9 +9,9 @@ import org.junit.Test
  * The history is the one structure in the app that grows with use, so the only thing worth
  * pinning is that it cannot grow without limit.
  *
- * Plain JVM test: [History.record] touches no Android API until it has been given a
- * `SharedPreferences`, and without one it keeps the in-memory list and nothing else — which
- * is exactly the half being checked here.
+ * Plain JVM test: [History.record] touches no Android API until [History.load] has given it a
+ * directory, and without one it keeps the in-memory list and writes nothing — which is exactly
+ * the half being checked here.
  */
 class HistoryBoundTest {
 
@@ -36,14 +36,16 @@ class HistoryBoundTest {
     }
 
     @Test
-    fun worst_case_stays_small_enough_to_keep_in_a_preference() {
+    fun worst_case_stays_small_enough_to_rewrite_on_every_clip() {
         repeat(150) { History.record(Direction.Received, "y".repeat(64_000)) }
         val bytes = History.entries.sumOf { it.preview.length }
         assertEquals(100, History.entries.size)
         // 100 entries x 200 chars. The arithmetic is the point: whatever the user copies,
         // the stored total has a ceiling in the tens of kilobytes.
         assertEquals(20_000, bytes)
-        assertTrue("must stay far under any sane preference size", bytes < 64 * 1024)
+        // Which is what makes the whole-file rewrite in History.save affordable on the
+        // clipboard path, where the callers are the main thread and Link's reader thread.
+        assertTrue("must stay small enough to write synchronously", bytes < 64 * 1024)
     }
 
     @Test

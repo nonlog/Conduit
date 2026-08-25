@@ -7,7 +7,6 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.ClipData
 import android.content.ClipboardManager
-import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
@@ -58,9 +57,6 @@ const val ACTION_DISCONNECT = "com.conduit.sync.DISCONNECT"
 /** Sent by [ShareActivity]: URIs in the intent's ClipData, or text in EXTRA_TEXT. */
 const val ACTION_SHARE = "com.conduit.sync.SHARE"
 
-private const val PREFS = "link"
-private const val PREF_WANTED = "wanted"
-
 /**
  * The long-running half of the app.
  *
@@ -110,13 +106,6 @@ class SyncService : Service() {
     /** Its name, so republishing the share-sheet shortcut happens on a rename and not per session. */
     @Volatile private var knownPeerName: String? = null
 
-    /**
-     * Whether the user wants a link at all, persisted because [START_STICKY] means the
-     * system can restart this service with a null intent — and a restart that silently
-     * reconnects is a restart that overrides the disconnect the user asked for.
-     */
-    @Volatile private var wanted = true
-
     /** Set in [onDestroy] so a retry already in flight cannot touch a closed [Link]. */
     @Volatile private var destroyed = false
 
@@ -127,7 +116,7 @@ class SyncService : Service() {
      */
     private var retryMs = RETRY_MIN_MS
     private val retry = Runnable {
-        if (destroyed || !wanted) return@Runnable
+        if (destroyed || !Settings.linkWanted) return@Runnable
         Log.i(TAG, "retrying the link")
         redial()
     }
@@ -171,7 +160,10 @@ class SyncService : Service() {
         knownPeer = Identity.peer(filesDir)
         knownPeerName = Identity.peerName(filesDir)
         LinkStatus.peerName = knownPeerName
-        wanted = getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PREF_WANTED, true)
+        // Both stores, because this service can be the first component the system starts —
+        // under START_STICKY it is started with no activity involved at all — and the
+        // remembered disconnect it is about to read lives in one of them.
+        Settings.load(this)
         History.load(this)
 
         link = Link(
@@ -240,7 +232,7 @@ class SyncService : Service() {
             intent?.action == ACTION_DISCONNECT -> stopLink()
             intent?.action == ACTION_SHARE -> onShare(intent)
             host != null -> {
-                setWanted(true)
+                Settings.linkWanted = true
                 cancelRetry()
                 LinkStatus.path = "Direct"
                 link.connect(InetSocketAddress(host, intent.getIntExtra("port", PORT)))
@@ -248,13 +240,13 @@ class SyncService : Service() {
             // An explicit tap always overrides a remembered disconnect and starts over from
             // the short interval, so the user never waits out a backoff they did not cause.
             intent?.action == ACTION_CONNECT -> {
-                setWanted(true)
+                Settings.linkWanted = true
                 cancelRetry()
                 redial()
             }
             // A null intent is the system restarting us under START_STICKY. Respecting the
             // remembered choice is the whole reason it is persisted.
-            wanted -> redial()
+            Settings.linkWanted -> redial()
             else -> Log.i(TAG, "restarted, but the user had turned the link off")
         }
         return START_STICKY
@@ -292,7 +284,7 @@ class SyncService : Service() {
     private fun scheduleRetry() = main.post {
         if (destroyed) return@post
         main.removeCallbacks(retry)
-        if (!wanted) {
+        if (!Settings.linkWanted) {
             Log.i(TAG, "link down and the user wants it off, not retrying")
             return@post
         }
@@ -313,22 +305,16 @@ class SyncService : Service() {
         retryMs = RETRY_MIN_MS
     }
 
-    /** The user's tap. Remembered, so a service restart does not undo it. */
+    /** The user's tap. Remembered by [Settings], so a service restart does not undo it. */
     private fun stopLink() {
         Log.i(TAG, "user asked for a disconnect")
-        setWanted(false)
+        Settings.linkWanted = false
         main.removeCallbacks(retry)
         retryMs = RETRY_MIN_MS
         discovery.stop()
         link.disconnect()
         LinkStatus.state = LinkState.Idle
         LinkStatus.path = null
-    }
-
-    private fun setWanted(value: Boolean) {
-        wanted = value
-        getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putBoolean(PREF_WANTED, value).apply()
     }
 
     /**
@@ -341,7 +327,7 @@ class SyncService : Service() {
      * eight seconds of radio for a guaranteed miss.
      */
     private fun redial(net: Network? = null) {
-        if (!wanted) {
+        if (!Settings.linkWanted) {
             Log.i(TAG, "not dialling; the user turned the link off")
             return
         }
