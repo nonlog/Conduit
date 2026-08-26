@@ -176,6 +176,7 @@ dependencies = [
  "tracing-subscriber",
  "windows",
  "windows-registry",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
