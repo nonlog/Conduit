@@ -157,6 +157,7 @@ Set-Location D:\Workspace\Conduit
 .\scripts\soak.ps1 `
   -Attach `
   -AdbSerial <serial from adb devices -l> `
+  -AllowAdbFailover `
   -DaemonLogPath $env:TEMP\conduit-soak-current.out.log `
   -DurationMinutes 2880 `
   -IntervalSeconds 60 `
@@ -167,6 +168,11 @@ Set-Location D:\Workspace\Conduit
 
 `-QuiescentBaseline` needs root on the test phone because `SyncService` is deliberately not
 exported; the script uses the existing root environment instead of weakening the manifest.
+`-AllowAdbFailover` pins the phone by `ro.serialno` and, if the selected ADB transport disappears,
+switches to another online transport for the same physical device. This is useful on the test
+phone, where the hardware serial and local `127.0.0.1:15556/15557` transports can come and go
+independently. Every sample records the transport it actually used, and the summary records the
+initial/final transport plus the failover count.
 The quiescent settling windows are outside `DurationMinutes`, so 2880 means a full 48 hours of
 observed run time. A negative resource delta is acceptable for leak detection; the summary's
 `NoGrowth` booleans reject only positive thread/handle/FD/socket growth. Memory deltas remain

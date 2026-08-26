@@ -120,7 +120,9 @@ See `docs/architecture.md` for full data flow and trust boundaries.
 - M0/M2 sampler: `scripts/soak.ps1` records resource samples and lifecycle logs; creation-side
   lifecycle counters are now emitted by both Android and Windows. A controlled short quiescent
   self-test ended at Windows `created=5 closed=5` and Android `opened=4 closed=4` with thread/FD
-  counts back at baseline. This proves the collector works, not that M0 is complete.
+  counts back at baseline. It can also follow ADB transport changes by `ro.serialno`; a live
+  `15557 → 15556` failover retained 100% Android sample coverage and a quiescent follow-up still
+  ended with both lifecycle gaps at zero. This proves the collector works, not that M0 is complete.
 - Last sampled daemon: about **9 threads**, **247 handles**, **24.1 MB working set**, about
   **276 minutes** uptime.
 - Earlier lifecycle observation: 14 completed sessions with `created == closed`; an active

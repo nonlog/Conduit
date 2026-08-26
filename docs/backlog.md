@@ -14,8 +14,9 @@
 - Treat logs as evidence only when they are current.  Measure live process state and force real
   peer/socket loss; removing a forwarding rule alone does not close an established session.
 - `scripts/soak.ps1` now supplies repeatable samples, lifecycle gaps, PID stability and Android
-  coverage. Short self-tests passed; what remains is the real 48-hour run and deliberate network
-  transition campaign, not more sampler scaffolding.
+  coverage, and can follow ADB transport changes by physical-device serial. Short self-tests,
+  including a live ADB transport failover, passed; what remains is the real 48-hour run and
+  deliberate network transition campaign, not more sampler scaffolding.
 
 ## P1 — verification and operational quality
 

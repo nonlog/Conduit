@@ -183,6 +183,13 @@ These values are encouraging samples, not exit criteria:
   threads/FDs returned 19→19 / 141→141. Windows handles ended one below baseline. Small RSS/private
   memory movement remained, as expected over a seconds-long diagnostic. This validates the
   collector, **not** the 48-hour milestone.
+- The sampler now identifies the physical phone by `ro.serialno` and can follow a replacement ADB
+  transport with `-AllowAdbFailover`. A live test started on `127.0.0.1:15557`, deliberately
+  disconnected that transport while `15556` remained online, and continued on `15556` with
+  `AdbFailoverCount=1` and 100% Android sample coverage. A second quiescent failover test still
+  finished at Windows `created=11 closed=11` and Android `opened=9 closed=9`. The best-effort raw
+  host logcat stream correctly reported that its original transport exited; lifecycle snapshots
+  in the samples/final quiescent event preserved the invariant evidence across the transport swap.
 
 The mandatory interpretation is:
 

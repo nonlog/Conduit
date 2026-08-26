@@ -11,6 +11,8 @@ param(
 
     [string]$AdbSerial,
 
+    [switch]$AllowAdbFailover,
+
     [string]$DaemonPath = (Join-Path $PSScriptRoot '..\target\debug\conduit-daemon.exe'),
 
     [switch]$Attach,
@@ -37,30 +39,70 @@ function Resolve-Adb {
     return $cmd.Source
 }
 
-function Resolve-Serial([string]$Requested, [string]$Adb) {
-    if ($Requested) { return $Requested }
-
-    $devices = @(
-        & $Adb devices |
+function Get-OnlineAdbSerials([string]$Adb) {
+    return @(
+        & $Adb devices -l 2>$null |
             Select-Object -Skip 1 |
             ForEach-Object {
                 if ($_ -match '^(\S+)\s+device(?:\s|$)') { $Matches[1] }
             }
     )
+}
+
+function Get-HardwareSerial([string]$Serial, [string]$Adb) {
+    $old = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $values = @(& $Adb -s $Serial shell getprop ro.serialno 2>$null)
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $old
+    }
+    $value = $values | Select-Object -First 1
+    if ($code -ne 0 -or !$value) { return $null }
+    return $value.Trim()
+}
+
+function Resolve-Serial([string]$Requested, [string]$Adb) {
+    if ($Requested) { return $Requested }
+
+    $devices = @(Get-OnlineAdbSerials $Adb)
     if ($devices.Count -ne 1) {
         throw "Expected exactly one ADB device, found $($devices.Count). Pass -AdbSerial explicitly."
     }
     return $devices[0]
 }
 
+function Try-AdbFailover {
+    if (!$AllowAdbFailover -or !$script:HardwareSerial) { return $false }
+
+    $oldSerial = $script:Serial
+    foreach ($candidate in @(Get-OnlineAdbSerials $script:Adb)) {
+        if ($candidate -eq $oldSerial) { continue }
+        $hardware = Get-HardwareSerial $candidate $script:Adb
+        if ($hardware -eq $script:HardwareSerial) {
+            $script:Serial = $candidate
+            $script:AdbFailovers++
+            Write-Warning "ADB transport failover: $oldSerial -> $candidate (device $hardware)"
+            return $true
+        }
+    }
+    return $false
+}
+
 function Invoke-Adb([string[]]$AdbArgs, [switch]$AllowFailure) {
-    $old = $ErrorActionPreference
-    try {
-        $ErrorActionPreference = 'Continue'
-        $output = & $script:Adb -s $script:Serial @AdbArgs 2>$null
-        $code = $LASTEXITCODE
-    } finally {
-        $ErrorActionPreference = $old
+    for ($attempt = 0; $attempt -lt 2; $attempt++) {
+        $old = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $output = & $script:Adb -s $script:Serial @AdbArgs 2>$null
+            $code = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $old
+        }
+        if ($code -eq 0) { return @($output) }
+        if ($attempt -eq 0 -and (Try-AdbFailover)) { continue }
+        break
     }
     if ($code -ne 0 -and !$AllowFailure) {
         throw "adb exited with ${code}: $($AdbArgs -join ' ')"
@@ -74,19 +116,21 @@ function Invoke-ServiceAction([string]$Action) {
     # script convenient. Passing the whole `am` command as one `su -c` argument also avoids
     # shell quoting depending on whichever PowerShell happens to launch this file.
     $command = "am start-foreground-service --user 0 -n $Service -a $Action"
-    $old = $ErrorActionPreference
-    try {
-        $ErrorActionPreference = 'Continue'
-        # `adb shell` reconstructs its remote command line. Passing `su`, `-c`, and the
-        # command as separate native arguments loses the grouping on this Windows host;
-        # send one quoted remote-shell string instead (the same form used during device
-        # verification) so `su -c` receives exactly one command.
-        & $script:Adb -s $script:Serial shell "su -c '$command'" | Out-Null
-        $code = $LASTEXITCODE
-    } finally {
-        $ErrorActionPreference = $old
-    }
-    if ($code -ne 0) {
+    for ($attempt = 0; $attempt -lt 2; $attempt++) {
+        $old = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            # `adb shell` reconstructs its remote command line. Passing `su`, `-c`, and the
+            # command as separate native arguments loses the grouping on this Windows host;
+            # send one quoted remote-shell string instead (the same form used during device
+            # verification) so `su -c` receives exactly one command.
+            $null = & $script:Adb -s $script:Serial shell "su -c '$command'" 2>$null
+            $code = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $old
+        }
+        if ($code -eq 0) { return }
+        if ($attempt -eq 0 -and (Try-AdbFailover)) { continue }
         throw "adb root service action exited with ${code}: $Action"
     }
 }
@@ -139,9 +183,13 @@ function Get-WindowsSample([int]$DaemonPid) {
 function Add-Sample([string]$Phase, [int]$DaemonPid, [string]$Csv) {
     $win = Get-WindowsSample $DaemonPid
     $android = Get-AndroidSample
+    $windowsLifecycle = Get-LastLifecycle $DaemonLogPath `
+        'created=(\d+).*closed=(\d+)' @('Created', 'Closed')
+    $androidLifecycle = Get-AndroidLifecycleSnapshot
     $sample = [pscustomobject]@{
         TimestampUtc = [DateTime]::UtcNow.ToString('o')
         Phase = $Phase
+        AdbSerial = $script:Serial
         WindowsPid = $win.WindowsPid
         WindowsThreads = $win.WindowsThreads
         WindowsHandles = $win.WindowsHandles
@@ -150,10 +198,14 @@ function Add-Sample([string]$Phase, [int]$DaemonPid, [string]$Csv) {
         WindowsTcpEstablished = $win.WindowsTcpEstablished
         WindowsTcpListen = $win.WindowsTcpListen
         WindowsTcpTotal = $win.WindowsTcpTotal
+        WindowsCreated = if ($windowsLifecycle) { $windowsLifecycle.Created } else { $null }
+        WindowsClosed = if ($windowsLifecycle) { $windowsLifecycle.Closed } else { $null }
         AndroidPid = $android.AndroidPid
         AndroidThreads = $android.AndroidThreads
         AndroidFds = $android.AndroidFds
         AndroidRssKb = $android.AndroidRssKb
+        AndroidOpened = if ($androidLifecycle) { $androidLifecycle.Opened } else { $null }
+        AndroidClosed = if ($androidLifecycle) { $androidLifecycle.Closed } else { $null }
     }
     $sample | Export-Csv -LiteralPath $Csv -NoTypeInformation -Append -Encoding utf8
     Write-Host (
@@ -203,6 +255,12 @@ function Delta($First, $Last, [string]$Name) {
 
 $script:Adb = Resolve-Adb
 $script:Serial = Resolve-Serial $AdbSerial $script:Adb
+$script:InitialSerial = $script:Serial
+$script:HardwareSerial = Get-HardwareSerial $script:Serial $script:Adb
+$script:AdbFailovers = 0
+if ($AllowAdbFailover -and !$script:HardwareSerial) {
+    throw "Cannot enable ADB failover because $($script:Serial) did not report ro.serialno."
+}
 
 if (!$OutputDir) {
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -258,6 +316,8 @@ $logcat = Start-Process -FilePath $script:Adb -ArgumentList $logcatArgs -WindowS
 
 Write-Host "Conduit soak output: $OutputDir"
 Write-Host "ADB serial: $script:Serial"
+Write-Host "Android hardware serial: $($script:HardwareSerial ?? '<unknown>')"
+Write-Host "ADB failover: $AllowAdbFailover"
 Write-Host "Daemon PID: $($daemon.Id)"
 Write-Host "Duration: $DurationMinutes min; interval: $IntervalSeconds s"
 if ($QuiescentBaseline) { Write-Host "Quiescent settle: $QuiesceSeconds s" }
@@ -319,15 +379,24 @@ $windowsLifecycle = Get-LastLifecycle $DaemonLogPath `
     'created=(\d+).*closed=(\d+)' @('Created', 'Closed')
 $capturedAndroidLifecycle = Get-LastLifecycle $androidLog `
     'opened=(\d+).*closed=(\d+)' @('Opened', 'Closed')
-$androidLifecycle = if ($capturedAndroidLifecycle) {
-    $capturedAndroidLifecycle
-} else {
-    $initialAndroidLifecycle
-}
 $recorded = if (Test-Path -LiteralPath $samplesPath) { @(Import-Csv -LiteralPath $samplesPath) } else { @() }
 $windowsPids = @($recorded.WindowsPid | Where-Object { $_ } | Sort-Object -Unique)
 $androidPids = @($recorded.AndroidPid | Where-Object { $_ } | Sort-Object -Unique)
+$adbSerials = @(@($script:InitialSerial) + @($recorded.AdbSerial | Where-Object { $_ }) | Sort-Object -Unique)
 $androidSamples = @($recorded | Where-Object { $_.AndroidPid }).Count
+$sampleAndroidLifecycle = $recorded |
+    Where-Object { $_.AndroidOpened -ne '' -and $_.AndroidClosed -ne '' } |
+    Select-Object -Last 1
+$androidLifecycle = if ($capturedAndroidLifecycle) {
+    $capturedAndroidLifecycle
+} elseif ($sampleAndroidLifecycle) {
+    [pscustomobject]@{
+        Opened = [int64]$sampleAndroidLifecycle.AndroidOpened
+        Closed = [int64]$sampleAndroidLifecycle.AndroidClosed
+    }
+} else {
+    $initialAndroidLifecycle
+}
 $windowsGap = if ($windowsLifecycle) { $windowsLifecycle.Created - $windowsLifecycle.Closed } else { $null }
 $androidGap = if ($androidLifecycle) { $androidLifecycle.Opened - $androidLifecycle.Closed } else { $null }
 
@@ -338,7 +407,12 @@ $summary = [ordered]@{
     IntervalSeconds = $IntervalSeconds
     QuiesceSeconds = if ($QuiescentBaseline) { $QuiesceSeconds } else { $null }
     OutputDir = $OutputDir
+    InitialAdbSerial = $script:InitialSerial
     AdbSerial = $script:Serial
+    AndroidHardwareSerial = $script:HardwareSerial
+    AdbFailoverEnabled = [bool]$AllowAdbFailover
+    AdbFailoverCount = $script:AdbFailovers
+    AdbSerialsObserved = $adbSerials
     GitHead = $gitHead
     DaemonSha256 = $daemonSha256
     DaemonPid = if ($daemon) { $daemon.Id } else { $null }
@@ -357,6 +431,8 @@ $summary = [ordered]@{
     AndroidLifecycle = $androidLifecycle
     AndroidLifecycleSource = if ($capturedAndroidLifecycle) {
         'captured-run'
+    } elseif ($sampleAndroidLifecycle) {
+        'sample-snapshot'
     } elseif ($initialAndroidLifecycle) {
         'pre-run-snapshot'
     } else { $null }
