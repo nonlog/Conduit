@@ -1,6 +1,6 @@
 # Conduit development progress
 
-> **Snapshot date:** 2026-08-25  
+> **Snapshot date:** 2026-08-26
 > **Meaning of “verified”:** an observed test/device result, not an assumption inferred from
 > source.  This record is intentionally more conservative than a feature checklist.
 
@@ -16,10 +16,10 @@ The latest protocol implementation commit on local `master` is `86a2b86`:
 Make relay role migration backward compatible
 ```
 
-At this snapshot it is ahead of `origin/master`; do not treat it as published. The compatible
-relay migration is committed locally but has not been deployed. The installed phone/daemon still
-speak the deployed 47-byte form; do not install or restart the new role-aware clients until the
-compatible relay is deployed first.
+Local `master` remains ahead of `origin/master`; do not treat the source commits as published.
+The protocol rollout itself **is deployed on the test/production path**: TYO now runs the
+compatible relay, and the installed Android/Windows endpoints now send explicit roles. Legacy
+47-byte inference remains enabled only as an upgrade bridge for older clients.
 
 ## Test evidence
 
@@ -27,12 +27,33 @@ compatible relay is deployed first.
 | --- | --- | --- | --- |
 | Android JVM suite | **16 passed, 0 failed** | Noise transcript, frame limits, bounded history, file/image validation including capture flags, notification payload budget, wire behaviours, and explicit initiator relay preamble. | No actual system-server hook, notification listener, or device radio lifecycle. |
 | Windows daemon | **39 passed, 2 ignored, 0 failed** on the last full normal run | Rust transport, clipboard/image/file/toast helpers, file-finalisation cleanup failures, screenshot semantics, resource-bound assertions, and explicit responder relay preamble. | Ignored tests show real toasts and require interactive validation. |
-| Compatible relay migration | **9 passed, 0 failed** | Explicit-role splice, legacy 47-byte role inference without consuming Noise, both mixed upgrade orders, stale same-role replacement for new and legacy phones, dead-waiter recovery, and rendezvous isolation. | Production still runs the old relay; server-first rollout and live stale/flap proof remain. |
+| Compatible relay migration | **9 passed, 0 failed** | Explicit-role splice, legacy 47-byte role inference without consuming Noise, both mixed upgrade orders, stale same-role replacement for new and legacy phones, dead-waiter recovery, and rendezvous isolation. | Production rollout is complete; long-duration M2 flap evidence and eventual legacy-path retirement remain. |
 | Noise interoperability | JVM transcript test + Rust `snow` fixture | The hand-written Android Noise XX agrees byte-for-byte with a reference implementation. | Does not replace live-network testing. |
 
 The misleading earlier `the_two_roles_of_one_id_are_separate_slots` test was replaced with
 `opposite_roles_of_one_id_splice_immediately`. The load-bearing stale-waiter regressions now
 cover both explicit-role peers and a deployed-format legacy phone reconnect.
+
+### Relay production rollout — 2026-08-26
+
+- TYO `tyo.414222.xyz:41113` was upgraded server-first at **10:00:46 +08** to the compatible
+  static-musl relay (`sha256 b54a352b...0320b391`). The previous binary was preserved as
+  `/usr/local/bin/conduit-relay.pre-compat-20260826-100046` (`sha256 9ff6b8af...9baff6a`).
+- Before either endpoint was upgraded, the existing clients established a real session through
+  the new relay. The relay classified the old phone as `role=> legacy=true` and the old desktop
+  as `role=< legacy=true`.
+- Windows was upgraded next. A real mixed session succeeded with old Android
+  `role=> legacy=true` and new Windows `role=< legacy=false`.
+- Android was then rebuilt (`16 passed, 0 failed`), reinstalled, and its sensitive-notification
+  AppOp re-granted. The final real session is explicit on both ends:
+  `role=> legacy=false` phone and `role=< legacy=false` desktop.
+- Three forced Android process stop/restart cycles then produced three clean re-splices. Windows
+  reached `created=4 closed=4` before the fifth session became active; no 36/36 initiator
+  self-splice reappeared.
+- A separate production-relay probe under an isolated rendezvous id presented two explicit `>`
+  waiters. The second logged `displaced a stale waiter`; an opposite-role probe then consumed the
+  remaining waiter and closed the test pair, proving the replacement branch on the live server
+  without disturbing the real device id.
 
 ## Device and feature evidence
 
@@ -140,6 +161,10 @@ These values are encouraging samples, not exit criteria:
 - Earlier M0 work also observed unchanged Android thread/FD/RSS values across six real
   desktop-restart cycles, with the reader-thread ID changing per connection.  This demonstrates
   teardown on those cycles; it does not establish a 48-hour zero-delta result.
+- During the 2026-08-26 role-aware rollout, three consecutive Android process restarts closed and
+  recreated real relay sessions. Immediately before the final active session, Windows logged
+  `created=4 closed=4`; the final session then came up normally. This is additional churn evidence,
+  not a substitute for the 48-hour/M2 gates.
 
 The mandatory interpretation is:
 
@@ -164,7 +189,7 @@ observed Android slicing failure and leaving recovery subject to retry timing.
 Android Noise input now reports a protocol-sized short handshake error rather than a generic
 internal `IndexOutOfBoundsException`.
 
-### Compatible migration implemented locally, not released
+### Compatible migration deployed
 
 New endpoint builds use:
 
@@ -184,21 +209,19 @@ peeks for up to one second. Immediate post-preamble Noise bytes identify the pho
 a quiet legacy connection is the desktop/responder. The peek leaves Noise message 1 untouched.
 Tests prove old↔old and both mixed upgrade orders, plus stale legacy-phone displacement.
 
-The migration now has a safe order but is **not deployed**: install the compatible relay first,
-then upgrade endpoints. New endpoint builds cannot be used against the currently deployed old
-relay because it does not understand the extra role byte. Live stale-reconnect and network-flap
-evidence remain part of the release gate.
+The server-first migration was executed on 2026-08-26 and all three rollout stages were observed
+live: old↔old, old-phone↔new-desktop, then new↔new. The live server also demonstrated explicit
+same-role stale-waiter replacement. Legacy inference stays enabled for rollback/older-client
+compatibility until the old-client window is deliberately closed. Network-flap endurance remains
+part of M2 rather than part of protocol deployment.
 
 ### Live-state caveats
 
 - Restarting the legacy daemon reproduced one old-relay fresh-park refusal at
   `13:29:59.932Z`, followed by a successful session on the normal retry at `13:30:15.441Z`.
   This is consistent with the already-reproduced same-role stale-waiter bug in the id-only
-  47-byte relay: a new desktop can momentarily meet a stale desktop park. The compatible
-  role-aware relay replaces same-role waiters instead; live confirmation remains part of its
-  server-first rollout rather than a separate unknown-cause investigation.
-- Phone logs showed a parked relay attempt; a final post-reinstall session conclusion was not
-  captured because ADB transport and live logging became unreliable.
+  47-byte relay: a new desktop can momentarily meet a stale desktop park. The compatible relay is
+  now deployed and its live same-role replacement branch has been confirmed.
 - Temporary daemon logs observed during testing were stale/buffered.  Timestamp and active
   process logging must be checked before diagnosing a current session from them.
 
@@ -208,9 +231,8 @@ evidence remain part of the release gate.
    counters matching the invariant.
 2. **M2 flap resilience:** repeated cellular ↔ Wi-Fi/hotspot changes with no growing session
    count, thread count, or relay-pair leak.
-3. **Relay rollout:** deploy the compatible server first with explicit approval, then upgrade
-   endpoints and validate real stale reconnect / opposite-role splice before retiring legacy
-   inference.
+3. **Legacy relay retirement:** remove one-second 47-byte role inference only after old clients
+   are no longer expected and M2 has supplied enough real reconnection evidence.
 4. **Avatar proof:** capture a real incoming Nagram XF notification carrying a contact icon.
 5. **UI polish:** fix light-surface status-bar icon appearance in the Android app itself.  This
    is distinct from the already corrected monochrome foreground-service notification icon.

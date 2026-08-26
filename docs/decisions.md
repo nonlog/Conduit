@@ -373,7 +373,7 @@ destruction is someone else's problem is the exact shape of the Phone Link leak.
 needs none of it, because the phone always dials out and NAT only has to be traversed in the
 direction it already permits.
 
-The deployed preamble is the original fixed 47 bytes — `CDT1` plus a 43-character base64url
+The original deployed preamble was the fixed 47 bytes — `CDT1` plus a 43-character base64url
 id. That omitted the role because the phone is always the Noise initiator and the desktop is
 always the responder. Real reconnect behaviour proved the omission wrong: a stale parked phone
 could survive long enough for the same phone's next attempt to arrive, and the id-only relay
@@ -439,11 +439,13 @@ no home and no writable path. Cross-compiled from Windows with the toolchain's o
 cross-toolchain is involved, and the box has only ~390 MB of RAM free, which is not enough
 to compile tokio on.
 
-As of 2026-08-25 this production instance still runs the legacy 47-byte implementation. Commit
-`86a2b86` contains the compatible server plus explicit-role Android/Windows writers, but none of
-those protocol changes has been deployed or installed. The safe order is compatible relay first,
-verify old clients, then upgrade one endpoint at a time and finally retire legacy inference after
-M2/stale-reconnect evidence.
+On 2026-08-26 this instance was upgraded to the compatible implementation (static-musl binary
+sha256 `b54a352b...0320b391`), with the prior binary retained as a rollback copy. The rollout was
+performed in the designed order and observed live: old↔old succeeded, old-phone↔new-desktop
+succeeded, then new↔new succeeded after the Android upgrade. Three subsequent phone process
+restart cycles re-spliced cleanly, and an isolated same-role live-server probe logged stale waiter
+replacement. Legacy 47-byte inference remains enabled only for older-client compatibility and
+should be removed after M2 evidence and the compatibility window are complete.
 
 Chosen over the other three hosts on latency (77 ms) and, decisively, on reachability: the
 other candidate's outbound clients need a local HTTP proxy, and a relay the phone must reach

@@ -1,7 +1,7 @@
 # Conduit architecture
 
-> **Status:** implementation-oriented map as of 2026-08-25.  It describes the current
-> source tree and explicitly marks the relay migration draft that is **not deployable**.
+> **Status:** implementation-oriented map as of 2026-08-26. It describes the current
+> source tree and the role-aware relay protocol now deployed on the test/production path.
 > Decision rationale and research evidence live in [decisions.md](decisions.md) and
 > [research-synthesis.md](research-synthesis.md); this document avoids restating them.
 
@@ -187,14 +187,14 @@ new peers correct user-facing semantics.
 
 ## Relay preamble: deployed contract and compatible migration
 
-The currently deployed relay and the endpoints installed on the test devices still speak the
-47-byte legacy preamble:
+The legacy preamble remains accepted during the migration window:
 
 ```text
 CDT1 + 43-character base64url desktop rendezvous ID
 ```
 
-Commit `86a2b86` implements the role-aware 48-byte form in both endpoint writers:
+Commit `86a2b86` implements the role-aware 48-byte form in both endpoint writers, and the
+installed Android/Windows endpoints now use it:
 
 ```text
 CDT1 + role byte + 43-character rendezvous ID
@@ -214,14 +214,11 @@ Noise byte remains in the socket.
 This makes all four combinations interoperable **on the compatible relay**: old↔old,
 old-phone↔new-desktop, new-phone↔old-desktop, and new↔new. The safe rollout order is therefore:
 
-1. deploy the compatible relay while all installed clients remain on 47 bytes;
-2. upgrade the Windows and Android endpoints, which then send explicit roles; and
-3. after the legacy population is retired and live flap/stale-waiter evidence is captured,
-   remove the one-second legacy inference path in a later cleanup.
-
-> **Do not install/restart the role-aware clients before the compatible relay is deployed.**
-> The currently deployed old relay does not understand the extra role byte. No production
-> deployment has been performed yet.
+That rollout was completed on 2026-08-26: compatible server first, old↔old verification, Windows
+upgrade with a mixed session, then Android upgrade and new↔new verification. The production relay
+also demonstrated explicit same-role waiter displacement under an isolated test rendezvous. The
+remaining protocol cleanup is simply to remove legacy inference after old clients are retired and
+M2 reconnection evidence is sufficient.
 
 ## Related documents
 

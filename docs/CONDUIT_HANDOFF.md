@@ -1,6 +1,6 @@
 # Conduit handoff
 
-**Prepared:** 2026-08-25  
+**Prepared:** 2026-08-26
 **Repository:** `D:\Workspace\Conduit`  
 **Branch:** `master`  
 **Remote:** `https://github.com/nonlog/Conduit.git`
@@ -17,11 +17,11 @@
    git log --oneline --decorate -8
    ```
 
-3. The compatible relay migration is implemented locally, but **production still runs the old
-   relay and the installed endpoints still use the old 47-byte preamble**. Do not install or
-   restart role-aware client builds before the compatible relay is deployed first.
-4. Screenshot → native Windows toast → Snipping Tool is implemented and device-verified. The
-   next relay step is deployment-gated; non-deployment correctness work can continue meanwhile.
+3. The compatible relay migration is **deployed**. TYO runs the compatible server and the installed
+   Android/Windows endpoints use explicit roles; keep legacy inference for older clients until M2
+   evidence and deliberate retirement.
+4. Screenshot → native Windows toast → Snipping Tool is implemented and device-verified. The next
+   P0 is endurance/flap instrumentation and evidence, not more relay protocol work.
 
 ## Documentation created in this pass
 
@@ -44,20 +44,14 @@ origin/master:           1c7e18c Send files from the share sheet, and stop toast
 ```
 
 Local `master` includes the tested persistence fix, screenshot implementation, and compatible
-relay migration. None has been pushed. After the documentation update, `git status --short`
-should be clean before the next task starts. A future push is outward-facing: obtain explicit
-approval unless it is requested again.
+relay migration. None has been pushed. The deployed relay/installed clients were built from this
+local line. A future Git push is still outward-facing: obtain explicit approval unless requested
+in the same context.
 
-Git identity is configured as:
-
-```text
-Claude <noreply@anthropic.com>
-```
-
-Use this trailer for Claude-assisted commits:
+Commits created by the coding agent must use:
 
 ```text
-Co-Authored-By: Claude <noreply@anthropic.com>
+Codex <codex@openai.com>
 ```
 
 Do not casually delete old filter-branch backup refs or rewrite-recovery material until remote
@@ -120,6 +114,9 @@ See `docs/architecture.md` for full data flow and trust boundaries.
 - Windows daemon normal test run: **39 passed, 2 ignored, 0 failed**.
 - Compatible relay migration: **9 passed, 0 failed**, including legacy↔legacy, both mixed
   upgrade orders, explicit stale-role replacement, and legacy stale-phone replacement.
+- Production rollout: old↔old and old-phone↔new-desktop connected through the compatible relay;
+  installed new Android + new Windows now connect with `legacy=false` on both sides. Three forced
+  phone restart cycles left Windows at `created=4 closed=4` before the fifth session became active.
 - Last sampled daemon: about **9 threads**, **247 handles**, **24.1 MB working set**, about
   **276 minutes** uptime.
 - Earlier lifecycle observation: 14 completed sessions with `created == closed`; an active
@@ -149,7 +146,7 @@ See `docs/architecture.md` for full data flow and trust boundaries.
   device file.  Do not perform a screenshot and then wait through the short keyguard/bouncer
   window before operating it.
 
-## Relay failure and compatible local migration
+## Relay failure and deployed compatible migration
 
 ### Failure
 
@@ -165,7 +162,7 @@ initiators together.  A 32-byte Noise message 1 then arrives where the initiator
 80-byte message 2.  Android’s bounds hardening now reports a peer-protocol error rather than
 an internal slice exception.
 
-### Local migration implementation
+### Migration implementation
 
 New client builds send:
 
@@ -181,28 +178,24 @@ explicit role or the first base64url id byte; for a legacy connection it peeks f
 second after the id. Immediate Noise bytes classify a phone/initiator, while a quiet connection
 is the desktop/responder. `peek` leaves the Noise bytes untouched.
 
-### Critical deployment warning
+### Deployment state
 
-Android `Link.kt` now builds an explicit `>` initiator preamble and Windows `wire.rs::park`
-builds an explicit `<` responder preamble. The compatible relay can pair those with each other
-or with legacy clients, and the local suite proves both upgrade orders. However the **currently
-deployed relay is still old** and cannot parse the extra byte. Therefore:
-
-1. deploy the compatible relay first, with explicit approval;
-2. verify the still-old installed clients through it;
-3. then upgrade one endpoint, verify mixed-version operation, and upgrade the other; and
-4. only retire legacy inference after live M2/stale-reconnect evidence and old-client retirement.
+Android `Link.kt` builds an explicit `>` initiator preamble and Windows `wire.rs::park` builds an
+explicit `<` responder preamble. On 2026-08-26 the compatible relay was deployed first, old clients
+were verified, Windows was upgraded and verified in a mixed session, then Android was upgraded.
+The installed pair now uses explicit roles on both ends. The old relay binary is retained on TYO
+as `/usr/local/bin/conduit-relay.pre-compat-20260826-100046` for rollback.
 
 The old misleading role-slot test was replaced by `opposite_roles_of_one_id_splice_immediately`.
 The two stale-waiter regressions are `a_peer_is_never_spliced_to_a_stale_copy_of_itself` and
 `a_legacy_phone_reconnect_displaces_its_stale_copy`.
 
-## Recommended next non-deployment work
+## Recommended next work
 
-Until relay deployment is explicitly approved, continue correctness work that does not change
-the production protocol. The highest-value remaining P0 work is endurance
-instrumentation/evidence. Do not install the newly built role-aware APK or restart the daemon
-from new source against the old production relay just for unrelated tests.
+The highest-value remaining P0 is endurance/flap instrumentation and evidence: automate resource
+sampling, then run the 48-hour M0 window and controlled cellular ↔ Wi-Fi/hotspot M2 transitions.
+Do not remove legacy relay inference merely because current clients are upgraded; retire it only
+after the compatibility window and M2 evidence are sufficient.
 
 ## Useful commands
 

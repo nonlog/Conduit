@@ -4,9 +4,9 @@
 > **Primary targets:** Android API 29–36 and native Windows  
 > **Read first:** [architecture.md](architecture.md) and [decisions.md](decisions.md)
 
-This is the repeatable local workflow.  It does not describe deployment of the public relay;
-that is an outward-facing, coordinated operation and must wait for the protocol migration
-plan documented in the backlog.
+This is the repeatable local workflow. Public-relay changes remain outward-facing operations;
+the compatible role-aware migration was deployed on 2026-08-26, so future relay changes still
+need explicit deployment intent and rollback discipline rather than being implied by a local test.
 
 ## Repository map
 
@@ -124,12 +124,11 @@ Set-Location D:\Workspace\Conduit
 cargo test -p conduit-relay
 ```
 
-The relay test result validates the source currently on disk. It does **not** authorise a
-deployment. Commit `86a2b86` contains the compatible migration: the relay accepts both deployed
-47-byte clients and explicit-role 48-byte clients, while Android and Windows now build the
-explicit-role form. The currently deployed relay is still the old implementation, so do not
-install/restart those new clients against production until the compatible relay has been rolled
-out first. See [architecture.md](architecture.md#relay-preamble-deployed-contract-and-compatible-migration).
+The relay test result validates the source currently on disk; it never authorises a future
+deployment by itself. Commit `86a2b86` is the currently deployed compatibility design: the relay
+accepts legacy 47-byte clients and explicit-role 48-byte clients, while the installed Android and
+Windows clients use explicit roles. See
+[architecture.md](architecture.md#relay-preamble-deployed-contract-and-compatible-migration).
 
 ### Whole workspace formatting/checks
 
@@ -229,27 +228,18 @@ Confirm current timestamps and filesystem state after the transfer has had time 
 
 ## Git and change discipline
 
-- Preserve the configured identity:
+- Commits created by the coding agent use the official Codex identity at repository scope or per
+  command; do not rewrite historical authorship:
 
   ```text
-  user.name  = Claude
-  user.email = noreply@anthropic.com
+  user.name  = Codex
+  user.email = codex@openai.com
   ```
-
-- Use this attribution trailer for Claude-assisted commits:
-
-  ```text
-  Co-Authored-By: Claude <noreply@anthropic.com>
-  ```
-
-  GitHub associates this identity with <https://github.com/claude>.
 
 - Do not push merely because local tests pass.  A push is outward-facing and needs explicit
   approval unless it was explicitly requested in the same context.
-- The relay migration is committed locally but not deployed. Preserve its server-first rollout
-  order: compatible relay first, then explicit-role endpoints, then eventual removal of legacy
-  inference after live evidence. Do not install the role-aware endpoints while production still
-  runs the old relay.
+- The relay migration is deployed. Preserve legacy inference until old clients are deliberately
+  retired; removing it is a later protocol change and should be coupled to M2 evidence.
 - Keep commits narrow: protocol revisions must include both endpoint implementations, relay
   compatibility tests, and an explicit migration plan; a relay-only patch is incorrect.
 

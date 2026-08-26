@@ -1,34 +1,11 @@
 # Conduit backlog
 
-> Priorities reflect the current 2026-08-25 working tree.  They are intentionally ordered by
+> Priorities reflect the current 2026-08-26 working tree and deployed test environment. They are intentionally ordered by
 > correctness and lifecycle safety—not by how easy a UI item would be to add.
 
 ## P0 — correctness and release safety
 
-### 1. Roll out the compatible relay role-byte migration safely
-
-Commit `86a2b86` completes the local protocol work. The relay accepts both the deployed 47-byte
-`CDT1 + rendezvous ID` form and the new 48-byte `CDT1 + role + rendezvous ID` form. Legacy peers
-are classified without consuming Noise bytes, Android now emits `>` (initiator), Windows emits
-`<` (responder), and the relay suite covers old↔old plus both mixed upgrade orders. The stale
-same-role bug is covered for both explicit and legacy phone reconnects.
-
-Remaining rollout work:
-
-1. With explicit approval, deploy the **compatible relay first** while installed endpoints are
-   still using the old 47-byte form.
-2. Verify those old endpoints continue to connect through the new server.
-3. Upgrade one endpoint and prove a mixed old/new session, then upgrade the other endpoint and
-   prove new/new operation.
-4. Reproduce a stale same-side reconnect on the real relay and prove it displaces rather than
-   self-splices; also prove the normal opposite-role splice.
-5. Fold the result into M2 cellular ↔ Wi-Fi/hotspot flap evidence.
-6. Retire the one-second legacy inference path only after old clients are no longer expected.
-
-**Do not install/restart the role-aware client builds against the currently deployed old relay.**
-It does not understand the extra role byte. No production rollout has been performed yet.
-
-### 2. Establish endurance evidence
+### 1. Establish endurance evidence
 
 - **M0:** 48-hour LAN run with zero thread, handle/FD, socket, and memory growth after
   quiescence; `created == closed` except for the one active session.
@@ -39,33 +16,33 @@ It does not understand the extra role byte. No production rollout has been perfo
 
 ## P1 — verification and operational quality
 
-### 3. Prove Nagram XF contact-avatar rendering end to end
+### 2. Prove Nagram XF contact-avatar rendering end to end
 
 The extractor and Windows cache path exist.  Capture a genuine incoming Nagram XF notification
 with a large contact icon and verify that the Windows toast shows the contact/avatar rather
 than only the app icon.  If it fails, preserve payload/log evidence before changing extraction.
 
-### 4. Correct Android light-surface status-bar icon contrast
+### 3. Correct Android light-surface status-bar icon contrast
 
 The system notification's monochrome `ic_stat_link` visual size was already corrected.  This
 remaining issue is different: the Android app’s own light surface has incorrect white
 status-bar icons.  Fix only the app-window system-bar appearance; do not regress the
 foreground-service notification artwork.
 
-### 5. Add Windows daemon autostart at sign-in
+### 4. Add Windows daemon autostart at sign-in
 
 Keep the daemon headless and non-resident in UI terms.  Design the smallest Windows-native
 sign-in mechanism that starts one daemon process, reports failure honestly, and avoids creating
 multiple listeners/relay parkers on repeated login or manual launch.
 
-### 6. Add a thin Fluent Windows control surface
+### 5. Add a thin Fluent Windows control surface
 
 The intended shape is a separate, non-resident tray/settings process, not a UI framework linked
 into `conduit-daemon`.  It should eventually surface pairing identity, status, diagnostics, and
 configuration without becoming another transport owner.  Reference Sefirah only for visual
 language; preserve the clean implementation and non-GPL licensing options.
 
-### 7. Re-run device-specific persistence/permission checks after platform changes
+### 6. Re-run device-specific persistence/permission checks after platform changes
 
 - Verify `filesDir` persistence after an app reinstall/update.
 - Re-grant and test `RECEIVE_SENSITIVE_NOTIFICATIONS` after every reinstall on Android 15+.
@@ -99,7 +76,11 @@ caveats rather than treating feature presence as blanket milestone completion.
 Two prior P0 investigations are now folded into completed evidence rather than left as parallel
 backlog items. The old relay's transient fresh-park refusal was reproduced during a daemon
 restart and matches the same-role stale-waiter failure already addressed by the compatible
-role-byte migration; real confirmation belongs to that rollout. The supposed 259,737-byte
+role-byte migration. The compatible relay was deployed server-first on 2026-08-26; old↔old,
+old-phone↔new-desktop, and new↔new sessions all succeeded, three real phone restart cycles stayed
+clean, and an isolated live-server probe confirmed same-role waiter displacement. Keep the
+one-second legacy inference path only until the old-client compatibility window is intentionally
+closed. The supposed 259,737-byte
 missing-file incident was replayed with the exact phone screenshot and proved to be an early
 mid-transfer check: the final file appeared at eight seconds with an exact SHA-256 match. Commit
 `d5554ec` additionally closes the genuine cleanup hole found in finalisation-error paths.
