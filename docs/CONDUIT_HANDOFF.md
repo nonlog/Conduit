@@ -5,6 +5,12 @@
 **Branch:** `master`  
 **Remote:** `https://github.com/nonlog/Conduit.git`
 
+> **Maintenance rule:** keep this handoff current during active development, not only when a
+> conversation is ending. Update it after a major implementation milestone, production/runtime
+> change, important verification result, root-cause discovery, or change to the recommended next
+> step. A new session should be able to resume safely from this file plus the linked docs even if
+> the previous conversation ended abruptly.
+
 ## Do this first on resumption
 
 1. Read `docs/architecture.md`, `docs/development.md`, `docs/progress.md`, and
@@ -20,8 +26,14 @@
 3. The compatible relay migration is **deployed**. TYO runs the compatible server and the installed
    Android/Windows endpoints use explicit roles; keep legacy inference for older clients until M2
    evidence and deliberate retirement.
-4. Screenshot → native Windows toast → Snipping Tool is implemented and device-verified. The next
-   P0 is the actual endurance/flap evidence. `scripts/soak.ps1` is implemented and short-tested.
+4. Windows Relay traffic is currently configured to use local Mihomo/Clash Party through
+   `CONDUIT_RELAY_PROXY=socks5://127.0.0.1:7891`. LAN listener/direct LAN sessions do **not** use
+   this proxy. Preserve the hostname `tyo.414222.xyz` through SOCKS so Mihomo can apply domain rules.
+5. The latest Windows relay-park fix enables TCP keepalive **before** the parked socket waits in
+   `peek()`. Do not remove this: a phone reboot exposed a zombie Windows responder waiter whose
+   remote TYO side was already dead while Windows still showed the socket as `Established`.
+6. Screenshot → native Windows toast → Snipping Tool is implemented and device-verified. The next
+   P0 remains the actual endurance/flap evidence. `scripts/soak.ps1` is implemented and short-tested.
 
 ## Documentation created in this pass
 
@@ -38,15 +50,27 @@ same authoritative state as the architecture/progress/backlog records.
 ## Repository state at handoff
 
 ```text
-protocol implementation: 86a2b86 Make relay role migration backward compatible
-screenshot implementation: 02f0afe Mirror phone screenshots into Snipping Tool
-origin/master:           1c7e18c Send files from the share sheet, and stop toasting what the phone silenced
+latest functional commit: 3458e59 Add bidirectional transfer UX and harden relay sessions
+origin/master:             1c7e18c Send files from the share sheet, and stop toasting what the phone silenced
+local functional lead:     13 commits, plus the handoff-maintenance commit containing this update
 ```
 
-Local `master` includes the tested persistence fix, screenshot implementation, and compatible
-relay migration. None has been pushed. The deployed relay/installed clients were built from this
-local line. A future Git push is still outward-facing: obtain explicit approval unless requested
-in the same context.
+Local `master` includes the tested persistence fix, screenshot implementation, compatible relay
+migration, M0/M2 sampling, bidirectional file-transfer UX, long-transfer heartbeat fixes, Windows
+parked-socket keepalive, and Windows Relay SOCKS5 support. None of these local commits has been
+pushed. The compatible TYO relay and installed endpoints were built from this local line. A future
+Git push is still outward-facing: obtain explicit approval unless requested in the same context.
+
+At the latest functional checkpoint the Git worktree was clean immediately after `3458e59`; this
+handoff/agent-rule maintenance is the only intended change on top of it. The Windows user environment
+contains:
+
+```text
+CONDUIT_RELAY_PROXY=socks5://127.0.0.1:7891
+```
+
+Clash Party/Mihomo was running locally with SOCKS5 on port `7891`. Treat that as a machine-runtime
+dependency for accelerated Relay traffic, not as a repository secret or a requirement for LAN use.
 
 Commits created by the coding agent must use:
 
@@ -68,7 +92,9 @@ history is independently verified.
 - **Windows:** Rust `conduit-daemon`, single LAN listener, one active session task,
   `SessionGuard::Drop` lifecycle accounting, native clipboard bridge, a dedicated COM/MTA toast
   thread, bidirectional disk-streamed file paths, local named-pipe `send <path>` control seam, and
-  mDNS advert.
+  mDNS advert. Relay parking optionally dials through `CONDUIT_RELAY_PROXY`; the current Windows
+  runtime points this at local Mihomo SOCKS5. Parked Relay sockets enable TCP keepalive before
+  blocking for a partner so a dead remote waiter cannot strand the parker forever.
 - **Wire/security:** `Noise_XX_25519_ChaChaPoly_BLAKE2s`, prologue `conduit/1`; encrypted
   protobuf envelopes; `MAX_FRAME = 65535`, usable plaintext `65519`.  Images/files use 32 KiB
   chunks to fit after protobuf framing.
@@ -233,12 +259,20 @@ The two stale-waiter regressions are `a_peer_is_never_spliced_to_a_stale_copy_of
 
 ## Recommended next work
 
-The highest-value remaining P0 is now the evidence run itself. M2 should extend the successful
+The highest-value remaining P0 is now the evidence run itself. Before a long run, retain the current
+Windows Relay SOCKS configuration and include at least one real phone reboot / network-flap sequence
+so the parked-socket keepalive fix is exercised rather than only a steady active session. M2 should
+extend the successful
 foreign-Wi-Fi↔cellular short cycles into a longer campaign including hotspot/default-network
 variants. M0 still needs a true same-LAN phone/desktop setup before starting its 48-hour window;
 the currently saved `www` Wi-Fi is a different subnet and cannot count as an M0 LAN run.
 Do not remove legacy relay inference merely because current clients are upgraded; retire it only
 after the compatibility window and M2 evidence are sufficient.
+
+Also throttle Android transfer progress/notification refreshes before treating the UX as finished:
+the wire protocol uses 32 KiB chunks and the current UI path may refresh on every chunk. A
+time/percentage gate (for example around 200–250 ms or at least 1% progress) will reduce
+SystemUI/Binder work without changing the file wire protocol.
 
 ## Useful commands
 
