@@ -1,5 +1,17 @@
 # Conduit agent rules
 
+## Product priority
+
+- Conduit exists because Link to Windows consumed too much CPU on the phone and caused lag, heat,
+  and battery drain. Preserving low idle CPU, low wakeup frequency, low radio activity, and low
+  background memory/thread/socket cost is the primary product constraint.
+- Do not add periodic polling, recurring throughput tests, background benchmarks, keep-awake loops,
+  or continuous scoring work merely to make routing or UX "smarter". Prefer event-driven callbacks,
+  blocked I/O, bounded one-shot work, passive measurements from traffic that already exists, and
+  work shifted to the plugged-in Windows side when possible.
+- A feature that materially increases Android idle CPU/radio wakeups must justify that cost explicitly
+  and should be rejected or redesigned when an event-driven alternative exists.
+
 ## Continuity / handoff
 
 - `docs/CONDUIT_HANDOFF.md` is the live resume checkpoint for this repository.

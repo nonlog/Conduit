@@ -595,3 +595,30 @@ Silence has to mean *our* silence. The timestamp therefore lives in `Session` an
 updated by `send`, not in the session loop: every send in the process already funnels
 through that one function, and a heartbeat that depends on each caller remembering to poke
 a variable is a heartbeat that dies the first time someone adds a message kind.
+
+## Multi-Relay selection is passive because battery is the product constraint
+
+Conduit exists because Link to Windows used too much phone CPU and made the device lag, heat up,
+and drain battery. That makes an apparently attractive design — periodically benchmark every Relay
+and always pick the fastest — the wrong product trade. The radio wakeups and background work would
+reintroduce the very behaviour this project is intended to remove.
+
+The selected design is therefore passive quality learning plus sticky failover:
+
+- the plugged-in Windows host may park on every configured Relay;
+- Android owns Relay selection and maintains only one active Relay/session;
+- no periodic ICMP ping, throughput probe, speed test, or timer-driven re-ranking runs on Android;
+- quality updates come from existing connect/Noise outcomes, heartbeat/session failures, and real
+  content transfers such as screenshots, photos, image clipboard, and the occasional explicit file;
+- a healthy current Relay remains in use; hysteresis prevents small score changes from causing
+  route churn;
+- failed nodes enter cooldown but are not probed when cooldown expires — they simply become eligible
+  at the next reconnect that would have happened anyway;
+- RTT is a weak tie-breaker, never the primary score. A low-latency node with packet loss can be far
+  worse than a higher-latency stable path, as the TYO observations demonstrated.
+
+Cold/unknown quality does not justify a background benchmark either. On a real reconnect, Android
+tries candidates in historical/configured order with bounded handshakes and learns from those real
+attempts. Real content then refines an age-decayed score over time. This may take longer to discover
+the mathematically fastest node than active benchmarking, and that is acceptable: the objective is
+reliable low-power continuity for clipboard/capture sync, not a permanent mobile speed-test agent.

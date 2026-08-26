@@ -19,7 +19,10 @@ explicit and user-initiated rather than a mounted/browsable remote filesystem.
 
 The design constraints are:
 
+- **low Android idle cost is the primary product requirement**: Conduit was started because Link to
+  Windows used too much phone CPU and caused lag, heat, and battery drain;
 - no polling or recurring network scans on Android;
+- no periodic throughput tests or background Relay benchmarks on Android;
 - no long wake locks;
 - a bounded number of sockets, worker threads, queued frames, and retained bytes;
 - a single active peer session on each side; and
@@ -78,6 +81,40 @@ notification, image, or file contents.
 3. On mobile data, and after an empty LAN burst, the phone dials the relay directly.
 4. Relay use requires the desktop's remembered device ID, obtained from a prior completed
    direct handshake.  An unpaired phone must pair on a LAN first.
+
+### Planned multi-Relay selection: passive, sticky, battery-first
+
+Multi-Relay support must not turn routing into a background benchmark service. The desktop is the
+powered side, so it may park one responder on every configured Relay. Android remains the selection
+owner and keeps only one active Relay/session. This guarantees that whichever endpoint the phone
+chooses already has the same desktop waiting there without making the phone maintain several idle
+TCP paths.
+
+Android does **not** periodically ping, speed-test, or probe Relay nodes. It updates per-endpoint
+quality only from work that was going to happen anyway:
+
+- TCP/Relay/Noise connection success or failure and time-to-session-up;
+- abnormal session close, heartbeat/PONG timeout, or clean long-lived session evidence;
+- real screenshot, camera-photo, image-clipboard, and explicit-file transfer completion/throughput;
+- natural default-network changes and reconnect attempts.
+
+The selector is intentionally sticky. A healthy current Relay stays selected even if another node
+has slightly better latency. Reliability and real end-to-end content performance dominate; RTT is
+only a tie-breaker because a low-RTT path can still have loss/retransmission severe enough to make
+actual transfers unusable. Repeated failures put an endpoint into a cooldown. Cooldown expiry does
+not schedule a probe: it merely makes the endpoint eligible again the next time a real reconnect is
+already necessary.
+
+On a reconnect, Android tries the historically best eligible candidate first with a bounded
+connection/handshake deadline, then moves to the next candidate if it fails. Unknown/stale endpoints
+are explored only at these natural reconnect points or after observed degradation; a healthy idle
+session is never torn down just to gather a better score. Per-network history should remain coarse
+(transport/VPN class plus age-decayed EWMA) rather than requiring extra Android permissions solely
+to identify SSIDs or perform routing telemetry.
+
+This design deliberately favours "boring while idle" over continuously chasing the theoretical
+fastest Relay. The dominant use cases are clipboard/notification traffic and phone photo/screenshot
+handoff, so stable low-wakeup connectivity matters more than maximum bulk-file benchmark throughput.
 
 Windows may optionally route **only** its relay dial through SOCKS5 by setting
 `CONDUIT_RELAY_PROXY=socks5://host:port`. The SOCKS CONNECT request carries the relay hostname, so

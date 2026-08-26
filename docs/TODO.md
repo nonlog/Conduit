@@ -14,8 +14,23 @@
   - Preserve final 100% and failure/completion notifications immediately.
 - [ ] **Multi-relay selection and failover.**
   - Support a configured set of Relay endpoints rather than one hard-coded TYO endpoint.
-  - Select using measured connection quality / short throughput probes / recent failure history,
-    not ICMP ping alone.
+  - **Do not run periodic speed tests or periodic probes on Android.** Conduit exists to avoid the
+    CPU/radio/battery cost of Link to Windows; idle routing logic must remain event-driven.
+  - Windows may keep one cheap parked responder per configured Relay because the desktop is the
+    powered side. Android must keep only one active Relay path/session at a time.
+  - Make Android the Relay-selection owner. Learn quality passively from events Conduit already has:
+    connect/Noise success or failure, abnormal disconnects/timeouts, heartbeat health, and real
+    screenshot/photo/image/file transfer completion/throughput.
+  - Prefer a sticky historical winner. Do not switch because another endpoint has slightly lower
+    latency; only fail over on meaningful degradation/failure or a clearly better accumulated score.
+  - On a natural reconnect/network-change event, try historical candidates sequentially with bounded
+    handshake deadlines. Do not wake the radio later just to re-benchmark a healthy active session.
+  - Put repeatedly failing endpoints into a cooldown, then merely allow them to be tried again on a
+    future natural reconnect; do not actively probe them when the phone would otherwise be idle.
+  - Treat ICMP ping/RTT as, at most, a final tie-breaker. Reliability and real end-to-end content
+    performance dominate because low-latency Relays can still suffer severe loss/retransmission.
+  - Keep quality history coarse to the current network class/VPN path and age it with EWMA; avoid
+    requiring extra Android permissions solely to fingerprint networks for scoring.
   - Keep LAN discovery/direct TCP strictly preferred when a real same-LAN path exists.
   - Keep proxy policy per endpoint/path; Windows currently uses local Mihomo SOCKS5 for Relay only.
 - [ ] **Remote completion ACK for desktop -> phone file sends.**
@@ -89,4 +104,3 @@
 
 - General remote filesystem browsing/mounting unless product scope is explicitly changed.
 - Telephony, SMS, screen mirroring, remote control/input, and media control.
-

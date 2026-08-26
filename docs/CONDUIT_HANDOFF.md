@@ -35,6 +35,11 @@
    remote TYO side was already dead while Windows still showed the socket as `Established`.
 6. Screenshot → native Windows toast → Snipping Tool is implemented and device-verified. The next
    P0 remains the actual endurance/flap evidence. `scripts/soak.ps1` is implemented and short-tested.
+7. Product-level constraint: Conduit exists because Link to Windows used excessive phone CPU and
+   caused lag/heat/battery drain. Do not add periodic Android speed tests, Relay probes, polling, or
+   timer-driven scoring. Planned multi-Relay selection is passive quality learning + sticky failover:
+   Windows may park on all Relays; Android keeps one session and learns only from real connection,
+   heartbeat, and content-transfer events.
 
 ## Documentation created in this pass
 
@@ -277,8 +282,10 @@ time/percentage gate (for example around 200–250 ms or at least 1% progress) w
 SystemUI/Binder work without changing the file wire protocol.
 
 `docs/TODO.md` is now the canonical short checklist for remaining implementation and verification
-work. It explicitly includes multi-relay selection/failover, but no selection algorithm has been
-implemented yet; keep that as a design/implementation item until real endpoint scoring is added.
+work. It explicitly includes multi-relay selection/failover. The design is now fixed as battery-first
+passive learning: no periodic phone benchmarks; Windows parks all configured responders, Android
+selects one sticky Relay using age-decayed reliability/real-transfer history and sequential fallback
+only on natural reconnects. The algorithm is documented but not implemented yet.
 
 ## Useful commands
 
