@@ -79,6 +79,22 @@
             android:name=".SyncService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+        <service
+            android:name=".LinkTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_stat_link"
+            android:label="Conduit"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.quicksettings.ACTIVE_TILE"
+                android:value="true" />
+            <meta-data
+                android:name="android.service.quicksettings.TOGGLEABLE_TILE"
+                android:value="true" />
+        </service>
         <!-- Serves the one cached clipboard image. Not exported, so a grant handed out by
              ClipboardManager when another app pastes is the only way to reach it. -->
         <provider

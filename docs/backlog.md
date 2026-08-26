@@ -62,7 +62,6 @@ language; preserve the clean implementation and non-GPL licensing options.
 
 | Item | Condition to revisit |
 | --- | --- |
-| Desktop → phone file sending | Only when explicitly requested again; no GUI/right-click sender work before then. |
 | Windows right-click file send / full GUI | After core transport, screenshot, and endurance work are proven. |
 | Non-root clipboard fallback | M3, via an AccessibilityService path that can work without KernelSU/LSPosed. |
 | Notification actions and inline reply | After the core notification mirror is stable and lifecycle evidence exists. |
@@ -75,11 +74,18 @@ language; preserve the clean implementation and non-GPL licensing options.
 The architecture, development workflow, progress evidence, and this backlog were recorded in
 this documentation pass.  Keep them current rather than opening a second parallel set of
 planning documents. Existing source already covers text/image clipboard, native notification
-toasts, notification filtering/privacy control, one-way Android share-sheet files, Direct Share
-desktop naming, camera-photo toast activation, and screenshot → native toast → Snipping Tool.
+toasts, notification filtering/privacy control, bidirectional explicit file transfer, Direct Share
+desktop naming, searchable Android clipboard history, a Quick Settings link toggle, camera-photo
+toast activation, and screenshot → native toast → Snipping Tool.
 The screenshot path was verified on the target CPH2573 with clipboard non-interference and a
 duplicate scanner callback check; consult [progress.md](progress.md) for the evidence level and
 caveats rather than treating feature presence as blanket milestone completion.
+
+Windows relay parking now enables TCP keepalive before waiting so a server-reaped responder cannot
+leave the desktop permanently stuck on a zombie local `ESTABLISHED` socket. The Windows relay dial
+also supports an optional SOCKS5 path (`CONDUIT_RELAY_PROXY`) without proxying LAN traffic; the
+current test machine uses Clash Party/Mihomo `127.0.0.1:7891`, with a large measured relay-speed
+improvement over DIRECT.
 
 Two prior P0 investigations are now folded into completed evidence rather than left as parallel
 backlog items. The old relay's transient fresh-park refusal was reproduced during a daemon

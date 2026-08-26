@@ -60,13 +60,15 @@ history is independently verified.
 ## Current architecture in brief
 
 - **Android:** Native Kotlin + Compose. `SyncService` owns one reusable `Link`; `MainActivity`
-  provides UI and legitimate foreground-service startup; `NotificationRelay` borrows the active
-  link; `Discovery` is an 8-second mDNS burst; `Photos` and `Screenshots` independently observe
-  camera/capture MediaStore changes; and `ShareActivity` forwards explicit file-share URI grants
-  safely.
+  provides the status/settings home plus a separate searchable clipboard-history page;
+  `LinkTileService` exposes connect/disconnect through Quick Settings; `NotificationRelay` borrows
+  the active link; `Discovery` is an 8-second mDNS burst; `Photos` and `Screenshots` independently
+  observe camera/capture MediaStore changes; and `ShareActivity` forwards explicit file-share URI
+  grants safely.
 - **Windows:** Rust `conduit-daemon`, single LAN listener, one active session task,
   `SessionGuard::Drop` lifecycle accounting, native clipboard bridge, a dedicated COM/MTA toast
-  thread, disk-streaming phone-file receive path, and mDNS advert.
+  thread, bidirectional disk-streamed file paths, local named-pipe `send <path>` control seam, and
+  mDNS advert.
 - **Wire/security:** `Noise_XX_25519_ChaChaPoly_BLAKE2s`, prologue `conduit/1`; encrypted
   protobuf envelopes; `MAX_FRAME = 65535`, usable plaintext `65519`.  Images/files use 32 KiB
   chunks to fit after protobuf framing.
@@ -90,6 +92,13 @@ See `docs/architecture.md` for full data flow and trust boundaries.
 - App-icon/large-icon/Windows avatar cache path implemented.
 - Phone → PC file share via Android’s share sheet; transfer is chunked to disk and partials are
   deleted on session failure.
+- PC → phone file sending via `conduit-daemon send <path>`; Android publishes into Downloads only
+  after complete receipt and deletes pending MediaStore rows on failure.
+- Android file progress is shown both in-app and in a dedicated `File transfers` notification
+  channel with direction-specific upload/download small icons; link status remains on `Link`.
+- Android clipboard history is a dedicated searchable child page instead of occupying the home
+  screen.
+- Quick Settings `Conduit` tile toggles the same persisted connect/disconnect state as the app.
 - Direct Share target named after the remembered desktop.
 - Camera photo → Windows hero-image toast → Snipping Tool activation implementation exists.
 - Screenshot → Windows `New screenshot` toast → Snipping Tool is implemented and was verified
@@ -110,8 +119,8 @@ See `docs/architecture.md` for full data flow and trust boundaries.
 
 ## Latest evidence
 
-- Android JVM tests: **17 passed, 0 failed**.
-- Windows daemon normal test run: **39 passed, 2 ignored, 0 failed**.
+- Android JVM tests: **20 passed, 0 failed**.
+- Windows daemon normal test run: **43 passed, 2 ignored, 0 failed**.
 - Compatible relay migration: **9 passed, 0 failed**, including legacy↔legacy, both mixed
   upgrade orders, explicit stale-role replacement, and legacy stale-phone replacement.
 - Production rollout: old↔old and old-phone↔new-desktop connected through the compatible relay;
@@ -136,6 +145,23 @@ See `docs/architecture.md` for full data flow and trust boundaries.
   **276 minutes** uptime.
 - Earlier lifecycle observation: 14 completed sessions with `created == closed`; an active
   relay link also survived approximately 96 minutes.  These are samples, not milestone proof.
+- A post-reboot reconnect failure was traced to the Windows *parked* relay socket lacking client
+  keepalive before `peek()`. TYO had already reaped the responder while Windows still reported a
+  zombie `ESTABLISHED`; every phone retry then waited alone. The repaired daemon enables keepalive
+  before parking, reconnects successfully, and leaves a fresh responder waiter at TYO.
+- Windows Clash Party has TUN disabled, so native Conduit relay sockets were bypassing the local
+  proxy. `CONDUIT_RELAY_PROXY=socks5://127.0.0.1:7891` is now supported and persisted for this user.
+  An isolated 4 MiB relay receive improved from 10.6 KiB/s DIRECT to 362.8 KiB/s through SOCKS5;
+  a real 4 MiB PC→phone Conduit send completed in about 1.35 s and landed in Android Downloads.
+
+Recent file/UI device evidence: the foreground notification reads `Linked to LOG`; a real Quick
+Settings tile off/on cycle removed and restored the session/notification; separate transfer
+notifications were observed as ID 2 upload / ID 3 download on `channel=transfers` while ID 1 stayed
+on `channel=link`. PC→phone 131,071-byte and 1 MiB transfers matched SHA-256, a 64 MiB interrupted
+receive removed its pending Android row at 7,471,104 bytes, and a 4 MiB phone→PC transfer completed
+on the current progress build. Long-send heartbeat handling now keeps receive/send ciphertext in
+separate Windows scratch buffers and lets Android answer PING between transfer chunks without
+creating a second Noise writer.
 
 ## Android device facts
 

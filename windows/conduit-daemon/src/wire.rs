@@ -46,10 +46,22 @@ const RENDEZVOUS_LEN: usize = 43;
 /// bytes stay in the socket for the handshake that follows. `Ok(0)` means the relay hung
 /// up, which is also what being spliced onto a dead peer looks like from here.
 pub async fn park(endpoint: &str, rendezvous: &str) -> Result<tokio::net::TcpStream> {
-    let mut stream = tokio::net::TcpStream::connect(endpoint)
-        .await
-        .with_context(|| format!("dialling relay {endpoint}"))?;
+    let mut stream = match relay_proxy() {
+        Some(proxy) => connect_socks5(&proxy, endpoint)
+            .await
+            .with_context(|| format!("dialling relay {endpoint} through {proxy}"))?,
+        None => tokio::net::TcpStream::connect(endpoint)
+            .await
+            .with_context(|| format!("dialling relay {endpoint}"))?,
+    };
     stream.set_nodelay(true)?;
+    // A parked responder can sit here for hours before a phone arrives. The relay enables
+    // keepalive on its half, but that is not enough: if the relay/NAT path dies silently,
+    // the server may reap its waiter while Windows keeps this local socket in ESTABLISHED.
+    // Without client-side keepalive `peek()` below can then wait forever and `park_forever`
+    // never creates the replacement responder, leaving every reconnecting phone waiting by
+    // itself. Enable keepalive *before* parking, not only after a partner has already arrived.
+    relay_waiter_keepalive(&stream)?;
     let preamble = relay_preamble(rendezvous, RELAY_RESPONDER)?;
     stream.write_all(&preamble).await?;
     stream.flush().await?;
@@ -59,6 +71,94 @@ pub async fn park(endpoint: &str, rendezvous: &str) -> Result<tokio::net::TcpStr
         bail!("relay closed the parked connection");
     }
     Ok(stream)
+}
+
+/// Optional relay-only proxy. LAN accepts/dials never come through this function, so setting
+/// this cannot accidentally hairpin a same-LAN transfer through a proxy.
+///
+/// The environment variable deliberately names a SOCKS endpoint rather than inheriting the
+/// Windows HTTP proxy: a raw Noise/TCP session is not HTTP, and silently treating WinHTTP as a
+/// generic tunnel would be surprising. `socks5://127.0.0.1:7891` is the common Mihomo shape.
+fn relay_proxy() -> Option<String> {
+    std::env::var("CONDUIT_RELAY_PROXY")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+async fn connect_socks5(proxy: &str, endpoint: &str) -> Result<tokio::net::TcpStream> {
+    let proxy = proxy.strip_prefix("socks5://").unwrap_or(proxy);
+    let (host, port) = split_host_port(endpoint)?;
+    if host.len() > u8::MAX as usize {
+        bail!("SOCKS5 relay hostname is {} bytes, maximum is 255", host.len());
+    }
+
+    let mut stream = tokio::net::TcpStream::connect(proxy)
+        .await
+        .with_context(|| format!("dialling SOCKS5 proxy {proxy}"))?;
+    stream.set_nodelay(true)?;
+
+    // RFC 1928: version 5, one method, no authentication.
+    stream.write_all(&[5, 1, 0]).await?;
+    let mut method = [0u8; 2];
+    stream.read_exact(&mut method).await?;
+    if method != [5, 0] {
+        bail!("SOCKS5 proxy refused no-auth method: {method:?}");
+    }
+
+    // Send the hostname, not a locally-resolved IP. Mihomo can then apply DOMAIN rules to the
+    // relay even when DNS/fake-IP behaviour differs between networks.
+    let mut request = Vec::with_capacity(7 + host.len());
+    request.extend_from_slice(&[5, 1, 0, 3, host.len() as u8]);
+    request.extend_from_slice(host.as_bytes());
+    request.extend_from_slice(&port.to_be_bytes());
+    stream.write_all(&request).await?;
+
+    let mut reply = [0u8; 4];
+    stream.read_exact(&mut reply).await?;
+    if reply[0] != 5 {
+        bail!("SOCKS5 proxy replied with version {}", reply[0]);
+    }
+    if reply[1] != 0 {
+        bail!("SOCKS5 CONNECT to {endpoint} failed with code {}", reply[1]);
+    }
+    if reply[2] != 0 {
+        bail!("SOCKS5 proxy returned a non-zero reserved byte");
+    }
+    let address_len = match reply[3] {
+        1 => 4,
+        3 => {
+            let mut len = [0u8; 1];
+            stream.read_exact(&mut len).await?;
+            len[0] as usize
+        }
+        4 => 16,
+        atyp => bail!("SOCKS5 proxy returned unknown address type {atyp}"),
+    };
+    let mut discard = vec![0u8; address_len + 2];
+    stream.read_exact(&mut discard).await?;
+    Ok(stream)
+}
+
+fn split_host_port(endpoint: &str) -> Result<(&str, u16)> {
+    let (host, port) = endpoint
+        .rsplit_once(':')
+        .context("relay endpoint has no port")?;
+    if host.is_empty() || host.contains(':') {
+        bail!("SOCKS5 relay endpoint must be a hostname or IPv4 address plus port");
+    }
+    let port = port.parse::<u16>().with_context(|| format!("bad relay port {port:?}"))?;
+    Ok((host, port))
+}
+
+fn relay_waiter_keepalive(stream: &tokio::net::TcpStream) -> Result<()> {
+    let keepalive = socket2::TcpKeepalive::new()
+        .with_time(Duration::from_secs(30))
+        .with_interval(Duration::from_secs(10));
+    #[cfg(not(windows))]
+    let keepalive = keepalive.with_retries(3);
+    socket2::SockRef::from(stream).set_tcp_keepalive(&keepalive)?;
+    Ok(())
 }
 
 fn relay_preamble(rendezvous: &str, role: u8) -> Result<Vec<u8>> {
@@ -143,9 +243,13 @@ pub struct Session {
     /// Peer's Noise static public key — the thing worth pinning.
     pub peer_static: Vec<u8>,
     rx: Rx,
-    /// All three are allocated once at [`MAX_FRAME`] and never grow, which is what
-    /// makes per-session memory a constant instead of a function of traffic.
-    cipher: Vec<u8>,
+    /// Receive and send ciphertext must not share storage. [`recv`] is deliberately
+    /// cancel-safe: a heartbeat may cancel it after only part of a frame has arrived,
+    /// send a PING, and then resume the same receive. If [`send`] overwrites the partial
+    /// inbound ciphertext in that gap, the resumed frame fails authentication. Both
+    /// buffers are allocated once at [`MAX_FRAME`] and never grow.
+    cipher_in: Vec<u8>,
+    cipher_out: Vec<u8>,
     plain_in: Vec<u8>,
     plain_out: Vec<u8>,
     next_id: u64,
@@ -199,7 +303,8 @@ impl Session {
             noise: hs.into_transport_mode()?,
             peer_static,
             rx: Rx::default(),
-            cipher: vec![0u8; MAX_FRAME],
+            cipher_in: vec![0u8; MAX_FRAME],
+            cipher_out: vec![0u8; MAX_FRAME],
             plain_in: vec![0u8; MAX_FRAME],
             plain_out: Vec::with_capacity(4096),
             next_id: 1,
@@ -236,8 +341,8 @@ impl Session {
         }
         self.plain_out.clear();
         env.encode(&mut self.plain_out)?;
-        let n = self.noise.write_message(&self.plain_out, &mut self.cipher)?;
-        write_framed(w, &self.cipher[..n]).await?;
+        let n = self.noise.write_message(&self.plain_out, &mut self.cipher_out)?;
+        write_framed(w, &self.cipher_out[..n]).await?;
         self.last_sent = Instant::now();
         Ok(id)
     }
@@ -256,14 +361,14 @@ impl Session {
             self.rx.want = parse_len(self.rx.hdr)?;
         }
         while self.rx.body_got < self.rx.want {
-            let n = r.read(&mut self.cipher[self.rx.body_got..self.rx.want]).await?;
+            let n = r.read(&mut self.cipher_in[self.rx.body_got..self.rx.want]).await?;
             if n == 0 {
                 bail!("peer closed mid-frame");
             }
             self.rx.body_got += n;
         }
         let len = std::mem::take(&mut self.rx).want;
-        let m = self.noise.read_message(&self.cipher[..len], &mut self.plain_in)?;
+        let m = self.noise.read_message(&self.cipher_in[..len], &mut self.plain_in)?;
         Ok(pb::Envelope::decode(&self.plain_in[..m])?)
     }
 }
@@ -300,6 +405,48 @@ mod tests {
         assert!(!relay_id_byte(RELAY_RESPONDER));
         assert!(relay_preamble("short", RELAY_RESPONDER).is_err());
         assert!(relay_preamble(&id, b'?').is_err());
+    }
+
+    #[test]
+    fn socks_relay_endpoint_keeps_the_hostname_for_proxy_rules() {
+        assert_eq!(split_host_port("tyo.414222.xyz:41113").unwrap(), ("tyo.414222.xyz", 41113));
+        assert!(split_host_port("tyo.414222.xyz").is_err());
+        assert!(split_host_port("[::1]:41113").is_err());
+    }
+
+    #[tokio::test]
+    async fn socks5_connect_uses_domain_addressing() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let proxy = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut greeting = [0u8; 3];
+            stream.read_exact(&mut greeting).await.unwrap();
+            assert_eq!(greeting, [5, 1, 0]);
+            stream.write_all(&[5, 0]).await.unwrap();
+
+            let mut head = [0u8; 5];
+            stream.read_exact(&mut head).await.unwrap();
+            assert_eq!(&head[..4], &[5, 1, 0, 3], "CONNECT must carry a domain name");
+            let mut host = vec![0u8; head[4] as usize];
+            stream.read_exact(&mut host).await.unwrap();
+            assert_eq!(host, b"tyo.414222.xyz");
+            let mut port = [0u8; 2];
+            stream.read_exact(&mut port).await.unwrap();
+            assert_eq!(u16::from_be_bytes(port), 41113);
+
+            // Success, IPv4 bind address 127.0.0.1:1234.
+            stream
+                .write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0x04, 0xd2])
+                .await
+                .unwrap();
+        });
+
+        let stream = connect_socks5(&format!("socks5://{proxy}"), "tyo.414222.xyz:41113")
+            .await
+            .unwrap();
+        drop(stream);
+        server.await.unwrap();
     }
 
     /// The whole transport: XX handshake, then a text clip each way.
@@ -430,6 +577,59 @@ mod tests {
         };
         assert_eq!(pb::ClipText::decode(&env.payload[..]).unwrap().text, "resumed");
         sender.await.unwrap();
+    }
+
+    /// The production regression behind a phone -> desktop file failing at about the relay
+    /// heartbeat boundary. A receive may be cancelled with ciphertext already buffered, then
+    /// this side is required to send a PING before resuming it. The two directions therefore
+    /// cannot reuse one ciphertext scratch buffer.
+    #[tokio::test]
+    async fn cancelled_recv_survives_an_intervening_send() {
+        let (mut a, mut b) = tokio::io::duplex(1 << 16);
+        let params: snow::params::NoiseParams = NOISE_XX.parse().unwrap();
+        let ka = snow::Builder::new(params.clone()).generate_keypair().unwrap();
+        let kb = snow::Builder::new(params).generate_keypair().unwrap();
+
+        let peer = tokio::spawn(async move {
+            let session = Session::handshake(&mut a, &ka.private, true).await.unwrap();
+            (session, a)
+        });
+        let mut session = Session::handshake(&mut b, &kb.private, false).await.unwrap();
+        let (mut peer, _peer_stream) = peer.await.unwrap();
+
+        // Produce one real encrypted peer frame, but capture it so the test can expose only a
+        // prefix to recv before forcing the heartbeat send in between.
+        let (mut capture_tx, mut capture_rx) = tokio::io::duplex(1 << 17);
+        let body = pb::ClipText {
+            text: "x".repeat(32 * 1024),
+            ..Default::default()
+        };
+        peer.send(&mut capture_tx, pb::Kind::ClipText, &body.encode_to_vec())
+            .await
+            .unwrap();
+        drop(capture_tx);
+        let mut framed = Vec::new();
+        capture_rx.read_to_end(&mut framed).await.unwrap();
+        assert!(framed.len() > 32, "test frame must have a body worth interrupting");
+
+        let (mut feed_tx, mut feed_rx) = tokio::io::duplex(1 << 17);
+        const PREFIX: usize = 20;
+        feed_tx.write_all(&framed[..PREFIX]).await.unwrap();
+
+        let interrupted = tokio::time::timeout(Duration::from_millis(10), session.recv(&mut feed_rx)).await;
+        assert!(interrupted.is_err(), "recv unexpectedly completed from a frame prefix");
+        assert_eq!(session.rx.hdr_got, 4);
+        assert!(session.rx.body_got > 0, "the test did not actually cancel mid-body");
+
+        // This is what serve() does when RELAY_IDLE_PING expires. It must not damage the
+        // ciphertext already accumulated by the cancelled receive.
+        let mut sink = tokio::io::sink();
+        session.send(&mut sink, pb::Kind::Ping, &[]).await.unwrap();
+
+        feed_tx.write_all(&framed[PREFIX..]).await.unwrap();
+        let resumed = session.recv(&mut feed_rx).await.unwrap();
+        assert_eq!(resumed.kind(), pb::Kind::ClipText);
+        assert_eq!(pb::ClipText::decode(&resumed.payload[..]).unwrap().text, body.text);
     }
 
     /// Cross-language pin for the hand-written Kotlin XX in `android/.../Noise.kt`.

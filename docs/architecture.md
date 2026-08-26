@@ -9,13 +9,13 @@
 
 Conduit is a small Android ↔ Windows companion designed around one operational property:
 a long-running link must remain boring.  It synchronises text and image clipboard contents,
-mirrors Android notifications as native Windows toasts, and currently accepts explicit
-**phone → PC** file shares.  New camera photos and phone screenshots are separately surfaced
-as Windows toasts that can open the captured image in Snipping Tool.
+mirrors Android notifications as native Windows toasts, and transfers explicit files in both
+directions. New camera photos and phone screenshots are separately surfaced as Windows toasts
+that can open the captured image in Snipping Tool.
 
 It intentionally does **not** implement telephony, SMS, screen mirroring, remote control,
-media control, filesystem mounting, remote input, or a general file browser.  Desktop →
-phone file sending is deliberately deferred; it is not implied by the one-way share feature.
+media control, filesystem mounting, remote input, or a general file browser. File transfer is
+explicit and user-initiated rather than a mounted/browsable remote filesystem.
 
 The design constraints are:
 
@@ -59,12 +59,12 @@ notification, image, or file contents.
 
 | Area | Main pieces | Responsibility |
 | --- | --- | --- |
-| Android UI | `MainActivity`, `History`, `Settings` | Compose status, peer identity, history, connect/disconnect, and user-owned notification-content privacy choice. |
-| Android service | `SyncService` | Owns the link for the app process; receives clipboard and default-network events; starts/stops discovery, camera/screenshot observation, and reconnect scheduling. |
+| Android UI | `MainActivity`, `History`, `Settings`, `TransferStatus` | Compose status and transfer progress, peer identity, a separate searchable clipboard-history page, connect/disconnect, and user-owned notification-content privacy choice. |
+| Android service | `SyncService`, `LinkTileService` | Owns the link for the app process; receives clipboard/default-network events; starts/stops discovery, camera/screenshot observation and reconnect scheduling; exposes the same connect/disconnect intent through a Quick Settings tile. |
 | Android transport | `Link`, `WireSession`, `Noise` | One socket/session at a time; one reader thread and one single-thread sender executor; Noise XX framing and dispatch. |
 | Android integration | `ClipboardHook`, `NotificationRelay`, `Discovery`, `Photos`, `Screenshots`, `ShareActivity` | LSPosed clipboard permission escape, system notification callbacks, bounded mDNS discovery, edge-triggered camera/screenshot observation, and URI-grant-safe sharing. |
 | Wire contract | [`../proto/conduit.proto`](../proto/conduit.proto) | Single protobuf schema consumed by Android and Rust. |
-| Windows daemon | `main.rs`, `wire.rs`, `clip.rs`, `image.rs`, `file.rs` | mDNS advertising, LAN listener, relay parking, Noise session, native clipboard bridge, bounded image/file receive paths. |
+| Windows daemon | `main.rs`, `wire.rs`, `clip.rs`, `image.rs`, `file.rs`, `control.rs` | mDNS advertising, LAN listener, relay parking, Noise session, native clipboard bridge, bounded image/file receive paths, and a local named-pipe command seam for desktop→phone file sends. |
 | Windows notifications | `toast.rs` | Dedicated COM/MTA toast owner, AUMID registration, icon/avatar cache, notification update/removal, capture/Snipping-Tool activation, and file activation. |
 | Relay | `relay/src/main.rs` | Fixed-size rendezvous preamble validation, one waiting socket per key, and blind TCP splicing. |
 
@@ -78,6 +78,13 @@ notification, image, or file contents.
 3. On mobile data, and after an empty LAN burst, the phone dials the relay directly.
 4. Relay use requires the desktop's remembered device ID, obtained from a prior completed
    direct handshake.  An unpaired phone must pair on a LAN first.
+
+Windows may optionally route **only** its relay dial through SOCKS5 by setting
+`CONDUIT_RELAY_PROXY=socks5://host:port`. The SOCKS CONNECT request carries the relay hostname, so
+Mihomo/Clash DOMAIN rules remain usable. LAN listener traffic never enters this path and therefore
+remains direct. A parked Windows responder enables kernel TCP keepalive before it begins waiting;
+this prevents a relay/NAT path that died silently from leaving `park()` blocked forever on a local
+socket that still appears `ESTABLISHED`.
 
 The relay remains configured by hostname (`tyo.414222.xyz`). On the tested phone, Bettbox uses
 the benchmark range `198.18.0.0/15` as fake-IP DNS. During an underlying Wi-Fi/cellular handover,
@@ -106,11 +113,13 @@ Windows daemon
   SessionGuard::Drop    ── increments the closed counter on every exit path
 ```
 
-The reader and writer never share Noise counters concurrently.  A PONG requested by the
-reader is posted to the sender executor rather than written directly.  On Android, closing
-the socket interrupts the blocked reader; `Socket().use {}` then performs the common cleanup.
-On Windows, `SessionGuard` makes a normal return, error, panic, or task abort count as a
-closed session.
+The reader and writer never share Noise counters concurrently. A PONG requested by the Android
+reader is posted to the sender executor rather than written directly. On Windows, receive and
+send ciphertext have separate fixed scratch buffers: a heartbeat is allowed to cancel a partial
+receive, send a PING, then resume the same ciphertext frame without overwriting its prefix. On
+Android, closing the socket interrupts the blocked reader; `Socket().use {}` then performs the
+common cleanup. On Windows, `SessionGuard` makes a normal return, error, panic, or task abort
+count as a closed session.
 
 Idle work is blocked I/O rather than a poll loop.  The desktop sends an application PING when
 **it** has been silent; the phone uses a matching read deadline.  The idle cadence is
@@ -139,6 +148,7 @@ and file chunks are 32 KiB rather than 64 KiB.
 | Image clipboard | `content://` URI read on sender executor | `CLIP_IMAGE_HEADER`, `CLIP_IMAGE_CHUNK` | Validated bounded assembly, PNG normalisation, native clipboard write. |
 | Android notification | `NotificationListenerService` callback | `NOTIF_NEW`, `NOTIF_UPDATE`, `NOTIF_REMOVE` | Native Windows toast, in-place update, then removal from history. |
 | Phone file share | Share sheet URI grant | `FILE_OFFER`, `FILE_CHUNK` | Sequential disk write to Downloads; a completed-transfer toast opens the containing folder. |
+| Desktop file send | `conduit-daemon send <path>` → local named pipe | `FILE_OFFER`, `FILE_CHUNK` | Android streams into a pending MediaStore Downloads row and publishes only after exact byte/chunk completion. |
 | Camera photo | `MediaStore` `ContentObserver` | Image header/chunks with `photo=true` | Staged hero image; toast activation uses a shared-storage token to open Snipping Tool. |
 | Phone screenshot | Dedicated `MediaStore` `ContentObserver` filtered to `Pictures/Screenshots/%` + `Screenshot_` | Image header/chunks with `photo=true,screenshot=true` | Screenshot-specific native toast; click hands the staged image to Snipping Tool through the same shared-storage-token protocol. |
 
@@ -147,6 +157,12 @@ a live desktop session is stale by the time a future session arrives.  The phone
 own, ongoing, group-summary, media, and Android-silent notifications before any bytes are
 sent.  App icons are sent once per package; large icons supply contact/avatar art when
 available, subject to a frame-safe byte cap.
+
+Android user-visible notifications are separated by purpose. The foreground link notification
+uses the `Link` channel and says `Linked to <desktop name>` only while a Noise session is up; it
+is removed on disconnect/retry. File transfer progress uses a separate `File transfers` channel,
+with distinct upload/download status-bar icons, its own notification IDs, and byte/percent
+progress. The Quick Settings tile is a control surface only and does not own a second transport.
 
 `Photos` and `Screenshots` are deliberately separate event sources. `Photos` accepts `DCIM/%`;
 `Screenshots` accepts only new rows under `Pictures/Screenshots/%` whose display name starts
@@ -165,7 +181,7 @@ new peers correct user-facing semantics.
 | Clipboard history | 100 previews, each at most 200 characters; stored in `filesDir/history.json`. |
 | Android settings | Two `key=value` settings in `filesDir/settings.txt`; `SharedPreferences` is not used on the tested device. |
 | Images | Header validation and a 10 MiB ceiling; chunked transfer prevents oversized Noise frames. |
-| Files | One transfer per session, 32 KiB chunks, 512 MiB maximum; partial files are deleted by `Drop`, including failures after the receive handle has already been closed for final publication. |
+| Files | 32 KiB chunks, 512 MiB maximum. One incoming file assembly per session per receiver; outbound sends are serialized. Android uses a pending MediaStore row and Windows uses a scratch file, both deleted if the session/transfer fails before publication. |
 | Windows toast cache | App icon files are package-keyed; contact-avatar cache is capped at 128 files. |
 | Capture activation | Camera photos and screenshots share one staged capture file, one toast tag, and one shared-storage token at a time. |
 | Relay waiters | Maximum 256 waiting sockets, with bounded preamble read deadline. |

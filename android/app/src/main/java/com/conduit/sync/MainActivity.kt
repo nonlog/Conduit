@@ -28,8 +28,10 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -43,6 +45,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -122,13 +125,15 @@ class MainActivity : ComponentActivity() {
         intent.getStringExtra("host")?.let(::startLink)
         setContent {
             ConduitTheme {
-                HomeScreen(
+                ConduitApp(
                     fingerprint = LinkStatus.fingerprint,
                     peerName = LinkStatus.peerName,
                     peerFingerprint = LinkStatus.peer,
                     path = LinkStatus.path,
                     state = LinkStatus.state,
                     history = History.entries,
+                    toDesktop = FileTransfers.toDesktop,
+                    toPhone = FileTransfers.toPhone,
                     hideNotifications = Settings.hideNotificationContent,
                     onHideNotifications = { Settings.hideNotificationContent = it },
                     onConnect = { send(ACTION_CONNECT) },
@@ -179,7 +184,8 @@ class MainActivity : ComponentActivity() {
 
     /** Connect and disconnect are the same call with a different action. */
     private fun send(action: String) {
-        startForegroundService(Intent(this, SyncService::class.java).setAction(action))
+        val intent = Intent(this, SyncService::class.java).setAction(action)
+        if (action == ACTION_DISCONNECT) startService(intent) else startForegroundService(intent)
     }
 }
 
@@ -197,6 +203,47 @@ private fun ConduitTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = scheme, content = content)
 }
 
+@Composable
+private fun ConduitApp(
+    fingerprint: String,
+    peerName: String?,
+    peerFingerprint: String?,
+    path: String?,
+    state: LinkState,
+    history: List<HistoryEntry>,
+    toDesktop: FileTransfer?,
+    toPhone: FileTransfer?,
+    hideNotifications: Boolean,
+    onHideNotifications: (Boolean) -> Unit,
+    onConnect: () -> Unit,
+    onDisconnect: () -> Unit,
+    onClearHistory: () -> Unit,
+) {
+    var page by rememberSaveable { mutableStateOf("home") }
+    if (page == "history") {
+        HistoryScreen(
+            history = history,
+            onBack = { page = "home" },
+            onClear = onClearHistory,
+        )
+    } else {
+        HomeScreen(
+            fingerprint = fingerprint,
+            peerName = peerName,
+            peerFingerprint = peerFingerprint,
+            path = path,
+            state = state,
+            toDesktop = toDesktop,
+            toPhone = toPhone,
+            hideNotifications = hideNotifications,
+            onHideNotifications = onHideNotifications,
+            onConnect = onConnect,
+            onDisconnect = onDisconnect,
+            onOpenHistory = { page = "history" },
+        )
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun HomeScreen(
@@ -205,35 +252,38 @@ private fun HomeScreen(
     peerFingerprint: String?,
     path: String?,
     state: LinkState,
-    history: List<HistoryEntry>,
+    toDesktop: FileTransfer?,
+    toPhone: FileTransfer?,
     hideNotifications: Boolean,
     onHideNotifications: (Boolean) -> Unit,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
-    onClearHistory: () -> Unit,
+    onOpenHistory: () -> Unit,
 ) {
-    Scaffold(topBar = { TopAppBar(title = { Text("Conduit") }) }) { insets ->
-        // One lazy list for the whole screen, so the history scrolls under the cards
-        // instead of the cards needing their own scroll container.
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Conduit") },
+                actions = {
+                    TextButton(onClick = onOpenHistory) { Text("History") }
+                },
+            )
+        },
+    ) { insets ->
         LazyColumn(
             modifier = Modifier.padding(insets),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item { StatusCard(state, peerName, peerFingerprint, path, onConnect, onDisconnect) }
+            toDesktop?.let { transfer ->
+                item("transfer-to-desktop") { TransferCard(transfer, peerName) }
+            }
+            toPhone?.let { transfer ->
+                item("transfer-to-phone") { TransferCard(transfer, peerName) }
+            }
             item { IdentityCard(fingerprint) }
             item { SettingsCard(hideNotifications, onHideNotifications) }
-            item { HistoryHeader(history.isNotEmpty(), onClearHistory) }
-            if (history.isEmpty()) {
-                item {
-                    Text(
-                        "Nothing synced yet.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            items(history, key = { "${it.at}:${it.direction}" }) { ClipRow(it) }
         }
     }
 }
@@ -319,18 +369,106 @@ private fun Dot(state: LinkState) {
 }
 
 @Composable
-private fun HistoryHeader(any: Boolean, onClear: () -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-        Text("Clipboard history", style = MaterialTheme.typography.titleSmall)
-        if (any) {
-            TextButton(onClick = onClear, modifier = Modifier.heightIn(min = 48.dp)) {
-                Text("Clear")
+private fun TransferCard(transfer: FileTransfer, peerName: String?) {
+    val peer = peerName ?: "desktop"
+    val title = when (transfer.direction) {
+        FileTransferDirection.ToDesktop -> "Sending to $peer"
+        FileTransferDirection.ToPhone -> "Receiving from $peer"
+    }
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(title, style = MaterialTheme.typography.titleSmall)
+            Text(
+                transfer.name,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+            )
+            LinearProgressIndicator(
+                progress = { transfer.fraction },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    "${formatBytes(transfer.transferred)} / ${formatBytes(transfer.total)}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    "${transfer.percent}%",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
             }
         }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HistoryScreen(
+    history: List<HistoryEntry>,
+    onBack: () -> Unit,
+    onClear: () -> Unit,
+) {
+    var query by rememberSaveable { mutableStateOf("") }
+    val filtered = filterHistory(history, query)
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Clipboard history") },
+                navigationIcon = {
+                    TextButton(onClick = onBack) { Text("Back") }
+                },
+                actions = {
+                    if (history.isNotEmpty()) {
+                        TextButton(onClick = onClear) { Text("Clear") }
+                    }
+                },
+            )
+        },
+    ) { insets ->
+        LazyColumn(
+            modifier = Modifier.padding(insets),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            item {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("Search") },
+                    placeholder = { Text("Text or direction") },
+                )
+            }
+            if (filtered.isEmpty()) {
+                item {
+                    Text(
+                        if (history.isEmpty()) "Nothing synced yet." else "No matching clipboard entries.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else {
+                items(filtered, key = { "${it.at}:${it.direction}:${it.preview.hashCode()}" }) { ClipRow(it) }
+            }
+        }
+    }
+}
+
+internal fun filterHistory(entries: List<HistoryEntry>, query: String): List<HistoryEntry> {
+    val needle = query.trim()
+    if (needle.isEmpty()) return entries
+    return entries.filter { entry ->
+        entry.preview.contains(needle, ignoreCase = true) ||
+            entry.direction.name.contains(needle, ignoreCase = true)
     }
 }
 

@@ -25,8 +25,8 @@ compatible relay, and the installed Android/Windows endpoints now send explicit 
 
 | Area | Last recorded result | What it establishes | Limitation |
 | --- | --- | --- | --- |
-| Android JVM suite | **17 passed, 0 failed** | Noise transcript, frame limits, bounded history, file/image validation including capture flags, notification payload budget, wire behaviours, explicit initiator relay preamble, and narrow fake-IP relay fallback selection. | No actual system-server hook, notification listener, or device radio lifecycle. |
-| Windows daemon | **39 passed, 2 ignored, 0 failed** on the last full normal run | Rust transport, clipboard/image/file/toast helpers, file-finalisation cleanup failures, screenshot semantics, resource-bound assertions, and explicit responder relay preamble. | Ignored tests show real toasts and require interactive validation. |
+| Android JVM suite | **20 passed, 0 failed** | Noise transcript, frame limits, bounded/searchable history model, file/image validation including capture flags, transfer-progress model, notification payload budget, wire behaviours, explicit initiator relay preamble, and narrow fake-IP relay fallback selection. | No actual system-server hook, notification listener, Quick Settings host, or device radio lifecycle. |
+| Windows daemon | **43 passed, 2 ignored, 0 failed** on the last full normal run | Rust transport, clipboard/image/file/toast helpers, desktop→phone outbound-file validation, file-finalisation cleanup failures, screenshot semantics, resource-bound assertions, explicit responder relay preamble, cancel/resume receive safety across an intervening Noise send, and SOCKS5 relay domain routing. | Ignored tests show real toasts and require interactive validation. |
 | Compatible relay migration | **9 passed, 0 failed** | Explicit-role splice, legacy 47-byte role inference without consuming Noise, both mixed upgrade orders, stale same-role replacement for new and legacy phones, dead-waiter recovery, and rendezvous isolation. | Production rollout is complete; long-duration M2 flap evidence and eventual legacy-path retirement remain. |
 | Noise interoperability | JVM transcript test + Rust `snow` fixture | The hand-written Android Noise XX agrees byte-for-byte with a reference implementation. | Does not replace live-network testing. |
 
@@ -92,10 +92,70 @@ cover both explicit-role peers and a deployed-format legacy phone reconnect.
 | Notification filtering | Device-shade inspection confirmed normal Play Store notification mirroring while media playback and Pano Scrobbler silent notifications were dropped. | Test other OEM/ranking edge cases when encountered. |
 | Notification privacy setting | User-owned hide switch persists and defaults off. | Android listener redaction still needs the post-install AppOp. |
 | Notification app icons / avatars | App icon and large-icon cache paths are implemented. | A genuine Nagram XF contact-avatar notification still needs end-to-end proof. |
-| Phone → PC file share | Implemented and re-verified byte-for-byte over the production relay, including the exact historical 259,737-byte screenshot source. | A transfer is not visible at its final filename until all chunks arrive; UI/progress feedback is still intentionally minimal. |
+| Phone → PC file share | Implemented and re-verified byte-for-byte over the production relay, including the exact historical 259,737-byte screenshot source and a 4 MiB current build transfer. Android shows byte/percent progress in-app and in a separate upload notification. | Continue endurance/very-large-file testing; the final Windows filename remains atomic and therefore appears only after all chunks arrive. |
+| PC → phone file send | **Implemented and device-verified.** `conduit-daemon send <path>` hands a validated path to the resident daemon over a local named pipe; Android streams it into a pending Downloads MediaStore row. 131,071-byte and 1 MiB transfers matched SHA-256; a 64 MiB interrupted transfer deleted its pending row at 7,471,104 bytes. | The CLI currently confirms queueing rather than waiting for a remote completion ACK; a future Windows UI/right-click surface can reuse the same local control pipe. |
 | Direct Share target | The remembered desktop name is published to Android’s share sheet. | Verify after desktop rename/reinstall scenarios as needed. |
 | Camera photo toast → Snipping Tool | Implementation exists: event-driven MediaStore watcher, staged image, shared-storage token, protocol activation. | Continue interactive checks after changes to the shared capture path. |
 | Screenshot → Windows toast → Snipping Tool | **Implemented and verified on CPH2573.** A real `Pictures/Screenshots/Screenshot_...png` produced exactly one native `New screenshot` toast; clicking it opened that image in Snipping Tool. | Keep the target-device path/name filter current after OEM/platform changes. |
+
+### Android UI / notification controls — 2026-08-26
+
+- Clipboard history no longer occupies the home list. `History` opens a dedicated Compose page
+  with a search field; filtering is case-insensitive across preview text and direction, and the
+  bounded 100×200-character persistence model is unchanged.
+- The foreground link notification now says **`Linked to LOG`** on the test pair rather than
+  `Clipboard linked to the desktop`. Killing/disconnecting the desktop removes the link
+  notification; reconnecting recreates it only after Noise is up.
+- Link state and file-transfer progress no longer share a notification channel. `Link` owns only
+  the connection notification. `File transfers` owns independent upload/download progress
+  notifications (IDs 2/3) with distinct upload/download monochrome status-bar icons. During a
+  live download, dumpsys showed ID 1 on `channel=link` still saying `Linked to LOG`, while ID 3
+  was on `channel=transfers` at 23%; a live upload similarly used ID 2 and the upload icon.
+- A Quick Settings `Conduit` tile was added on the target ColorOS device. A real tile click while
+  linked persisted `link_wanted=false`, closed the session and removed the notification; a second
+  click restored `link_wanted=true`, established a new relay session, and restored the active tile.
+- The home page shows one transfer card per active direction with filename, bytes and percentage.
+  Both receiving and sending cards were visually checked on the device.
+
+### Bidirectional file transfer / long-send heartbeat findings — 2026-08-26
+
+- Desktop→phone reuses the existing `FILE_OFFER` / `FILE_CHUNK` protocol rather than adding a
+  second file dialect. Android publishes a MediaStore Downloads row only after exact declared
+  byte/chunk completion; an interrupted 64 MiB test removed `.pending-...` at 7,471,104 bytes.
+- A first long phone→desktop test exposed a Windows cancel-safety hole: `Session::recv` preserved
+  partial-frame offsets across a heartbeat timeout, but send and receive shared the same ciphertext
+  scratch buffer. A PING inserted between partial reads overwrote inbound ciphertext and caused
+  `decrypt error`. Windows now owns separate fixed `cipher_in` / `cipher_out` buffers, with a
+  regression test that cancels mid-body, performs a send, then resumes/decrypts the original frame.
+- Re-running the long upload then exposed a second issue rather than ciphertext corruption:
+  Android's one sender executor could be occupied for an entire file, leaving a PONG queued behind
+  the transfer until Windows' 10-second probe deadline. Android now marks `pongPending` and services
+  it **between file/image chunks on the same sender executor**, preserving the single-writer Noise
+  invariant. A normal 4 MiB upload on that build completed and published correctly; a timed
+  across-heartbeat device check is recorded separately once completed.
+
+### Relay waiter liveness and Windows Mihomo routing — 2026-08-26
+
+- A real phone reboot reproduced a different reconnect failure after the role-byte migration. The
+  phone repeatedly reached TYO as `role=> legacy=false`, but no Windows responder remained in the
+  relay waiting map. Windows still showed its old `41113` socket as `ESTABLISHED`; TYO had already
+  timed that waiter out. `wire::park()` had enabled TCP keepalive only *after* `peek()` returned,
+  so a silently-dead parked responder could block forever and prevent `park_forever` from creating
+  its replacement. Windows now enables keepalive immediately after connecting, before sending the
+  relay preamble and entering the parked `peek()`.
+- Restarting the repaired daemon immediately restored the live pair, and TYO then showed a fresh
+  `role=< legacy=false` responder parked for the next reconnect. The phone notification returned
+  to `Linked to LOG`.
+- Transfer-speed diagnosis was corrected after confirming the phone already routes
+  `tyo.414222.xyz:41113` through Bettbox/Mihomo. Windows Clash Party had TUN disabled, so the Rust
+  raw `TcpStream` bypassed its HTTP/system proxy and connected to TYO directly. An isolated 4 MiB
+  relay receive measured **10.6 KiB/s** on Windows DIRECT versus **362.8 KiB/s** when the Windows
+  leg explicitly used Mihomo SOCKS5 at `127.0.0.1:7891`.
+- `CONDUIT_RELAY_PROXY=socks5://127.0.0.1:7891` now routes only Windows Relay connections through
+  SOCKS5; LAN traffic remains direct. SOCKS5 CONNECT uses the relay hostname rather than a locally
+  resolved IP so Mihomo DOMAIN rules still apply. The user-level variable is persisted on the test
+  machine. A real `conduit-daemon send` of 4 MiB then completed its daemon send in about **1.35 s**
+  and the exact-size file appeared in Android Downloads.
 
 ### Phone → PC file incident resolved — 2026-08-25
 

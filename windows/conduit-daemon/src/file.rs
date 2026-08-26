@@ -10,12 +10,17 @@
 //! is a trust boundary rather than a tidying pass.
 
 use anyhow::{bail, Context, Result};
+use prost::Message as _;
+use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::io::AsyncReadExt;
+use tokio::net::TcpStream;
 use tracing::{info, warn};
 
-use crate::wire::pb;
+use crate::wire::{pb, Session};
 
 /// Matches the phone's `CHUNK`. A larger chunk plus protobuf framing overflows the
 /// 65519-byte Noise plaintext ceiling, which would tear the session down.
@@ -25,6 +30,133 @@ const CHUNK: u32 = 32 * 1024;
 /// "send this to my PC" and it bounds what a peer can make this machine write; raise it
 /// when someone actually wants to move a disk image over a phone.
 const MAX_FILE: u64 = 512 * 1024 * 1024;
+
+/// Checks a local file before it can enter the daemon's bounded outbound queue.
+///
+/// Canonicalising here means a later UI/Explorer integration can hand the daemon a relative path
+/// without making the long-running process depend on whatever its current directory happens to be.
+pub fn validate_outbound(path: &Path) -> Result<PathBuf> {
+    let path = std::fs::canonicalize(path).with_context(|| format!("opening {}", path.display()))?;
+    let metadata = std::fs::metadata(&path).with_context(|| format!("reading {}", path.display()))?;
+    if !metadata.is_file() {
+        bail!("{} is not a regular file", path.display());
+    }
+    if !(1..=MAX_FILE).contains(&metadata.len()) {
+        bail!("file of {} B is outside 1..{MAX_FILE}", metadata.len());
+    }
+    Ok(path)
+}
+
+/// A local Windows file already opened and ready to send to the phone.
+///
+/// Opening happens before the `FILE_OFFER` goes on the wire. A missing/locked/oversize local file
+/// therefore costs no session. After the offer has been sent, any read failure must end the
+/// session so Android's pending MediaStore row is dropped with that session rather than waiting
+/// forever for chunks that can never arrive.
+pub struct Outbound {
+    path: PathBuf,
+    file: tokio::fs::File,
+    offer: pb::FileOffer,
+}
+
+impl Outbound {
+    pub async fn open(path: &Path) -> Result<Self> {
+        let path = validate_outbound(path)?;
+        let metadata = tokio::fs::metadata(&path)
+            .await
+            .with_context(|| format!("reading {}", path.display()))?;
+        let total = metadata.len();
+        let file = tokio::fs::File::open(&path)
+            .await
+            .with_context(|| format!("opening {}", path.display()))?;
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "file".to_string());
+        let chunks = total.div_ceil(CHUNK as u64);
+        let timestamp_ms = now_ms();
+        let mut digest = Sha256::new();
+        digest.update(path.as_os_str().to_string_lossy().as_bytes());
+        digest.update(total.to_be_bytes());
+        digest.update(timestamp_ms.to_be_bytes());
+        let transfer_id = digest.finalize()[..16].to_vec();
+        let offer = pb::FileOffer {
+            name,
+            mime: mime_for(&path).to_string(),
+            total_bytes: total,
+            chunk_size: CHUNK,
+            chunk_count: chunks,
+            transfer_id,
+            timestamp_ms,
+        };
+        Ok(Self { path, file, offer })
+    }
+
+    pub fn name(&self) -> &str {
+        &self.offer.name
+    }
+
+    /// Sends the offer and every chunk, returning the number of encrypted frames written.
+    pub async fn send(mut self, session: &mut Session, stream: &mut TcpStream) -> Result<u64> {
+        session
+            .send(stream, pb::Kind::FileOffer, &self.offer.encode_to_vec())
+            .await?;
+        let mut frames = 1u64;
+        let mut sent = 0u64;
+        let mut index = 0u64;
+        let mut buffer = vec![0u8; CHUNK as usize];
+        while sent < self.offer.total_bytes {
+            let want = (self.offer.total_bytes - sent).min(CHUNK as u64) as usize;
+            self.file
+                .read_exact(&mut buffer[..want])
+                .await
+                .with_context(|| format!("reading {} at {sent} B", self.path.display()))?;
+            let chunk = pb::FileChunk {
+                index,
+                data: buffer[..want].to_vec(),
+                transfer_id: self.offer.transfer_id.clone(),
+            };
+            session
+                .send(stream, pb::Kind::FileChunk, &chunk.encode_to_vec())
+                .await?;
+            sent += want as u64;
+            index += 1;
+            frames += 1;
+        }
+        info!(path = %self.path.display(), bytes = sent, chunks = index, "file sent");
+        Ok(frames)
+    }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn mime_for(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "pdf" => "application/pdf",
+        "txt" | "log" | "md" => "text/plain",
+        "zip" => "application/zip",
+        "mp3" => "audio/mpeg",
+        "flac" => "audio/flac",
+        "mp4" => "video/mp4",
+        _ => "application/octet-stream",
+    }
+}
 
 /// Names Windows refuses to give a file, with or without an extension: `nul.txt` is still
 /// the null device. Prefixed rather than rejected, so a legitimately-named `aux.png` from
@@ -477,6 +609,27 @@ mod tests {
         let dir = downloads()?;
         assert!(dir.is_absolute(), "{}", dir.display());
         assert!(dir.is_dir(), "{} is not a directory", dir.display());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_outbound_file_is_opened_before_it_is_offered() -> Result<()> {
+        let dir = scratch("outbound");
+        let path = dir.join("phone photo.png");
+        std::fs::write(&path, b"abcdefghij")?;
+
+        let outbound = Outbound::open(&path).await?;
+        assert_eq!(outbound.offer.name, "phone photo.png");
+        assert_eq!(outbound.offer.mime, "image/png");
+        assert_eq!(outbound.offer.total_bytes, 10);
+        assert_eq!(outbound.offer.chunk_size, CHUNK);
+        assert_eq!(outbound.offer.chunk_count, 1);
+        assert_eq!(outbound.offer.transfer_id.len(), 16);
+
+        assert!(Outbound::open(&dir).await.is_err(), "a directory became a file offer");
+        let empty = dir.join("empty.bin");
+        std::fs::write(&empty, [])?;
+        assert!(Outbound::open(&empty).await.is_err(), "an empty file became a file offer");
         Ok(())
     }
 }

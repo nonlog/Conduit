@@ -6,12 +6,13 @@
 
 mod advert;
 mod clip;
+mod control;
 mod file;
 mod image;
 mod toast;
 mod wire;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use prost::Message as _;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -19,7 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc, Mutex};
 use tracing::{info, warn};
 use wire::{pb, Session};
 
@@ -75,6 +76,21 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    let mut args = std::env::args_os();
+    let _exe = args.next();
+    if let Some(command) = args.next() {
+        if command == "send" {
+            let path = args.next().context("usage: conduit-daemon send <file>")?;
+            if args.next().is_some() {
+                bail!("usage: conduit-daemon send <file>");
+            }
+            let path = control::queue(&PathBuf::from(path)).await?;
+            println!("Queued for phone: {}", path.display());
+            return Ok(());
+        }
+        bail!("unknown command {:?}; usage: conduit-daemon [send <file>]", command);
+    }
+
     let dir = config_dir()?;
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let identity = wire::load_or_create_identity(&dir.join("identity.bin"))?;
@@ -95,6 +111,15 @@ async fn main() -> Result<()> {
             None
         }
     };
+    // One local command queue for the process. File bytes never pass through this IPC; callers
+    // name a local path and the resident daemon opens/streams it through its one live session.
+    let (outbound_tx, outbound_rx) = mpsc::channel::<PathBuf>(16);
+    let outbound = Arc::new(Mutex::new(outbound_rx));
+    tokio::spawn(async move {
+        if let Err(e) = control::serve(outbound_tx).await {
+            warn!(error = %e, "local control pipe stopped");
+        }
+    });
     let listener = TcpListener::bind(("0.0.0.0", PORT)).await?;
     info!(port = PORT, "listening");
     // Bound, not dropped: this is what the phone's discovery burst finds. Advertised
@@ -147,9 +172,21 @@ async fn main() -> Result<()> {
         let local_priv = identity.private.clone();
         let bridge = bridge.clone();
         let toasts = toasts.clone();
+        let outbound = outbound.clone();
         active = Some(tokio::spawn(async move {
             let _guard = SessionGuard(metrics.clone());
-            if let Err(e) = serve(stream, peer, &local_priv, &metrics, &bridge, toasts.as_deref(), via).await {
+            if let Err(e) = serve(
+                stream,
+                peer,
+                &local_priv,
+                &metrics,
+                &bridge,
+                &outbound,
+                toasts.as_deref(),
+                via,
+            )
+            .await
+            {
                 warn!(%peer, error = %e, "session ended");
             }
         }));
@@ -197,6 +234,7 @@ async fn serve(
     local_priv: &[u8],
     metrics: &Metrics,
     bridge: &Arc<clip::Bridge>,
+    outbound: &Arc<Mutex<mpsc::Receiver<PathBuf>>>,
     toasts: Option<&toast::Notifier>,
     // "lan" or "relay". Only the keepalive interval and the log line care.
     path: &'static str,
@@ -278,6 +316,29 @@ async fn serve(
                     Err(broadcast::error::RecvError::Closed) => {
                         anyhow::bail!("clipboard bridge is gone")
                     }
+                }
+                continue;
+            }
+            local_file = async {
+                let mut rx = outbound.lock().await;
+                rx.recv().await
+            } => {
+                let Some(path) = local_file else {
+                    bail!("local outbound file queue closed")
+                };
+                // Refuse a bad/missing local path before FILE_OFFER reaches the phone. Once an
+                // offer is on the wire, a read/send error ends this session so Android drops its
+                // pending MediaStore row rather than inheriting a partial into the next session.
+                match file::Outbound::open(&path).await {
+                    Ok(outbound_file) => {
+                        let name = outbound_file.name().to_string();
+                        let frames = outbound_file
+                            .send(&mut session, &mut stream)
+                            .await
+                            .with_context(|| format!("sending {name} to the phone"))?;
+                        metrics.frames_out.fetch_add(frames, Ordering::Relaxed);
+                    }
+                    Err(e) => warn!(path = %path.display(), error = %e, "local file was not sent"),
                 }
                 continue;
             }

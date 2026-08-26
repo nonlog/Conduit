@@ -16,7 +16,7 @@ prost = "0.14.4"
 sha2 = "0.11.0"
 snow = "0.10.0"
 socket2 = { version = "0.6.5", features = ["all"] }
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "io-util", "macros", "time", "sync"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "io-util", "fs", "macros", "time", "sync"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # Graphics_Imaging + Storage_Streams are what let image clipboard sync avoid an image

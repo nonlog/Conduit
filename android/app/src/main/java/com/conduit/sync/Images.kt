@@ -109,6 +109,7 @@ object Images {
         payload: Payload,
         photo: Boolean,
         screenshot: Boolean = false,
+        afterFrame: () -> Unit = {},
     ) {
         val bytes = payload.bytes
         val id = ByteString.copyFrom(MessageDigest.getInstance("SHA-256").digest(bytes), 0, 16)
@@ -125,6 +126,7 @@ object Images {
             .setScreenshot(screenshot)
             .build()
         session.send(Kind.CLIP_IMAGE_HEADER, header.toByteArray())
+        afterFrame()
 
         for (index in 0 until count) {
             val from = index * CHUNK
@@ -136,6 +138,7 @@ object Images {
                 .setStreamId(1)
                 .build()
             session.send(Kind.CLIP_IMAGE_CHUNK, chunk.toByteArray())
+            afterFrame()
         }
         Log.i(
             TAG,

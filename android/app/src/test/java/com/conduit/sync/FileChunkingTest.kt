@@ -35,4 +35,18 @@ class FileChunkingTest {
             assertEquals("size $size", expected, Files.chunkCount(size))
         }
     }
+
+    @Test
+    fun incoming_desktop_names_are_one_safe_download_basename() {
+        assertEquals("report.pdf", Files.safeName("../../report.pdf"))
+        assertEquals("evil_.txt", Files.safeName("evil?.txt"))
+        assertEquals("file", Files.safeName(".."))
+        assertEquals("file", Files.safeName("   "))
+        assertEquals("照片.png", Files.safeName("照片.png"))
+        assertEquals("archive.tar.gz", Files.safeName("archive.tar.gz"))
+
+        val long = Files.safeName("n".repeat(400) + ".txt")
+        assertEquals(124, long.length)
+        assertEquals(".txt", long.takeLast(4))
+    }
 }

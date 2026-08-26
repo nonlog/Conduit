@@ -16,11 +16,15 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
+import android.widget.Toast
 import java.net.InetSocketAddress
 
 private const val TAG = "conduit.svc"
-private const val CHANNEL = "link"
-private const val NOTIFICATION_ID = 1
+private const val LINK_CHANNEL = "link"
+private const val TRANSFER_CHANNEL = "transfers"
+private const val LINK_NOTIFICATION_ID = 1
+private const val UPLOAD_NOTIFICATION_ID = 2
+private const val DOWNLOAD_NOTIFICATION_ID = 3
 
 /** Only used by the intent-driven path; mDNS carries the port otherwise. */
 private const val PORT = 41112
@@ -95,6 +99,7 @@ class SyncService : Service() {
     private lateinit var clipboard: ClipboardManager
     private lateinit var connectivity: ConnectivityManager
     private val main = Handler(Looper.getMainLooper())
+    private var foregroundVisible = false
 
     /**
      * Last text seen in either direction, LF-normalised. A change equal to this is our
@@ -179,16 +184,23 @@ class SyncService : Service() {
                 override fun onState(state: LinkState, peer: String?) {
                     LinkStatus.state = state
                     LinkStatus.peer = peer
+                    LinkTileService.refresh(this@SyncService)
                     when (state) {
                         // A completed handshake is the only proof the path works, so it is
                         // the only thing that earns a reset back to the short interval.
-                        LinkState.Connected -> cancelRetry()
+                        LinkState.Connected -> {
+                            cancelRetry()
+                            main.post { showLinkedNotification() }
+                        }
                         // Every exit from the reader thread lands here, whether the
                         // handshake completed or not. That is the point: a dial refused by
                         // a desktop that is not listening notified nothing before, which is
                         // exactly why a phone that missed one burst stayed dark until the
                         // next network event.
-                        LinkState.Idle -> scheduleRetry()
+                        LinkState.Idle -> {
+                            main.post { hideLinkNotification() }
+                            scheduleRetry()
+                        }
                         LinkState.Discovering, LinkState.Retrying -> {}
                     }
                 }
@@ -197,6 +209,37 @@ class SyncService : Service() {
 
                 override fun onImage(png: ByteArray, photo: Boolean, screenshot: Boolean) =
                     onRemoteImage(png, photo, screenshot)
+
+                override fun onFileProgress(
+                    name: String,
+                    direction: FileTransferDirection,
+                    transferred: Long,
+                    total: Long,
+                ) {
+                    main.post {
+                        FileTransfers.update(direction, name, transferred, total)
+                        showTransferNotification(direction)
+                    }
+                }
+
+                override fun onFileComplete(name: String, direction: FileTransferDirection) {
+                    main.post {
+                        FileTransfers.clear(direction)
+                        hideTransferNotification(direction)
+                        val message = when (direction) {
+                            FileTransferDirection.ToDesktop -> "Sent $name"
+                            FileTransferDirection.ToPhone -> "Received $name"
+                        }
+                        Toast.makeText(this@SyncService, message, Toast.LENGTH_LONG).show()
+                    }
+                }
+
+                override fun onFileFailed(name: String, direction: FileTransferDirection) {
+                    main.post {
+                        FileTransfers.clear(direction)
+                        hideTransferNotification(direction)
+                    }
+                }
 
                 override fun onPeer(deviceId: String) = rememberPeer(deviceId)
 
@@ -210,6 +253,7 @@ class SyncService : Service() {
                     Log.i(TAG, "session lost")
                 }
             },
+            openIncomingFile = { offer -> Files.Incoming.begin(contentResolver, offer) },
         )
         discovery = Discovery(
             this,
@@ -226,11 +270,14 @@ class SyncService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(
-            NOTIFICATION_ID,
-            notification(),
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
-        )
+        if (intent?.action == ACTION_DISCONNECT) {
+            stopLink()
+            return START_NOT_STICKY
+        }
+        // Android requires a service launched by startForegroundService() to enter foreground
+        // quickly. This is only a short-lived connecting notification; the persistent one is
+        // shown only after Noise is actually up, and is removed again on any disconnect.
+        ensureStartupForeground()
         // A literal address on the intent skips discovery, which is the only way to drive
         // the link when the phone and the desktop are not on one subnet:
         //   adb reverse tcp:41112 tcp:41112
@@ -238,7 +285,6 @@ class SyncService : Service() {
         //       --es host 127.0.0.1
         val host = intent?.getStringExtra("host")
         when {
-            intent?.action == ACTION_DISCONNECT -> stopLink()
             intent?.action == ACTION_SHARE -> onShare(intent)
             host != null -> {
                 Settings.linkWanted = true
@@ -256,7 +302,11 @@ class SyncService : Service() {
             // A null intent is the system restarting us under START_STICKY. Respecting the
             // remembered choice is the whole reason it is persisted.
             Settings.linkWanted -> redial()
-            else -> Log.i(TAG, "restarted, but the user had turned the link off")
+            else -> {
+                Log.i(TAG, "restarted, but the user had turned the link off")
+                hideLinkNotification()
+                stopSelf(startId)
+            }
         }
         return START_STICKY
     }
@@ -275,6 +325,9 @@ class SyncService : Service() {
         photos.stop()
         discovery.stop()
         link.close()
+        FileTransfers.clearAll()
+        hideAllTransferNotifications()
+        hideLinkNotification()
         LinkStatus.state = LinkState.Idle
         LinkStatus.peer = null
         LinkStatus.path = null
@@ -304,6 +357,7 @@ class SyncService : Service() {
             return@post
         }
         LinkStatus.state = LinkState.Retrying
+        hideLinkNotification()
         Log.i(TAG, "link down, retrying in ${retryMs / 1000}s")
         main.postDelayed(retry, retryMs)
         retryMs = (retryMs * 2).coerceAtMost(RETRY_MAX_MS)
@@ -323,8 +377,13 @@ class SyncService : Service() {
         retryMs = RETRY_MIN_MS
         discovery.stop()
         link.disconnect()
+        FileTransfers.clearAll()
+        hideAllTransferNotifications()
         LinkStatus.state = LinkState.Idle
         LinkStatus.path = null
+        hideLinkNotification()
+        LinkTileService.refresh(this)
+        stopSelf()
     }
 
     /**
@@ -398,11 +457,14 @@ class SyncService : Service() {
      */
     private fun rememberPeerName(name: String) {
         LinkStatus.peerName = name
-        if (name == knownPeerName) return
-        knownPeerName = name
-        Log.i(TAG, "the desktop calls itself '$name'")
-        Identity.rememberPeerName(filesDir, name)
-        ShareTarget.publish(this, name)
+        if (name != knownPeerName) {
+            knownPeerName = name
+            Log.i(TAG, "the desktop calls itself '$name'")
+            Identity.rememberPeerName(filesDir, name)
+            ShareTarget.publish(this, name)
+        }
+        main.post { refreshLinkedNotification() }
+        LinkTileService.refresh(this)
     }
 
     /**
@@ -434,13 +496,7 @@ class SyncService : Service() {
         for (index in 0 until clip.itemCount) {
             val uri = clip.getItemAt(index).uri ?: continue
             Log.i(TAG, "sharing $uri")
-            link.sendFile(uri.toString()) {
-                // On the sender thread: History is safe from any thread and the name is only
-                // known once the provider has been asked.
-                Files.open(this, uri)?.also {
-                    History.record(Direction.Sent, "File: ${it.meta.name}")
-                }
-            }
+            link.sendFile(uri.toString()) { Files.open(this, uri) }
         }
     }
 
@@ -518,10 +574,48 @@ class SyncService : Service() {
         }
     }
 
-    private fun notification(): Notification {
+    private fun ensureStartupForeground() {
+        if (foregroundVisible) return
+        startForeground(
+            LINK_NOTIFICATION_ID,
+            linkNotification(linked = false),
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+        )
+        foregroundVisible = true
+    }
+
+    private fun showLinkedNotification() {
+        if (LinkStatus.state != LinkState.Connected) return
+        val notice = linkNotification(linked = true)
+        if (foregroundVisible) {
+            getSystemService(NotificationManager::class.java).notify(LINK_NOTIFICATION_ID, notice)
+        } else {
+            startForeground(
+                LINK_NOTIFICATION_ID,
+                notice,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+            )
+            foregroundVisible = true
+        }
+    }
+
+    private fun refreshLinkedNotification() {
+        if (LinkStatus.state == LinkState.Connected) showLinkedNotification()
+    }
+
+    private fun hideLinkNotification() {
+        if (foregroundVisible) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            foregroundVisible = false
+        }
+        // Defensive cancel for OEMs that leave the old foreground entry visible briefly.
+        getSystemService(NotificationManager::class.java).cancel(LINK_NOTIFICATION_ID)
+    }
+
+    private fun linkNotification(linked: Boolean): Notification {
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             // LOW, so an always-present notification never makes a sound.
-            NotificationChannel(CHANNEL, "Link", NotificationManager.IMPORTANCE_LOW).apply {
+            NotificationChannel(LINK_CHANNEL, "Link", NotificationManager.IMPORTANCE_LOW).apply {
                 description = "Shown while the desktop link is running"
             },
         )
@@ -531,12 +625,61 @@ class SyncService : Service() {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE,
         )
-        return Notification.Builder(this, CHANNEL)
+        val peerName = knownPeerName ?: LinkStatus.peerName ?: "desktop"
+        val content = when {
+            !linked -> "Connecting to $peerName"
+            else -> "Linked to $peerName"
+        }
+        return Notification.Builder(this, LINK_CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_link)
             .setContentTitle("Conduit")
-            .setContentText("Clipboard linked to the desktop")
+            .setContentText(content)
             .setContentIntent(open)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .build()
+    }
+
+    private fun showTransferNotification(direction: FileTransferDirection) {
+        val transfer = when (direction) {
+            FileTransferDirection.ToDesktop -> FileTransfers.toDesktop
+            FileTransferDirection.ToPhone -> FileTransfers.toPhone
+        } ?: return
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(
+            NotificationChannel(
+                TRANSFER_CHANNEL,
+                "File transfers",
+                NotificationManager.IMPORTANCE_LOW,
+            ).apply {
+                description = "Upload and download progress between this phone and the linked desktop"
+            },
+        )
+        val peer = knownPeerName ?: LinkStatus.peerName ?: "desktop"
+        val receiving = direction == FileTransferDirection.ToPhone
+        val notice = Notification.Builder(this, TRANSFER_CHANNEL)
+            .setSmallIcon(if (receiving) R.drawable.ic_stat_download else R.drawable.ic_stat_upload)
+            .setContentTitle(if (receiving) "Receiving from $peer" else "Sending to $peer")
+            .setContentText(transfer.name)
+            .setSubText("${formatBytes(transfer.transferred)} / ${formatBytes(transfer.total)}")
+            .setProgress(100, transfer.percent, false)
+            .setOnlyAlertOnce(true)
+            .setOngoing(true)
+            .build()
+        manager.notify(transferNotificationId(direction), notice)
+    }
+
+    private fun hideTransferNotification(direction: FileTransferDirection) {
+        getSystemService(NotificationManager::class.java).cancel(transferNotificationId(direction))
+    }
+
+    private fun hideAllTransferNotifications() {
+        hideTransferNotification(FileTransferDirection.ToDesktop)
+        hideTransferNotification(FileTransferDirection.ToPhone)
+    }
+
+    private fun transferNotificationId(direction: FileTransferDirection) = when (direction) {
+        FileTransferDirection.ToDesktop -> UPLOAD_NOTIFICATION_ID
+        FileTransferDirection.ToPhone -> DOWNLOAD_NOTIFICATION_ID
     }
 }

@@ -5,6 +5,8 @@ import com.conduit.sync.proto.ClipImageChunk
 import com.conduit.sync.proto.ClipImageHeader
 import com.conduit.sync.proto.ClipText
 import com.conduit.sync.proto.Envelope
+import com.conduit.sync.proto.FileChunk
+import com.conduit.sync.proto.FileOffer
 import com.conduit.sync.proto.Kind
 import com.conduit.sync.proto.PairRequest
 import java.net.InetSocketAddress
@@ -97,7 +99,11 @@ internal fun isVpnFakeIp(address: InetAddress): Boolean {
  * Idle cost is two blocked syscalls: `recvfrom` on the reader and a queue wait on the
  * sender. No timers, no wakeups, no polling.
  */
-class Link(private val privateKey: ByteArray, private val events: Events) {
+class Link(
+    private val privateKey: ByteArray,
+    private val events: Events,
+    private val openIncomingFile: (FileOffer) -> Files.Incoming? = { null },
+) {
 
     interface Events {
         fun onState(state: LinkState, peer: String?)
@@ -108,6 +114,20 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
          * [screenshot] distinguishes a screenshot from a camera photo on new peers.
          */
         fun onImage(png: ByteArray, photo: Boolean, screenshot: Boolean)
+
+        /** Exact byte progress for one file transfer. */
+        fun onFileProgress(
+            name: String,
+            direction: FileTransferDirection,
+            transferred: Long,
+            total: Long,
+        ) {}
+
+        /** The file reached its receiver and was fully published. */
+        fun onFileComplete(name: String, direction: FileTransferDirection) {}
+
+        /** A transfer that had started did not finish. */
+        fun onFileFailed(name: String, direction: FileTransferDirection) {}
 
         /**
          * The peer's stable id, on every completed handshake. The service persists it
@@ -155,12 +175,24 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
     @Volatile private var socket: Socket? = null
     @Volatile private var session: WireSession? = null
     private var reader: Thread? = null
+    /**
+     * A reader-thread PING that still needs a PONG from the single sender thread.
+     *
+     * Normally the queued sender task answers it immediately. A large file/image is different:
+     * that task intentionally owns the sender executor for the whole transfer, so it services
+     * this flag between chunks instead. That preserves the single Noise writer while preventing
+     * a 512 MiB transfer from starving a heartbeat behind thousands of queued bytes.
+     */
+    @Volatile private var pongPending = false
 
     /**
      * The image being reassembled. Touched only by the reader thread, so it is neither
      * volatile nor locked, and it is cleared on teardown with the session.
      */
     private var incoming: Images.Assembly? = null
+
+    /** The one desktop file being streamed into MediaStore Downloads on the reader thread. */
+    private var incomingFile: Files.Incoming? = null
 
     /**
      * Reads [uri] on the sender thread and queues it as chunks.
@@ -187,7 +219,7 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
                 .getOrNull()
             if (payload == null || payload.bytes.isEmpty()) return@execute
             try {
-                Images.send(live, payload, photo, screenshot)
+                Images.send(live, payload, photo, screenshot) { sendPendingPong(live) }
             } catch (e: Exception) {
                 // Same rule as a failed text write: the socket is gone, so let the reader
                 // notice and unwind rather than half-finishing the transfer.
@@ -216,12 +248,24 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
             .onFailure { Log.w(TAG, "could not read $what", it) }
             .getOrNull() ?: return@execute
         try {
-            source.stream.use { Files.send(live, it, source.meta) }
+            source.stream.use { input ->
+                Files.send(live, input, source.meta) { transferred, total ->
+                    sendPendingPong(live)
+                    events.onFileProgress(
+                        source.meta.name,
+                        FileTransferDirection.ToDesktop,
+                        transferred,
+                        total,
+                    )
+                }
+            }
+            events.onFileComplete(source.meta.name, FileTransferDirection.ToDesktop)
         } catch (e: Exception) {
             // Same rule as an image: the offer is already out and the desktop is committed
             // to a total, so there is nothing to salvage. Let the session unwind — the
             // desktop's transfer dies with it and deletes its own partial file.
             Log.w(TAG, "${source.meta.name} transfer failed", e)
+            events.onFileFailed(source.meta.name, FileTransferDirection.ToDesktop)
             teardown()
         }
     }
@@ -296,6 +340,7 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
         socket?.let { runCatching { it.close() } }
         reader?.join(JOIN_TIMEOUT_MS)
         reader = null
+        pongPending = false
     }
 
     private fun pump(address: InetSocketAddress, rendezvous: String?, fallbackIp: String?) {
@@ -370,6 +415,11 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
             // A partial image dies with the session that was carrying it, so the next
             // one never inherits a half-filled buffer.
             incoming = null
+            incomingFile?.let {
+                events.onFileFailed(it.name, FileTransferDirection.ToPhone)
+                it.close()
+            }
+            incomingFile = null
             events.onState(LinkState.Idle, null)
             Log.i(TAG, "session $count closed: opened=$count closed=${closed.incrementAndGet()}")
             if (established) events.onSessionLost()
@@ -386,7 +436,7 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
     private fun dispatch(envelope: Envelope) {
         when (envelope.kind) {
             // Posted, not written: only the sender thread may touch the send counter.
-            Kind.PING -> sender.execute { runCatching { session?.send(Kind.PONG) } }
+            Kind.PING -> queuePong()
             Kind.PONG -> {}
             // Capped, because it is peer-supplied text on its way to a launcher shortcut
             // label and a notification. A desktop is not hostile, but a relay session is
@@ -427,7 +477,84 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
                     }
             }
 
+            Kind.FILE_OFFER -> {
+                val offer = FileOffer.parseFrom(envelope.payload)
+                incomingFile?.let {
+                    events.onFileFailed(it.name, FileTransferDirection.ToPhone)
+                    it.close()
+                }
+                incomingFile = runCatching { openIncomingFile(offer) }
+                    .onSuccess { rx ->
+                        if (rx != null) {
+                            Log.i(
+                                TAG,
+                                "file in: ${rx.name}, ${offer.totalBytes} B, ${offer.chunkCount} chunks",
+                            )
+                            events.onFileProgress(
+                                rx.name,
+                                FileTransferDirection.ToPhone,
+                                0L,
+                                offer.totalBytes,
+                            )
+                        }
+                    }
+                    .onFailure { Log.w(TAG, "refused a file offer", it) }
+                    .getOrNull()
+            }
+
+            Kind.FILE_CHUNK -> {
+                val chunk = FileChunk.parseFrom(envelope.payload)
+                val rx = incomingFile
+                if (rx == null) {
+                    Log.w(TAG, "file chunk ${chunk.index} with no offer, dropped")
+                    return
+                }
+                runCatching { rx.push(chunk) }
+                    .onFailure {
+                        Log.w(TAG, "file transfer dropped", it)
+                        events.onFileFailed(rx.name, FileTransferDirection.ToPhone)
+                        rx.close()
+                        incomingFile = null
+                    }
+                    .getOrNull()
+                    ?.let { progress ->
+                        events.onFileProgress(
+                            rx.name,
+                            FileTransferDirection.ToPhone,
+                            progress.transferred,
+                            progress.total,
+                        )
+                        if (progress.complete) {
+                            val name = rx.name
+                            rx.close()
+                            incomingFile = null
+                            events.onFileComplete(name, FileTransferDirection.ToPhone)
+                        }
+                    }
+            }
+
             else -> Log.d(TAG, "unhandled kind ${envelope.kind}")
         }
+    }
+
+    private fun queuePong() {
+        pongPending = true
+        sender.execute {
+            val live = session ?: return@execute
+            runCatching { sendPendingPong(live) }
+                .onFailure {
+                    Log.w(TAG, "PONG write failed", it)
+                    teardown()
+                }
+        }
+    }
+
+    /** Runs only on the sender executor, either as its own task or between transfer chunks. */
+    private fun sendPendingPong(live: WireSession) {
+        if (!pongPending) return
+        // Clear before writing: if another PING arrives during this send, the reader sets the
+        // flag again and the next chunk boundary answers that newer probe instead of losing it.
+        pongPending = false
+        live.send(Kind.PONG)
     }
 }

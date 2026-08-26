@@ -130,6 +130,21 @@ accepts legacy 47-byte clients and explicit-role 48-byte clients, while the inst
 Windows clients use explicit roles. See
 [architecture.md](architecture.md#relay-preamble-deployed-contract-and-compatible-migration).
 
+For a Windows installation where the relay should use Mihomo/Clash without enabling system-wide
+TUN, configure the relay-only SOCKS5 path explicitly:
+
+```powershell
+[Environment]::SetEnvironmentVariable(
+  'CONDUIT_RELAY_PROXY',
+  'socks5://127.0.0.1:7891',
+  'User'
+)
+```
+
+The daemon must be started from a process that inherits that user environment. LAN connections do
+not use this proxy. An unavailable configured SOCKS proxy is treated as a relay connection failure
+and retried by the normal relay loop; it is not silently bypassed to DIRECT.
+
 ### Whole workspace formatting/checks
 
 Use these before a Rust commit when the relevant source changed:
@@ -257,11 +272,30 @@ Use real UI actions where platform ownership matters:
    toasts.
 6. Share a small file through the Android system share sheet; ensure it appears in the actual
    Windows Downloads folder, and that its toast opens the folder rather than the file.
-7. Test camera-photo and screenshot capture independently when that path is in scope for the
+7. Send a small desktop file with `conduit-daemon.exe send <path>`; verify Android publishes it in
+   Downloads only after completion. During either transfer direction, verify connection status
+   stays on the `Link` notification while progress appears separately on `File transfers` with the
+   correct upload/download icon, then disappears on completion/failure.
+8. Add/use the `Conduit` Quick Settings tile and exercise one off/on cycle. It must persist the same
+   `link_wanted` state as the app, remove the link notification when off, and re-establish the one
+   existing transport rather than creating another owner.
+9. Open the Android `History` child page and verify search narrows clipboard previews without
+   changing the bounded history store.
+10. Test camera-photo and screenshot capture independently when that path is in scope for the
    run. They use separate Android observers but share the bounded Windows capture-toast/Snipping
    Tool activation slot; neither is allowed to touch the clipboard.
-8. For lifecycle work, record `opened/closed` on Android and `created/closed` plus Windows
+11. For lifecycle work, record `opened/closed` on Android and `created/closed` plus Windows
    process resources before and after repeated real disconnect/reconnect cycles.
+
+Desktop→phone file send is deliberately an IPC command into the already-running daemon, not a
+second daemon instance:
+
+```powershell
+D:\Workspace\Conduit\target\debug\conduit-daemon.exe send D:\path\to\file.bin
+```
+
+The CLI confirms local queue acceptance. Remote publication is currently observed through the
+Android progress/completion UI rather than a protocol ACK returned to the CLI.
 
 Do not infer a completed transfer or live session solely from a stale buffered daemon log.
 Confirm current timestamps and filesystem state after the transfer has had time to finish.
