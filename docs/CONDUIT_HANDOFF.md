@@ -58,9 +58,9 @@ same authoritative state as the architecture/progress/backlog records.
 ## Repository state at handoff
 
 ```text
-latest functional commit: 3458e59 Add bidirectional transfer UX and harden relay sessions
+latest functional commit: 6e5c6fe Confirm remote file publication
 origin/master:             1c7e18c Send files from the share sheet, and stop toasting what the phone silenced
-local functional lead:     13 commits, plus the handoff-maintenance commit containing this update
+recent feature commits:    1d702ed battery-first multi-relay; e60df15 transfer-progress throttling
 ```
 
 Local `master` includes the tested persistence fix, screenshot implementation, compatible relay
@@ -69,9 +69,9 @@ parked-socket keepalive, and Windows Relay SOCKS5 support. None of these local c
 pushed. The compatible TYO relay and installed endpoints were built from this local line. A future
 Git push is still outward-facing: obtain explicit approval unless requested in the same context.
 
-At the latest functional checkpoint the Git worktree was clean immediately after `3458e59`; this
-handoff/agent-rule maintenance is the only intended change on top of it. The Windows user environment
-contains:
+At the latest functional checkpoint `6e5c6fe`, PC→phone CLI success means Android actually published
+the Downloads row. A real 1 MiB device test observed last-chunk send first, then `FILE_RESULT`, then
+CLI success about 9 ms later. The Windows user environment contains:
 
 ```text
 CONDUIT_RELAY_PROXY=socks5://127.0.0.1:7891
@@ -127,7 +127,8 @@ See `docs/architecture.md` for full data flow and trust boundaries.
 - Phone → PC file share via Android’s share sheet; transfer is chunked to disk and partials are
   deleted on session failure.
 - PC → phone file sending via `conduit-daemon send <path>`; Android publishes into Downloads only
-  after complete receipt and deletes pending MediaStore rows on failure.
+  after complete receipt and deletes pending MediaStore rows on failure. The CLI waits for the
+  receiver's whole-file publication result before returning success.
 - Android file progress is shown both in-app and in a dedicated `File transfers` notification
   channel with direction-specific upload/download small icons; link status remains on `Link`.
 - Android clipboard history is a dedicated searchable child page instead of occupying the home
@@ -153,8 +154,8 @@ See `docs/architecture.md` for full data flow and trust boundaries.
 
 ## Latest evidence
 
-- Android JVM tests: **20 passed, 0 failed**.
-- Windows daemon normal test run: **43 passed, 2 ignored, 0 failed**.
+- Android JVM tests: **25 passed, 0 failed**.
+- Windows daemon normal test run: **45 passed, 2 ignored, 0 failed**.
 - Compatible relay migration: **9 passed, 0 failed**, including legacy↔legacy, both mixed
   upgrade orders, explicit stale-role replacement, and legacy stale-phone replacement.
 - Production rollout: old↔old and old-phone↔new-desktop connected through the compatible relay;

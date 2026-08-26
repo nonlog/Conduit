@@ -315,8 +315,11 @@ second daemon instance:
 D:\Workspace\Conduit\target\debug\conduit-daemon.exe send D:\path\to\file.bin
 ```
 
-The CLI confirms local queue acceptance. Remote publication is currently observed through the
-Android progress/completion UI rather than a protocol ACK returned to the CLI.
+The CLI now stays attached to the resident daemon's named-pipe request until the upgraded Android
+receiver publishes the MediaStore Downloads row and returns a whole-file `FILE_RESULT`. `OK` / a
+zero exit code therefore means remote publication, not merely local queue acceptance. A dead
+session, receiver refusal, or publication timeout returns an error to the caller. File chunks still
+stream without per-chunk acknowledgements.
 
 Do not infer a completed transfer or live session solely from a stale buffered daemon log.
 Confirm current timestamps and filesystem state after the transfer has had time to finish.

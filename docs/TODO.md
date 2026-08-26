@@ -34,9 +34,9 @@
   - Keep LAN discovery/direct TCP strictly preferred when a real same-LAN path exists.
   - Keep proxy policy per endpoint/path; Windows currently uses local Mihomo SOCKS5 for Relay only.
   - Additional public Relay nodes are **not deployed yet**; production still has only TYO active.
-- [ ] **Remote completion ACK for desktop -> phone file sends.**
-  - `conduit-daemon send <file>` currently confirms local queue acceptance, not Android publication.
-  - Add an explicit completion/failure result without creating a second transport owner.
+- [x] **Remote completion ACK for desktop -> phone file sends.**
+  - `conduit-daemon send <file>` now returns success only after Android publishes the Downloads row.
+  - One `FILE_RESULT` is sent per whole file; there is no per-chunk ACK or stop-and-wait penalty.
 
 ### Windows operability / UX
 

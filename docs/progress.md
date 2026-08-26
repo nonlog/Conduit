@@ -25,7 +25,7 @@ compatible relay, and the installed Android/Windows endpoints now send explicit 
 
 | Area | Last recorded result | What it establishes | Limitation |
 | --- | --- | --- | --- |
-| Android JVM suite | **24 passed, 0 failed** | Noise transcript, frame limits, bounded/searchable history model, file/image validation including capture flags, throttled transfer-progress model, notification payload budget, wire behaviours, explicit initiator relay preamble, fake-IP relay fallback, and passive multi-relay candidate/cooldown persistence. | No actual system-server hook, notification listener, Quick Settings host, or device radio lifecycle. |
+| Android JVM suite | **25 passed, 0 failed** | Noise transcript, frame limits, bounded/searchable history model, file/image validation including capture flags, throttled transfer-progress model, notification payload budget, wire behaviours, explicit initiator relay preamble, fake-IP relay fallback, passive multi-relay candidate/cooldown persistence, and file-publication result encoding. | No actual system-server hook, notification listener, Quick Settings host, or device radio lifecycle. |
 | Windows daemon | **45 passed, 2 ignored, 0 failed** on the last full normal run | Rust transport, clipboard/image/file/toast helpers, desktop→phone outbound-file validation, file-finalisation cleanup failures, screenshot semantics, resource-bound assertions, explicit responder relay preamble, multi-relay config parsing/parking, cancel/resume receive safety across an intervening Noise send, and SOCKS5 relay domain routing. | Ignored tests show real toasts and require interactive validation. |
 | Compatible relay migration | **9 passed, 0 failed** | Explicit-role splice, legacy 47-byte role inference without consuming Noise, both mixed upgrade orders, stale same-role replacement for new and legacy phones, dead-waiter recovery, and rendezvous isolation. | Production rollout is complete; long-duration M2 flap evidence and eventual legacy-path retirement remain. |
 | Noise interoperability | JVM transcript test + Rust `snow` fixture | The hand-written Android Noise XX agrees byte-for-byte with a reference implementation. | Does not replace live-network testing. |
@@ -93,7 +93,7 @@ cover both explicit-role peers and a deployed-format legacy phone reconnect.
 | Notification privacy setting | User-owned hide switch persists and defaults off. | Android listener redaction still needs the post-install AppOp. |
 | Notification app icons / avatars | App icon and large-icon cache paths are implemented. | A genuine Nagram XF contact-avatar notification still needs end-to-end proof. |
 | Phone → PC file share | Implemented and re-verified byte-for-byte over the production relay, including the exact historical 259,737-byte screenshot source and a 4 MiB current build transfer. Android shows byte/percent progress in-app and in a separate upload notification. | Continue endurance/very-large-file testing; the final Windows filename remains atomic and therefore appears only after all chunks arrive. |
-| PC → phone file send | **Implemented and device-verified.** `conduit-daemon send <path>` hands a validated path to the resident daemon over a local named pipe; Android streams it into a pending Downloads MediaStore row. 131,071-byte and 1 MiB transfers matched SHA-256; a 64 MiB interrupted transfer deleted its pending row at 7,471,104 bytes. | The CLI currently confirms queueing rather than waiting for a remote completion ACK; a future Windows UI/right-click surface can reuse the same local control pipe. |
+| PC → phone file send | **Implemented and device-verified.** `conduit-daemon send <path>` hands a validated path to the resident daemon over a local named pipe; Android streams it into a pending Downloads MediaStore row. 131,071-byte and 1 MiB transfers matched SHA-256; a 64 MiB interrupted transfer deleted its pending row at 7,471,104 bytes. The CLI now waits for Android's post-publication `FILE_RESULT` before returning success. | A future Windows UI/right-click surface can reuse the same local control pipe and remote-result semantics. |
 | Direct Share target | The remembered desktop name is published to Android’s share sheet. | Verify after desktop rename/reinstall scenarios as needed. |
 | Camera photo toast → Snipping Tool | Implementation exists: event-driven MediaStore watcher, staged image, shared-storage token, protocol activation. | Continue interactive checks after changes to the shared capture path. |
 | Screenshot → Windows toast → Snipping Tool | **Implemented and verified on CPH2573.** A real `Pictures/Screenshots/Screenshot_...png` produced exactly one native `New screenshot` toast; clicking it opened that image in Snipping Tool. | Keep the target-device path/name filter current after OEM/platform changes. |
@@ -133,6 +133,12 @@ cover both explicit-role peers and a deployed-format legacy phone reconnect.
   it **between file/image chunks on the same sender executor**, preserving the single-writer Noise
   invariant. A normal 4 MiB upload on that build completed and published correctly; a timed
   across-heartbeat device check is recorded separately once completed.
+- Desktop→phone now has one receiver-side `FILE_RESULT` after whole-file publication. There is no
+  per-chunk ACK. The resident daemon correlates it by `transfer_id`, keeps at most one desktop send
+  awaiting publication, and resolves the local named-pipe caller only after the result arrives.
+  A real 1 MiB test wrote the last Windows chunk at **18:07:56.028**, received Android publication
+  confirmation at **18:07:56.800**, and the CLI exited successfully at **18:07:56.809** with
+  `Sent to phone`. The exact-size file existed in Android Downloads before the test copy was removed.
 
 ### Relay waiter liveness and Windows Mihomo routing — 2026-08-26
 
