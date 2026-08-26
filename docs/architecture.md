@@ -82,7 +82,7 @@ notification, image, or file contents.
 4. Relay use requires the desktop's remembered device ID, obtained from a prior completed
    direct handshake.  An unpaired phone must pair on a LAN first.
 
-### Planned multi-Relay selection: passive, sticky, battery-first
+### Multi-Relay selection: passive, sticky, battery-first
 
 Multi-Relay support must not turn routing into a background benchmark service. The desktop is the
 powered side, so it may park one responder on every configured Relay. Android remains the selection
@@ -111,6 +111,23 @@ are explored only at these natural reconnect points or after observed degradatio
 session is never torn down just to gather a better score. Per-network history should remain coarse
 (transport/VPN class plus age-decayed EWMA) rather than requiring extra Android permissions solely
 to identify SSIDs or perform routing telemetry.
+
+The implementation reads Android's optional app-private `files/relays.txt` once when
+`SyncService` starts. Each non-comment line is:
+
+```text
+id|hostname|port|optional-fallback-ipv4
+```
+
+With no file (or no valid entries), TYO remains the single production default. Windows accepts a
+comma/semicolon-separated `CONDUIT_RELAYS` and parks one independent responder task per endpoint;
+the older singular `CONDUIT_RELAY` remains a compatibility fallback. An explicitly empty
+`CONDUIT_RELAYS` disables Relay parking.
+
+`RelayQualityStore` persists only event-driven observations in `relay-quality.txt`: successful or
+failed real dials, short unstable sessions, and completed real image/file goodput. Two consecutive
+dial failures put one endpoint into a 30-minute cooldown. A failed candidate advances to the next
+one inside the reconnect that is already underway; the cooldown clock itself never schedules work.
 
 This design deliberately favours "boring while idle" over continuously chasing the theoretical
 fastest Relay. The dominant use cases are clipboard/notification traffic and phone photo/screenshot

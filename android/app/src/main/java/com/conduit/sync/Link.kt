@@ -1,5 +1,6 @@
 package com.conduit.sync
 
+import android.os.SystemClock
 import android.util.Log
 import com.conduit.sync.proto.ClipImageChunk
 import com.conduit.sync.proto.ClipImageHeader
@@ -129,6 +130,9 @@ class Link(
         /** A transfer that had started did not finish. */
         fun onFileFailed(name: String, direction: FileTransferDirection) {}
 
+        /** A real bulk payload completed; used only for passive Relay quality learning. */
+        fun onBulkTransfer(bytes: Long, elapsedMs: Long) {}
+
         /**
          * The peer's stable id, on every completed handshake. The service persists it
          * because it doubles as the relay rendezvous, and the relay is unusable until
@@ -190,9 +194,11 @@ class Link(
      * volatile nor locked, and it is cleared on teardown with the session.
      */
     private var incoming: Images.Assembly? = null
+    private var incomingImageStartedMs = 0L
 
     /** The one desktop file being streamed into MediaStore Downloads on the reader thread. */
     private var incomingFile: Files.Incoming? = null
+    private var incomingFileStartedMs = 0L
 
     /**
      * Reads [uri] on the sender thread and queues it as chunks.
@@ -219,7 +225,12 @@ class Link(
                 .getOrNull()
             if (payload == null || payload.bytes.isEmpty()) return@execute
             try {
+                val started = SystemClock.elapsedRealtime()
                 Images.send(live, payload, photo, screenshot) { sendPendingPong(live) }
+                events.onBulkTransfer(
+                    payload.bytes.size.toLong(),
+                    (SystemClock.elapsedRealtime() - started).coerceAtLeast(1L),
+                )
             } catch (e: Exception) {
                 // Same rule as a failed text write: the socket is gone, so let the reader
                 // notice and unwind rather than half-finishing the transfer.
@@ -248,6 +259,7 @@ class Link(
             .onFailure { Log.w(TAG, "could not read $what", it) }
             .getOrNull() ?: return@execute
         try {
+            val started = SystemClock.elapsedRealtime()
             source.stream.use { input ->
                 Files.send(live, input, source.meta) { transferred, total ->
                     sendPendingPong(live)
@@ -259,6 +271,10 @@ class Link(
                     )
                 }
             }
+            events.onBulkTransfer(
+                source.meta.size,
+                (SystemClock.elapsedRealtime() - started).coerceAtLeast(1L),
+            )
             events.onFileComplete(source.meta.name, FileTransferDirection.ToDesktop)
         } catch (e: Exception) {
             // Same rule as an image: the offer is already out and the desktop is committed
@@ -415,11 +431,13 @@ class Link(
             // A partial image dies with the session that was carrying it, so the next
             // one never inherits a half-filled buffer.
             incoming = null
+            incomingImageStartedMs = 0L
             incomingFile?.let {
                 events.onFileFailed(it.name, FileTransferDirection.ToPhone)
                 it.close()
             }
             incomingFile = null
+            incomingFileStartedMs = 0L
             events.onState(LinkState.Idle, null)
             Log.i(TAG, "session $count closed: opened=$count closed=${closed.incrementAndGet()}")
             if (established) events.onSessionLost()
@@ -448,9 +466,12 @@ class Link(
             Kind.CLIP_TEXT -> events.onText(ClipText.parseFrom(envelope.payload).text)
             // Reassembly state lives on this thread and nowhere else, so it needs no
             // lock and cannot outlive the session that is filling it.
-            Kind.CLIP_IMAGE_HEADER -> incoming = runCatching {
-                Images.Assembly.begin(ClipImageHeader.parseFrom(envelope.payload))
-            }.onFailure { Log.w(TAG, "refused an image header", it) }.getOrNull()
+            Kind.CLIP_IMAGE_HEADER -> {
+                incoming = runCatching {
+                    Images.Assembly.begin(ClipImageHeader.parseFrom(envelope.payload))
+                }.onFailure { Log.w(TAG, "refused an image header", it) }.getOrNull()
+                incomingImageStartedMs = if (incoming != null) SystemClock.elapsedRealtime() else 0L
+            }
 
             Kind.CLIP_IMAGE_CHUNK -> {
                 val assembly = incoming
@@ -464,10 +485,19 @@ class Link(
                     .onFailure {
                         Log.w(TAG, "image transfer dropped", it)
                         incoming = null
+                        incomingImageStartedMs = 0L
                     }
                     .getOrNull()
                     ?.let { png ->
                         incoming = null
+                        val started = incomingImageStartedMs
+                        incomingImageStartedMs = 0L
+                        if (started > 0L) {
+                            events.onBulkTransfer(
+                                png.size.toLong(),
+                                (SystemClock.elapsedRealtime() - started).coerceAtLeast(1L),
+                            )
+                        }
                         Log.i(
                             TAG,
                             "image in: ${png.size} B, photo=${assembly.photo} " +
@@ -496,6 +526,7 @@ class Link(
                                 0L,
                                 offer.totalBytes,
                             )
+                            incomingFileStartedMs = SystemClock.elapsedRealtime()
                         }
                     }
                     .onFailure { Log.w(TAG, "refused a file offer", it) }
@@ -515,6 +546,7 @@ class Link(
                         events.onFileFailed(rx.name, FileTransferDirection.ToPhone)
                         rx.close()
                         incomingFile = null
+                        incomingFileStartedMs = 0L
                     }
                     .getOrNull()
                     ?.let { progress ->
@@ -526,8 +558,16 @@ class Link(
                         )
                         if (progress.complete) {
                             val name = rx.name
+                            val started = incomingFileStartedMs
                             rx.close()
                             incomingFile = null
+                            incomingFileStartedMs = 0L
+                            if (started > 0L) {
+                                events.onBulkTransfer(
+                                    progress.total,
+                                    (SystemClock.elapsedRealtime() - started).coerceAtLeast(1L),
+                                )
+                            }
                             events.onFileComplete(name, FileTransferDirection.ToPhone)
                         }
                     }

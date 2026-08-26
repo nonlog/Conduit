@@ -15,9 +15,11 @@ import android.net.NetworkCapabilities
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.widget.Toast
 import java.net.InetSocketAddress
+import java.util.ArrayDeque
 
 private const val TAG = "conduit.svc"
 private const val LINK_CHANNEL = "link"
@@ -28,16 +30,6 @@ private const val DOWNLOAD_NOTIFICATION_ID = 3
 
 /** Only used by the intent-driven path; mDNS carries the port otherwise. */
 private const val PORT = 41112
-
-/** Ours, in Tokyo. Must match `RELAY` in the daemon's `main.rs`. */
-private const val RELAY_HOST = "tyo.414222.xyz"
-private const val RELAY_PORT = 41113
-/**
- * Only used when a VPN resolves [RELAY_HOST] into the fake-IP benchmark range 198.18/15.
- * Normal DNS keeps using the hostname, so a future relay move needs this updated only for
- * fake-IP VPN users rather than turning the endpoint into a permanently pinned address.
- */
-private const val RELAY_FALLBACK_IPV4 = "138.3.214.175"
 
 /** Matches the desktop's ceiling; a longer clip is skipped, never truncated. */
 private const val MAX_TEXT = 64_000
@@ -59,6 +51,8 @@ private const val RETRY_MIN_MS = 5_000L
  * type would have been the version of this feature that drains the battery.
  */
 private const val RETRY_MAX_MS = 300_000L
+private const val RELAY_FAILOVER_DELAY_MS = 150L
+private const val UNSTABLE_RELAY_SESSION_MS = 60_000L
 
 /** Sent by the UI. A disconnect has to be remembered, or START_STICKY undoes the user's tap. */
 const val ACTION_CONNECT = "com.conduit.sync.CONNECT"
@@ -98,10 +92,23 @@ class SyncService : Service() {
     private lateinit var screenshots: Screenshots
     private lateinit var clipboard: ClipboardManager
     private lateinit var connectivity: ConnectivityManager
+    private lateinit var relayQuality: RelayQualityStore
+    private var relayEndpoints: List<RelayEndpoint> = emptyList()
     private val main = Handler(Looper.getMainLooper())
     private var foregroundVisible = false
     private val uploadProgressGate = TransferProgressGate()
     private val downloadProgressGate = TransferProgressGate()
+
+    /**
+     * Relay selection state. Only [relayCandidates] is main-thread-owned. The attempt metadata is
+     * volatile because Link callbacks arrive on its reader/sender threads. Nothing here has a
+     * timer: a plan is created only when a real reconnect is already happening.
+     */
+    private val relayCandidates = ArrayDeque<RelayEndpoint>()
+    @Volatile private var relayAttempt: RelayEndpoint? = null
+    @Volatile private var relayAttemptConnected = false
+    @Volatile private var relayConnectedAtMs = 0L
+    @Volatile private var relayNetworkClass = "other"
 
     /**
      * Last text seen in either direction, LF-normalised. A change equal to this is our
@@ -179,6 +186,9 @@ class SyncService : Service() {
         // remembered disconnect it is about to read lives in one of them.
         Settings.load(this)
         History.load(this)
+        relayEndpoints = RelayCatalog.load(filesDir)
+        relayQuality = RelayQualityStore(filesDir)
+        Log.i(TAG, "relay inventory: ${relayEndpoints.joinToString { it.id }}")
 
         link = Link(
             identity.private,
@@ -191,6 +201,15 @@ class SyncService : Service() {
                         // A completed handshake is the only proof the path works, so it is
                         // the only thing that earns a reset back to the short interval.
                         LinkState.Connected -> {
+                            relayAttempt?.let { endpoint ->
+                                relayAttemptConnected = true
+                                relayConnectedAtMs = SystemClock.elapsedRealtime()
+                                relayQuality.connected(
+                                    relayNetworkClass,
+                                    endpoint,
+                                    System.currentTimeMillis(),
+                                )
+                            }
                             cancelRetry()
                             main.post { showLinkedNotification() }
                         }
@@ -200,8 +219,38 @@ class SyncService : Service() {
                         // exactly why a phone that missed one burst stayed dark until the
                         // next network event.
                         LinkState.Idle -> {
-                            main.post { hideLinkNotification() }
-                            scheduleRetry()
+                            val endpoint = relayAttempt
+                            val wasConnected = relayAttemptConnected
+                            val connectedFor = if (wasConnected) {
+                                SystemClock.elapsedRealtime() - relayConnectedAtMs
+                            } else {
+                                0L
+                            }
+                            main.post {
+                                hideLinkNotification()
+                                if (endpoint != null && networkUp && Settings.linkWanted) {
+                                    if (!wasConnected) {
+                                        relayQuality.dialFailed(
+                                            relayNetworkClass,
+                                            endpoint,
+                                            System.currentTimeMillis(),
+                                        )
+                                        relayAttempt = null
+                                        relayAttemptConnected = false
+                                        if (relayCandidates.isNotEmpty()) {
+                                            // Let the reader that reported Idle actually return before Link.dial
+                                            // tests isAlive. This delay exists only inside an already-active
+                                            // reconnect attempt; it never wakes an idle phone later.
+                                            main.postDelayed({ dialNextRelay() }, RELAY_FAILOVER_DELAY_MS)
+                                            return@post
+                                        }
+                                    } else if (connectedFor in 1 until UNSTABLE_RELAY_SESSION_MS) {
+                                        relayQuality.unstable(relayNetworkClass, endpoint)
+                                    }
+                                }
+                                clearRelayPlan()
+                                scheduleRetry()
+                            }
                         }
                         LinkState.Discovering, LinkState.Retrying -> {}
                     }
@@ -247,6 +296,13 @@ class SyncService : Service() {
                     main.post {
                         FileTransfers.clear(direction)
                         hideTransferNotification(direction)
+                    }
+                }
+
+                override fun onBulkTransfer(bytes: Long, elapsedMs: Long) {
+                    val endpoint = relayAttempt
+                    if (endpoint != null && relayAttemptConnected) {
+                        relayQuality.goodput(relayNetworkClass, endpoint, bytes, elapsedMs)
                     }
                 }
 
@@ -340,6 +396,7 @@ class SyncService : Service() {
         LinkStatus.state = LinkState.Idle
         LinkStatus.peer = null
         LinkStatus.path = null
+        clearRelayPlan()
         super.onDestroy()
     }
 
@@ -391,6 +448,7 @@ class SyncService : Service() {
         main.removeCallbacks(retry)
         retryMs = RETRY_MIN_MS
         discovery.stop()
+        clearRelayPlan()
         link.disconnect()
         FileTransfers.clearAll()
         hideAllTransferNotifications()
@@ -420,6 +478,7 @@ class SyncService : Service() {
             caps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true
         if (lan) {
             Log.i(TAG, "network up on a LAN, bursting")
+            clearRelayPlan()
             LinkStatus.path = "LAN"
             discovery.burst()
         } else {
@@ -446,12 +505,67 @@ class SyncService : Service() {
             scheduleRetry()
             return
         }
-        LinkStatus.path = "Relay"
+        val context = currentNetworkClass()
+        relayNetworkClass = context
+        relayCandidates.clear()
+        relayQuality.candidates(context, relayEndpoints, System.currentTimeMillis())
+            .forEach(relayCandidates::addLast)
+        Log.i(TAG, "relay candidates for $context: ${relayCandidates.joinToString { it.id }}")
+        dialNextRelay()
+    }
+
+    private fun dialNextRelay() {
+        if (!Settings.linkWanted || !networkUp) return
+        val peer = knownPeer ?: return
+        val endpoint = relayCandidates.pollFirst()
+        if (endpoint == null) {
+            clearRelayPlan()
+            scheduleRetry()
+            return
+        }
+        relayAttempt = endpoint
+        relayAttemptConnected = false
+        relayConnectedAtMs = 0L
+        LinkStatus.path = "Relay · ${endpoint.id.uppercase()}"
+        Log.i(TAG, "trying relay ${endpoint.id} at ${endpoint.host}:${endpoint.port}")
         link.connectVia(
-            InetSocketAddress.createUnresolved(RELAY_HOST, RELAY_PORT),
+            InetSocketAddress.createUnresolved(endpoint.host, endpoint.port),
             peer,
-            RELAY_FALLBACK_IPV4,
+            endpoint.fallbackIpv4,
         )
+    }
+
+    private fun clearRelayPlan() {
+        relayCandidates.clear()
+        relayAttempt = null
+        relayAttemptConnected = false
+        relayConnectedAtMs = 0L
+    }
+
+    /**
+     * Coarse context only; no extra permission and no periodic fingerprinting. If the default is a
+     * VPN, inspect currently-present physical networks once at this natural reconnect event so
+     * Wi-Fi and cellular histories do not contaminate each other behind the same VPN app.
+     */
+    private fun currentNetworkClass(): String {
+        fun classify(caps: NetworkCapabilities?): String? = when {
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true -> "wifi"
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true -> "ethernet"
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true -> "cellular"
+            else -> null
+        }
+
+        val activeCaps = connectivity.getNetworkCapabilities(connectivity.activeNetwork)
+        classify(activeCaps)?.let { return it }
+        if (activeCaps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true) {
+            val physical = connectivity.allNetworks.asSequence()
+                .mapNotNull { net -> connectivity.getNetworkCapabilities(net) }
+                .filter { caps -> !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) }
+                .mapNotNull(::classify)
+                .firstOrNull()
+            return physical?.let { "vpn-$it" } ?: "vpn"
+        }
+        return "other"
     }
 
     /** First handshake with a given desktop is the only one that writes. */

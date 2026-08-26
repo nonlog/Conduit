@@ -145,6 +145,27 @@ The daemon must be started from a process that inherits that user environment. L
 not use this proxy. An unavailable configured SOCKS proxy is treated as a relay connection failure
 and retried by the normal relay loop; it is not silently bypassed to DIRECT.
 
+For multi-Relay development, Windows accepts a comma/semicolon-separated inventory and parks one
+responder on every configured endpoint:
+
+```powershell
+$env:CONDUIT_RELAYS = 'us.example:41113;wa.example:41113;tyo.example:41113'
+```
+
+Android reads the matching candidate inventory once when `SyncService` starts from optional
+app-private `files/relays.txt`, one entry per line:
+
+```text
+us|us.example|41113|203.0.113.10
+wa|wa.example|41113|203.0.113.11
+tyo|tyo.example|41113|203.0.113.12
+```
+
+Do not add a scheduled worker, timer-driven ping, periodic speed test, or background re-ranking to
+this feature. The phone changes candidates only during a reconnect/network event that already
+occurred; completed real payloads update `relay-quality.txt`. Production currently still has only
+TYO deployed, so enabling a real multi-node inventory waits for explicit server-deployment approval.
+
 ### Whole workspace formatting/checks
 
 Use these before a Rust commit when the relevant source changed:

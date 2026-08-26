@@ -25,8 +25,8 @@ compatible relay, and the installed Android/Windows endpoints now send explicit 
 
 | Area | Last recorded result | What it establishes | Limitation |
 | --- | --- | --- | --- |
-| Android JVM suite | **20 passed, 0 failed** | Noise transcript, frame limits, bounded/searchable history model, file/image validation including capture flags, transfer-progress model, notification payload budget, wire behaviours, explicit initiator relay preamble, and narrow fake-IP relay fallback selection. | No actual system-server hook, notification listener, Quick Settings host, or device radio lifecycle. |
-| Windows daemon | **43 passed, 2 ignored, 0 failed** on the last full normal run | Rust transport, clipboard/image/file/toast helpers, desktop→phone outbound-file validation, file-finalisation cleanup failures, screenshot semantics, resource-bound assertions, explicit responder relay preamble, cancel/resume receive safety across an intervening Noise send, and SOCKS5 relay domain routing. | Ignored tests show real toasts and require interactive validation. |
+| Android JVM suite | **24 passed, 0 failed** | Noise transcript, frame limits, bounded/searchable history model, file/image validation including capture flags, throttled transfer-progress model, notification payload budget, wire behaviours, explicit initiator relay preamble, fake-IP relay fallback, and passive multi-relay candidate/cooldown persistence. | No actual system-server hook, notification listener, Quick Settings host, or device radio lifecycle. |
+| Windows daemon | **45 passed, 2 ignored, 0 failed** on the last full normal run | Rust transport, clipboard/image/file/toast helpers, desktop→phone outbound-file validation, file-finalisation cleanup failures, screenshot semantics, resource-bound assertions, explicit responder relay preamble, multi-relay config parsing/parking, cancel/resume receive safety across an intervening Noise send, and SOCKS5 relay domain routing. | Ignored tests show real toasts and require interactive validation. |
 | Compatible relay migration | **9 passed, 0 failed** | Explicit-role splice, legacy 47-byte role inference without consuming Noise, both mixed upgrade orders, stale same-role replacement for new and legacy phones, dead-waiter recovery, and rendezvous isolation. | Production rollout is complete; long-duration M2 flap evidence and eventual legacy-path retirement remain. |
 | Noise interoperability | JVM transcript test + Rust `snow` fixture | The hand-written Android Noise XX agrees byte-for-byte with a reference implementation. | Does not replace live-network testing. |
 
@@ -156,6 +156,26 @@ cover both explicit-role peers and a deployed-format legacy phone reconnect.
   resolved IP so Mihomo DOMAIN rules still apply. The user-level variable is persisted on the test
   machine. A real `conduit-daemon send` of 4 MiB then completed its daemon send in about **1.35 s**
   and the exact-size file appeared in Android Downloads.
+
+### Battery-first multi-relay client implementation — 2026-08-26
+
+- Windows now accepts `CONDUIT_RELAYS` and owns one independent parked responder per configured
+  endpoint. A controlled local test started two Relay processes on ports 42113/42114; each recorded
+  the desktop as `role=< legacy=false` simultaneously. The normal TYO/Mihomo daemon was restored
+  afterwards and the phone reconnected.
+- Android now reads an app-private Relay inventory at service start and keeps one candidate queue
+  only for the current natural reconnect. It records real dial success/failure, short-session
+  instability and completed bulk-payload goodput in `relay-quality.txt`; there is no timer/probe API.
+- A controlled device test temporarily put an unreachable loopback endpoint ahead of TYO with an
+  empty quality history. The same reconnect recorded `bad` as one dial failure, advanced to TYO,
+  recorded a TYO success and restored `Linked to LOG` without waiting for the general retry backoff.
+  The temporary inventory/history were then removed and the phone returned to the production
+  single-TYO default.
+- A subsequent real 4 MiB desktop→phone transfer updated TYO's passive goodput sample to about
+  **2.51 MB/s** and produced the exact-size Downloads file, demonstrating that scoring uses real
+  content rather than synthetic benchmark traffic.
+- Only TYO currently has a public Conduit Relay listening on port 41113. US/WA/JP deployment and
+  live cross-node selection remain separate outward-facing work.
 
 ### Phone → PC file incident resolved — 2026-08-25
 

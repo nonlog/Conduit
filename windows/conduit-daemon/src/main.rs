@@ -25,9 +25,7 @@ use tracing::{info, warn};
 use wire::{pb, Session};
 
 const PORT: u16 = 41112;
-/// The relay this desktop parks at when the phone is not on the LAN. Ours, in Tokyo:
-/// lowest latency of the four hosts and the only one reachable without going through a
-/// local proxy. `CONDUIT_RELAY=` (empty) turns the relay path off entirely.
+/// Default relay while the multi-relay fleet is not deployed everywhere yet.
 const RELAY: &str = "tyo.414222.xyz:41113";
 /// ponytail: flat retry, no escalation. The desktop is on mains power and the relay is
 /// ours, so there is nothing to be polite to; add backoff if it ever rate-limits.
@@ -53,6 +51,11 @@ struct Metrics {
 /// so `created == closed` after quiesce holds without bookkeeping at every exit.
 /// That invariant is the entire reason this project exists.
 struct SessionGuard(Arc<Metrics>);
+
+struct RelayArrival {
+    stream: TcpStream,
+    endpoint: String,
+}
 
 impl Drop for SessionGuard {
     fn drop(&mut self) {
@@ -133,31 +136,35 @@ async fn main() -> Result<()> {
     // Two ways in now, and the difference ends here: a relay stream is spliced to the
     // phone by a process that cannot read it, so from `serve`'s point of view it is an
     // ordinary socket carrying an ordinary Noise session.
-    let (relay_tx, mut relay_rx) = tokio::sync::mpsc::channel::<TcpStream>(1);
-    match relay_endpoint() {
-        Some(endpoint) => {
-            let rendezvous = device_id.clone();
-            info!(%endpoint, "parking at the relay");
-            tokio::spawn(park_forever(endpoint, rendezvous, relay_tx));
-        }
-        // Dropping the sender closes the channel, which permanently disables the
-        // `select!` branch below rather than leaving it to fire on every poll.
-        None => drop(relay_tx),
+    let relays = relay_endpoints();
+    let (relay_tx, mut relay_rx) =
+        tokio::sync::mpsc::channel::<RelayArrival>((relays.len().max(1) * 2).max(2));
+    for endpoint in &relays {
+        let rendezvous = device_id.clone();
+        info!(%endpoint, "parking at relay");
+        tokio::spawn(park_forever(
+            endpoint.clone(),
+            rendezvous,
+            relay_tx.clone(),
+        ));
     }
+    // Only the per-relay workers own senders. With no configured relays this closes the
+    // receiver and permanently disables its select branch without a polling special case.
+    drop(relay_tx);
 
     let mut active: Option<tokio::task::JoinHandle<()>> = None;
     loop {
-        let (stream, peer, via) = tokio::select! {
+        let (stream, peer, via, relay_endpoint) = tokio::select! {
             accepted = listener.accept() => {
                 let (stream, peer) = accepted?;
-                (stream, peer, "lan")
+                (stream, peer, "lan", None)
             }
-            Some(stream) = relay_rx.recv() => {
-                let peer = stream.peer_addr()?;
-                (stream, peer, "relay")
+            Some(arrival) = relay_rx.recv() => {
+                let peer = arrival.stream.peer_addr()?;
+                (arrival.stream, peer, "relay", Some(arrival.endpoint))
             }
         };
-        info!(%peer, via, "peer arriving");
+        info!(%peer, via, relay = relay_endpoint.as_deref().unwrap_or("-"), "peer arriving");
         if let Some(previous) = active.take() {
             previous.abort();
             let _ = previous.await; // guard drop runs here — closed is counted
@@ -173,6 +180,7 @@ async fn main() -> Result<()> {
         let bridge = bridge.clone();
         let toasts = toasts.clone();
         let outbound = outbound.clone();
+        let relay_endpoint = relay_endpoint.clone();
         active = Some(tokio::spawn(async move {
             let _guard = SessionGuard(metrics.clone());
             if let Err(e) = serve(
@@ -184,6 +192,7 @@ async fn main() -> Result<()> {
                 &outbound,
                 toasts.as_deref(),
                 via,
+                relay_endpoint.as_deref(),
             )
             .await
             {
@@ -193,13 +202,27 @@ async fn main() -> Result<()> {
     }
 }
 
-/// `CONDUIT_RELAY` overrides the built-in endpoint; setting it empty disables the relay.
-fn relay_endpoint() -> Option<String> {
-    match std::env::var("CONDUIT_RELAY") {
-        Ok(value) if value.trim().is_empty() => None,
-        Ok(value) => Some(value),
-        Err(_) => Some(RELAY.to_string()),
+/// Multi-relay configuration. `CONDUIT_RELAYS` is a comma/semicolon-separated list. An explicitly
+/// empty value disables Relay parking. The old singular variable remains a compatibility fallback.
+fn relay_endpoints() -> Vec<String> {
+    relay_endpoints_from(
+        std::env::var("CONDUIT_RELAYS").ok().as_deref(),
+        std::env::var("CONDUIT_RELAY").ok().as_deref(),
+    )
+}
+
+fn relay_endpoints_from(relays: Option<&str>, relay: Option<&str>) -> Vec<String> {
+    let source = match relays {
+        Some(value) => value,
+        None => relay.unwrap_or(RELAY),
+    };
+    let mut out = Vec::new();
+    for endpoint in source.split([',', ';']).map(str::trim).filter(|s| !s.is_empty()) {
+        if !out.iter().any(|seen| seen == endpoint) {
+            out.push(endpoint.to_owned());
+        }
     }
+    out
 }
 
 /// Keeps exactly one connection parked at the relay for the life of the process.
@@ -208,7 +231,11 @@ fn relay_endpoint() -> Option<String> {
 /// finds a partner already waiting instead of racing the desktop to the rendezvous.
 /// The relay pairs whoever presents the id, so a stale park is harmless: the next
 /// arrival is spliced to the newest one.
-async fn park_forever(endpoint: String, rendezvous: String, tx: tokio::sync::mpsc::Sender<TcpStream>) {
+async fn park_forever(
+    endpoint: String,
+    rendezvous: String,
+    tx: tokio::sync::mpsc::Sender<RelayArrival>,
+) {
     loop {
         match wire::park(&endpoint, &rendezvous).await {
             Ok(stream) => {
@@ -216,12 +243,19 @@ async fn park_forever(endpoint: String, rendezvous: String, tx: tokio::sync::mps
                     warn!(error = %e, "relay stream without keepalive");
                 }
                 // Closed channel means main returned; nothing left to serve.
-                if tx.send(stream).await.is_err() {
+                if tx
+                    .send(RelayArrival {
+                        stream,
+                        endpoint: endpoint.clone(),
+                    })
+                    .await
+                    .is_err()
+                {
                     return;
                 }
             }
             Err(e) => {
-                warn!(error = %e, "relay unreachable");
+                warn!(%endpoint, error = %e, "relay unreachable");
                 tokio::time::sleep(RELAY_RETRY).await;
             }
         }
@@ -238,13 +272,20 @@ async fn serve(
     toasts: Option<&toast::Notifier>,
     // "lan" or "relay". Only the keepalive interval and the log line care.
     path: &'static str,
+    relay_endpoint: Option<&str>,
 ) -> Result<()> {
     stream.set_nodelay(true)?;
     set_keepalive(&stream)?;
     let idle_ping = if path == "relay" { RELAY_IDLE_PING } else { IDLE_PING };
 
     let mut session = Session::handshake(&mut stream, local_priv, false).await?;
-    info!(%peer, id = %wire::device_id(&session.peer_static), via = path, "session up");
+    info!(
+        %peer,
+        id = %wire::device_id(&session.peer_static),
+        via = path,
+        relay = relay_endpoint.unwrap_or("-"),
+        "session up"
+    );
     // The phone has no other way to learn this machine's name. mDNS carries it, but a
     // relay session never sees an mDNS record — and off-LAN is precisely when a phone
     // showing "the desktop" instead of a name is least useful. Sent unprompted and
@@ -580,4 +621,30 @@ fn set_keepalive(stream: &TcpStream) -> Result<()> {
 
 fn config_dir() -> Result<PathBuf> {
     Ok(PathBuf::from(std::env::var("LOCALAPPDATA").context("LOCALAPPDATA is unset")?).join("Conduit"))
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    #[test]
+    fn multi_relay_config_is_trimmed_deduplicated_and_ordered() {
+        assert_eq!(
+            relay_endpoints_from(
+                Some(" us.example:41113;wa.example:41113, us.example:41113 "),
+                Some("ignored.example:41113"),
+            ),
+            vec!["us.example:41113", "wa.example:41113"],
+        );
+    }
+
+    #[test]
+    fn empty_multi_relay_config_disables_relays_and_singular_remains_compatible() {
+        assert!(relay_endpoints_from(Some("  "), Some("old.example:41113")).is_empty());
+        assert_eq!(
+            relay_endpoints_from(None, Some("old.example:41113")),
+            vec!["old.example:41113"],
+        );
+        assert_eq!(relay_endpoints_from(None, None), vec![RELAY]);
+    }
 }

@@ -37,9 +37,10 @@
    P0 remains the actual endurance/flap evidence. `scripts/soak.ps1` is implemented and short-tested.
 7. Product-level constraint: Conduit exists because Link to Windows used excessive phone CPU and
    caused lag/heat/battery drain. Do not add periodic Android speed tests, Relay probes, polling, or
-   timer-driven scoring. Planned multi-Relay selection is passive quality learning + sticky failover:
-   Windows may park on all Relays; Android keeps one session and learns only from real connection,
-   heartbeat, and content-transfer events.
+   timer-driven scoring. Multi-Relay client selection is now implemented as passive quality learning
+   + sticky failover: Windows may park on all configured Relays; Android keeps one session and learns
+   only from real connection/session/content-transfer events. Only TYO is deployed publicly today,
+   so live cross-node production failover still waits for explicit deployment approval.
 
 ## Documentation created in this pass
 
@@ -282,10 +283,12 @@ progress edges remain immediate, so the 32 KiB wire cadence no longer becomes hu
 thousands of main-thread/SystemUI updates during a large transfer.
 
 `docs/TODO.md` is now the canonical short checklist for remaining implementation and verification
-work. It explicitly includes multi-relay selection/failover. The design is now fixed as battery-first
-passive learning: no periodic phone benchmarks; Windows parks all configured responders, Android
-selects one sticky Relay using age-decayed reliability/real-transfer history and sequential fallback
-only on natural reconnects. The algorithm is documented but not implemented yet.
+work. Multi-relay selection/failover is implemented battery-first: no periodic phone benchmarks;
+Windows parks all configured responders, Android selects one sticky Relay from persisted real-event
+history and advances sequentially only inside a natural reconnect. A controlled Android test proved
+failed-candidate→TYO fallback in one reconnect, and a local Windows test proved simultaneous parking
+on two Relay processes. The remaining work is public US/WA/JP Relay deployment/live cross-node
+evidence, which is outward-facing and still requires explicit approval.
 
 ## Useful commands
 

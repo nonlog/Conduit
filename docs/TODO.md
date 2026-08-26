@@ -12,7 +12,7 @@
   - Do not update Compose/SystemUI on every 32 KiB chunk.
   - Intermediate updates are capped at one per 250 ms (4 Hz).
   - Preserve final 100% and failure/completion notifications immediately.
-- [ ] **Multi-relay selection and failover.**
+- [x] **Multi-relay selection and failover — client implementation complete.**
   - Support a configured set of Relay endpoints rather than one hard-coded TYO endpoint.
   - **Do not run periodic speed tests or periodic probes on Android.** Conduit exists to avoid the
     CPU/radio/battery cost of Link to Windows; idle routing logic must remain event-driven.
@@ -33,6 +33,7 @@
     requiring extra Android permissions solely to fingerprint networks for scoring.
   - Keep LAN discovery/direct TCP strictly preferred when a real same-LAN path exists.
   - Keep proxy policy per endpoint/path; Windows currently uses local Mihomo SOCKS5 for Relay only.
+  - Additional public Relay nodes are **not deployed yet**; production still has only TYO active.
 - [ ] **Remote completion ACK for desktop -> phone file sends.**
   - `conduit-daemon send <file>` currently confirms local queue acceptance, not Android publication.
   - Add an explicit completion/failure result without creating a second transport owner.
@@ -78,6 +79,10 @@
 - [ ] **Long-duration Relay + Mihomo stability.**
   - Verify the Windows SOCKS5 Relay path survives proxy restarts, network changes, and long idle periods.
   - Verify fallback/recovery when the configured proxy is temporarily unavailable.
+- [ ] **Deploy and validate the additional compatible Relay nodes.**
+  - Current production fleet has only TYO listening on 41113; US/WA/JP are not yet running Conduit Relay.
+  - Deploy only with explicit outward-facing approval, then configure Windows `CONDUIT_RELAYS` and
+    Android `files/relays.txt`, and exercise real cross-node failover.
 
 ### Feature-specific verification
 
