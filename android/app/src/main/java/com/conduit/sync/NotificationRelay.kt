@@ -18,6 +18,7 @@ import com.conduit.sync.proto.NotifActionDesc
 import com.conduit.sync.proto.NotifNew
 import com.conduit.sync.proto.NotifRemove
 import com.conduit.sync.proto.NotifUpdate
+import com.conduit.sync.proto.TextMessage
 import com.google.protobuf.ByteString
 import java.io.ByteArrayOutputStream
 
@@ -26,6 +27,9 @@ private const val TAG = "conduit.notif"
 /** A toast shows two short lines; anything past this is padding nobody reads. */
 internal const val NOTIF_MAX_TITLE = 200
 internal const val NOTIF_MAX_TEXT = 2_000
+internal const val NOTIF_MAX_MESSAGES = 3
+internal const val NOTIF_MAX_MESSAGE_SENDER = 80
+internal const val NOTIF_MAX_MESSAGE_TEXT = 320
 private const val NOTIF_MAX_ACTIONS = 5
 private const val NOTIF_MAX_ACTION_LABEL = 80
 private const val NOTIF_MAX_REPLY = 2_000
@@ -150,8 +154,10 @@ class NotificationRelay : NotificationListenerService() {
         val body = notification.extras.text(Notification.EXTRA_TEXT)
             .ifEmpty { notification.extras.text(Notification.EXTRA_BIG_TEXT) }
             .take(NOTIF_MAX_TEXT)
+        val messageRecords = if (hide) emptyList() else messagingMessages(notification)
+        val messageDescs = textMessages(messageRecords)
         // Nothing to render. A media-session or progress-only notification lands here.
-        if (title.isEmpty() && body.isEmpty()) return
+        if (title.isEmpty() && body.isEmpty() && messageDescs.isEmpty()) return
 
         // Redaction is applied here rather than by dropping the notification, so the desktop
         // still says *that* something arrived and from which app — the app name travels
@@ -169,7 +175,11 @@ class NotificationRelay : NotificationListenerService() {
         val previousActions = posted.put(sbn.key, actionDescs)
         if (previousActions != null && previousActions == actionDescs) {
             val update = NotifUpdate.newBuilder()
-                .setKey(sbn.key).setTitle(outTitle).setText(outBody).build()
+                .setKey(sbn.key)
+                .setTitle(outTitle)
+                .setText(outBody)
+                .addAllMessages(messageDescs)
+                .build()
             link.send(Kind.NOTIF_UPDATE, update.toByteArray(), "notif update")
             return
         }
@@ -183,17 +193,18 @@ class NotificationRelay : NotificationListenerService() {
             .setTitle(outTitle)
             .setText(outBody)
             .setTimestampMs(sbn.postTime)
+            .addAllMessages(messageDescs)
             .setSuppressPopup(previousActions != null)
         // A contact photo is content too, so hiding covers it. The app icon is not — it
         // says no more than the attribution line already does.
-        if (!hide) face(notification)?.let { new.largeIconPng = ByteString.copyFrom(it) }
+        if (!hide) face(notification, messageRecords)?.let { new.largeIconPng = ByteString.copyFrom(it) }
         new.addAllActions(actionDescs)
         // Marked sent even when the rasterise fails: the same package will fail the same
         // way, and retrying it on every notification buys nothing but the work.
         if (iconSent.put(sbn.packageName, true) == null) {
             appIcon(sbn.packageName)?.let { new.appIconPng = ByteString.copyFrom(it) }
         }
-        Log.i(TAG, "notif out ${sbn.packageName} ${outTitle.take(40)}")
+        Log.i(TAG, "notif out ${sbn.packageName} ${outTitle.take(40)} messages=${messageDescs.size}")
         link.send(Kind.NOTIF_NEW, new.build().toByteArray(), "notif")
     }
 
@@ -337,6 +348,37 @@ class NotificationRelay : NotificationListenerService() {
     }.getOrDefault(pkg)
 
     /**
+     * Reconstructs the public MessagingStyle records already embedded in the notification.
+     * This is event-local work only: no active-notification query, shortcut lookup or provider read.
+     */
+    @Suppress("DEPRECATION")
+    private fun messagingMessages(notification: Notification): List<Notification.MessagingStyle.Message> =
+        runCatching {
+            notification.extras
+                .getParcelableArray(Notification.EXTRA_MESSAGES)
+                ?.let(Notification.MessagingStyle.Message::getMessagesFromBundleArray)
+                .orEmpty()
+        }.getOrDefault(emptyList())
+
+    /**
+     * Sends only the newest few human-readable messages. Keeping this tiny is deliberate: the
+     * notification also carries up to two PNGs in one Noise frame, and conversation history must
+     * never be able to disconnect the clipboard by overflowing that frame.
+     */
+    private fun textMessages(records: List<Notification.MessagingStyle.Message>): List<TextMessage> =
+        records.mapNotNull { message ->
+            val text = message.text?.toString()?.trim().orEmpty().take(NOTIF_MAX_MESSAGE_TEXT)
+            if (text.isEmpty()) return@mapNotNull null
+            TextMessage.newBuilder()
+                .setSender(
+                    message.senderPerson?.name?.toString()?.trim().orEmpty()
+                        .take(NOTIF_MAX_MESSAGE_SENDER),
+                )
+                .setText(text)
+                .build()
+        }.takeLast(NOTIF_MAX_MESSAGES)
+
+    /**
      * The face for the toast, when the notification has one.
      *
      * The notification's large icon wins when present. Conversation-aware apps do not all fill it,
@@ -355,12 +397,12 @@ class NotificationRelay : NotificationListenerService() {
      * package and needs no context beyond ours.
      */
     @Suppress("DEPRECATION")
-    private fun face(notification: Notification): ByteArray? = runCatching {
-        val messageIcon = notification.extras
-            .getParcelableArray(Notification.EXTRA_MESSAGES)
-            ?.let(Notification.MessagingStyle.Message::getMessagesFromBundleArray)
-            ?.asReversed()
-            ?.firstNotNullOfOrNull { message -> message.senderPerson?.icon }
+    private fun face(
+        notification: Notification,
+        messageRecords: List<Notification.MessagingStyle.Message>,
+    ): ByteArray? = runCatching {
+        val messageIcon = messageRecords.asReversed()
+            .firstNotNullOfOrNull { message -> message.senderPerson?.icon }
         val icon = notification.getLargeIcon() ?: messageIcon
         icon?.loadDrawable(this)?.let { png(it) }
     }.getOrNull()

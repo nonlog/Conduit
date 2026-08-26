@@ -714,7 +714,7 @@ async fn serve(
             // not be able to end a session that is also carrying the clipboard.
             pb::Kind::NotifNew => {
                 let notif = pb::NotifNew::decode(&envelope.payload[..])?;
-                info!(app = %notif.app_name, pkg = %notif.package, "notif in");
+                info!(app = %notif.app_name, pkg = %notif.package, messages = notif.messages.len(), "notif in");
                 if let Some(toasts) = toasts {
                     toasts.post(toast::Cmd::Show {
                         key: notif.key,
@@ -722,6 +722,7 @@ async fn serve(
                         app: if notif.app_name.is_empty() { notif.package } else { notif.app_name },
                         title: notif.title,
                         body: notif.text,
+                        messages: notif.messages,
                         app_icon: notif.app_icon_png,
                         avatar: notif.large_icon_png,
                         actions: notif.actions,
@@ -736,6 +737,7 @@ async fn serve(
                         key: notif.key,
                         title: notif.title,
                         body: notif.text,
+                        messages: notif.messages,
                     });
                 }
             }

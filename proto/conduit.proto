@@ -167,6 +167,7 @@ message NotifUpdate {
   string key   = 1;  // same key as NotifNew -> ToastNotifier.Update(data, tag, group)
   string title = 2;
   string text  = 3;
+  repeated TextMessage messages = 4; // bounded MessagingStyle history; updates in place
 }
 
 message NotifRemove {

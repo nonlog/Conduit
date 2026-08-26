@@ -1,6 +1,7 @@
 package com.conduit.sync
 
 import com.conduit.sync.proto.NotifNew
+import com.conduit.sync.proto.TextMessage
 import com.google.protobuf.ByteString
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -31,6 +32,14 @@ class NotifBudgetTest {
             .setTitle("标".repeat(NOTIF_MAX_TITLE))
             .setText("文".repeat(NOTIF_MAX_TEXT))
             .setTimestampMs(Long.MAX_VALUE)
+            .addAllMessages(
+                List(NOTIF_MAX_MESSAGES) {
+                    TextMessage.newBuilder()
+                        .setSender("发".repeat(NOTIF_MAX_MESSAGE_SENDER))
+                        .setText("消".repeat(NOTIF_MAX_MESSAGE_TEXT))
+                        .build()
+                },
+            )
             .setAppIconPng(ByteString.copyFrom(ByteArray(ICON_MAX_BYTES)))
             .setLargeIconPng(ByteString.copyFrom(ByteArray(ICON_MAX_BYTES)))
             .build()

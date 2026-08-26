@@ -144,6 +144,8 @@ pub enum Cmd {
         app: String,
         title: String,
         body: String,
+        /// Newest bounded Android MessagingStyle records, in chronological order.
+        messages: Vec<pb::TextMessage>,
         /// Empty after the first notification from a package — the cached file stands in.
         app_icon: Vec<u8>,
         /// The contact photo, when the notification carried one. Empty otherwise.
@@ -161,6 +163,7 @@ pub enum Cmd {
         key: String,
         title: String,
         body: String,
+        messages: Vec<pb::TextMessage>,
     },
     Hide {
         key: String,
@@ -360,6 +363,7 @@ fn pump(
                 app,
                 title,
                 body,
+                messages,
                 app_icon,
                 avatar,
                 actions,
@@ -379,6 +383,7 @@ fn pump(
                     &app,
                     &title,
                     &body,
+                    &messages,
                     logo.as_deref(),
                     &actions,
                     suppress_popup,
@@ -400,7 +405,12 @@ fn pump(
                     Err(e) => Err(e),
                 }
             }
-            Cmd::Update { key, title, body } => update(notifier, &key, &title, &body),
+            Cmd::Update {
+                key,
+                title,
+                body,
+                messages,
+            } => update(notifier, &key, &title, &body, &messages),
             Cmd::Hide { key } => {
                 actionable.remove(&key);
                 hide(&key)
@@ -428,6 +438,7 @@ fn show(
     app: &str,
     title: &str,
     body: &str,
+    messages: &[pb::TextMessage],
     logo: Option<&Path>,
     actions: &[pb::NotifActionDesc],
     suppress_popup: bool,
@@ -440,7 +451,7 @@ fn show(
     let tag = tag_for(key);
     toast.SetTag(&HSTRING::from(&tag))?;
     toast.SetGroup(&HSTRING::from(GROUP))?;
-    toast.SetData(&data(title, body)?)?;
+    toast.SetData(&data(title, body, messages)?)?;
     toast.SetSuppressPopup(suppress_popup)?;
     if !actions.is_empty() {
         let key = key.to_owned();
@@ -710,12 +721,18 @@ fn file_xml(path: &Path) -> String {
     )
 }
 
-fn update(notifier: &ToastNotifier, key: &str, title: &str, body: &str) -> Result<()> {
+fn update(
+    notifier: &ToastNotifier,
+    key: &str,
+    title: &str,
+    body: &str,
+    messages: &[pb::TextMessage],
+) -> Result<()> {
     let tag = tag_for(key);
     // NotificationUpdateResult::Failed comes back when the toast has already aged out of
     // Action Center. Nothing to do about it and nothing wrong, so it is not an error.
     let outcome = notifier.UpdateWithTagAndGroup(
-        &data(title, body)?,
+        &data(title, body, messages)?,
         &HSTRING::from(&tag),
         &HSTRING::from(GROUP),
     )?;
@@ -737,13 +754,42 @@ fn hide(key: &str) -> Result<()> {
 /// Sequence number 0 means "apply unconditionally". A non-zero sequence would make
 /// Windows reject data older than what it has, which needs a counter per toast; the
 /// single sender thread already guarantees order, so the counter would be dead weight.
-fn data(title: &str, body: &str) -> Result<NotificationData> {
+fn data(title: &str, body: &str, messages: &[pb::TextMessage]) -> Result<NotificationData> {
     let data = NotificationData::new()?;
     let values = data.Values()?;
     values.Insert(&HSTRING::from("title"), &HSTRING::from(title))?;
-    values.Insert(&HSTRING::from("body"), &HSTRING::from(body))?;
+    values.Insert(
+        &HSTRING::from("body"),
+        &HSTRING::from(conversation_body(body, messages)),
+    )?;
     data.SetSequenceNumber(0)?;
     Ok(data)
+}
+
+/// Uses Android's bounded MessagingStyle history when it adds context; otherwise preserves the
+/// ordinary notification body exactly. Android already caps the list and each field before it
+/// reaches the wire, so this is formatting only and allocates at most a few short lines per event.
+fn conversation_body(body: &str, messages: &[pb::TextMessage]) -> String {
+    if messages.is_empty() || (messages.len() == 1 && !body.is_empty()) {
+        return body.to_owned();
+    }
+    let rendered = messages
+        .iter()
+        .filter(|message| !message.text.is_empty())
+        .map(|message| {
+            if message.sender.is_empty() {
+                message.text.clone()
+            } else {
+                format!("{}: {}", message.sender, message.text)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if rendered.is_empty() {
+        body.to_owned()
+    } else {
+        rendered
+    }
 }
 
 /// Idempotent. Without this the notifier is created but every `Show` fails, because
@@ -1098,6 +1144,7 @@ mod tests {
             app: "conduit self-test".into(),
             title: "First title".into(),
             body: "If this reads First title, data binding renders.".into(),
+            messages: Vec::new(),
             app_icon: icon,
             avatar: Vec::new(),
             actions: Vec::new(),
@@ -1110,6 +1157,7 @@ mod tests {
             key: key.into(),
             title: "Second title".into(),
             body: "Updated in place, and it must not have popped again.".into(),
+            messages: Vec::new(),
         });
         std::thread::sleep(std::time::Duration::from_millis(1500));
         assert!(in_history(&tag)?, "Update removed the toast instead");
@@ -1127,6 +1175,40 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(1500));
         assert!(!in_history(&tag)?, "Hide left the toast behind");
         Ok(())
+    }
+
+    #[test]
+    fn messaging_history_replaces_only_the_body_and_keeps_sender_context() {
+        let messages = vec![
+            pb::TextMessage {
+                sender: "Alice".into(),
+                text: "first".into(),
+            },
+            pb::TextMessage {
+                sender: "Bob".into(),
+                text: "second".into(),
+            },
+            pb::TextMessage {
+                sender: String::new(),
+                text: "third".into(),
+            },
+        ];
+        assert_eq!(
+            conversation_body("latest fallback", &messages),
+            "Alice: first\nBob: second\nthird"
+        );
+        assert_eq!(conversation_body("ordinary body", &[]), "ordinary body");
+        assert_eq!(
+            conversation_body(
+                "single latest",
+                &[pb::TextMessage {
+                    sender: "Alice".into(),
+                    text: "single latest".into(),
+                }],
+            ),
+            "single latest",
+            "a one-message conversation should not duplicate the ordinary body"
+        );
     }
 
     /// Answers the architecture question for mirrored notification actions without registering a
