@@ -13,8 +13,9 @@
 
 ## Do this first on resumption
 
-1. Read `docs/architecture.md`, `docs/development.md`, `docs/progress.md`, and
-   `docs/backlog.md`.  They were created in this documentation pass.
+1. Read `docs/architecture.md`, `docs/development.md`, `docs/progress.md`, `docs/backlog.md`, and
+   `docs/TODO.md`. `TODO.md` is the compact unfinished-work checklist; the other docs carry the
+   architecture, rationale, and evidence behind it.
 2. Check the live repository state before changing anything:
 
    ```powershell
@@ -43,6 +44,7 @@
 | `docs/development.md` | Scoop-first tooling, build/test/device workflow, debugging, Git attribution, and change discipline. |
 | `docs/progress.md` | Dated test/device evidence, observed resource samples, unresolved caveats, and current repository state. |
 | `docs/backlog.md` | Prioritised remaining work, with safe relay migration and endurance evidence at P0. |
+| `docs/TODO.md` | Compact checklist split into pending implementation, pending verification, and protocol cleanup. |
 
 This handoff now lives with the project documentation so the next session can resume from the
 same authoritative state as the architecture/progress/backlog records.
@@ -273,6 +275,10 @@ Also throttle Android transfer progress/notification refreshes before treating t
 the wire protocol uses 32 KiB chunks and the current UI path may refresh on every chunk. A
 time/percentage gate (for example around 200–250 ms or at least 1% progress) will reduce
 SystemUI/Binder work without changing the file wire protocol.
+
+`docs/TODO.md` is now the canonical short checklist for remaining implementation and verification
+work. It explicitly includes multi-relay selection/failover, but no selection algorithm has been
+implemented yet; keep that as a design/implementation item until real endpoint scoring is added.
 
 ## Useful commands
 
