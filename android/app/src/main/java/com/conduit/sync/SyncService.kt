@@ -53,8 +53,19 @@ private const val RETRY_MIN_MS = 5_000L
  * type would have been the version of this feature that drains the battery.
  */
 private const val RETRY_MAX_MS = 300_000L
+/**
+ * A link that was genuinely healthy seconds ago deserves faster repair than a desktop that has
+ * simply been offline for hours. During a bounded recovery episode, cap exponential backoff at one
+ * minute. If the path stays broken beyond the episode we automatically return to [RETRY_MAX_MS],
+ * preserving the low-radio-wakeup steady state.
+ */
+private const val RECOVERY_RETRY_MAX_MS = 60_000L
+private const val RECOVERY_WINDOW_MS = 10L * 60L * 1000L
 private const val RELAY_FAILOVER_DELAY_MS = 150L
 private const val UNSTABLE_RELAY_SESSION_MS = 60_000L
+
+internal fun retryCeilingMs(nowUptimeMs: Long, recoveryUntilUptimeMs: Long): Long =
+    if (nowUptimeMs < recoveryUntilUptimeMs) RECOVERY_RETRY_MAX_MS else RETRY_MAX_MS
 
 /** Sent by the UI. A disconnect has to be remembered, or START_STICKY undoes the user's tap. */
 const val ACTION_CONNECT = "com.conduit.sync.CONNECT"
@@ -138,6 +149,11 @@ class SyncService : Service() {
      * thread.
      */
     private var retryMs = RETRY_MIN_MS
+    /**
+     * `uptimeMillis` matches Handler's delayed-callback clock and excludes deep sleep. Recovery
+     * therefore cannot keep the phone or radio awake merely because wall-clock time is passing.
+     */
+    private var recoveryUntilUptimeMs = 0L
     private val retry = Runnable {
         if (destroyed || !Settings.linkWanted) return@Runnable
         Log.i(TAG, "retrying the link")
@@ -252,8 +268,22 @@ class SyncService : Service() {
                                             main.postDelayed({ dialNextRelay() }, RELAY_FAILOVER_DELAY_MS)
                                             return@post
                                         }
-                                    } else if (connectedFor in 1 until UNSTABLE_RELAY_SESSION_MS) {
-                                        relayQuality.unstable(relayNetworkClass, endpoint)
+                                    } else {
+                                        if (connectedFor in 1 until UNSTABLE_RELAY_SESSION_MS) {
+                                            relayQuality.unstable(relayNetworkClass, endpoint)
+                                        } else if (connectedFor >= UNSTABLE_RELAY_SESSION_MS) {
+                                            // This was a proven-good path, not a handshake flap. For the next
+                                            // few awake minutes recover promptly from a transient VPN/cellular
+                                            // blackhole, then automatically fall back to the battery-saving
+                                            // five-minute ceiling if the outage is genuinely long-lived.
+                                            recoveryUntilUptimeMs =
+                                                SystemClock.uptimeMillis() + RECOVERY_WINDOW_MS
+                                            Log.i(
+                                                TAG,
+                                                "stable session lost; recovery retries capped at " +
+                                                    "${RECOVERY_RETRY_MAX_MS / 1000}s",
+                                            )
+                                        }
                                     }
                                 }
                                 clearRelayPlan()
@@ -444,9 +474,14 @@ class SyncService : Service() {
         }
         LinkStatus.state = LinkState.Retrying
         hideLinkNotification()
-        Log.i(TAG, "link down, retrying in ${retryMs / 1000}s")
-        main.postDelayed(retry, retryMs)
-        retryMs = (retryMs * 2).coerceAtMost(RETRY_MAX_MS)
+        val ceiling = retryCeilingMs(SystemClock.uptimeMillis(), recoveryUntilUptimeMs)
+        val delay = retryMs.coerceAtMost(ceiling)
+        Log.i(
+            TAG,
+            "link down, retrying in ${delay / 1000}s (ceiling ${ceiling / 1000}s)",
+        )
+        main.postDelayed(retry, delay)
+        retryMs = (delay * 2).coerceAtMost(ceiling)
     }
 
     /** Drops any pending attempt and returns the backoff to its floor. */
@@ -461,6 +496,7 @@ class SyncService : Service() {
         Settings.linkWanted = false
         main.removeCallbacks(retry)
         retryMs = RETRY_MIN_MS
+        recoveryUntilUptimeMs = 0L
         discovery.stop()
         clearRelayPlan()
         link.disconnect()
