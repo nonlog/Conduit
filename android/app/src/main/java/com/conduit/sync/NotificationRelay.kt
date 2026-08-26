@@ -141,7 +141,8 @@ class NotificationRelay : NotificationListenerService() {
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         val link = SyncService.activeLink ?: return
-        if (!worthMirroring(sbn)) return
+        val ranking = ranking(sbn)
+        if (!worthMirroring(sbn, ranking)) return
 
         val notification = sbn.notification
         val hide = Settings.hideNotificationContent
@@ -283,14 +284,17 @@ class NotificationRelay : NotificationListenerService() {
      * foreground services, download progress bars. They are not events, so mirroring
      * them would leave permanent toasts. Group summaries duplicate their children.
      */
-    private fun worthMirroring(sbn: StatusBarNotification): Boolean {
+    private fun worthMirroring(
+        sbn: StatusBarNotification,
+        ranking: NotificationListenerService.Ranking?,
+    ): Boolean {
         if (sbn.packageName == packageName) return false // our own ongoing link notice
         val notification = sbn.notification
         val flags = notification.flags
         if (flags and Notification.FLAG_ONGOING_EVENT != 0) return false
         if (flags and Notification.FLAG_GROUP_SUMMARY != 0) return false
         if (isMedia(notification)) return false
-        if (isSilent(sbn)) return false
+        if (isSilent(ranking)) return false
         return true
     }
 
@@ -317,11 +321,13 @@ class NotificationRelay : NotificationListenerService() {
      * A key missing from the map mirrors, rather than being dropped: not knowing is not a
      * reason to lose a message.
      */
-    private fun isSilent(sbn: StatusBarNotification): Boolean {
+    private fun ranking(sbn: StatusBarNotification): NotificationListenerService.Ranking? {
         val ranking = NotificationListenerService.Ranking()
-        if (!currentRanking.getRanking(sbn.key, ranking)) return false
-        return ranking.importance < NotificationManager.IMPORTANCE_DEFAULT
+        return ranking.takeIf { currentRanking.getRanking(sbn.key, it) }
     }
+
+    private fun isSilent(ranking: NotificationListenerService.Ranking?): Boolean =
+        ranking?.importance?.let { it < NotificationManager.IMPORTANCE_DEFAULT } ?: false
 
     /** Falls back to the package name, which is still better than an empty toast source. */
     private fun appLabel(pkg: String): String = runCatching {
@@ -333,19 +339,30 @@ class NotificationRelay : NotificationListenerService() {
     /**
      * The face for the toast, when the notification has one.
      *
-     * The large icon, because that is the avatar Android's own shade draws: WhatsApp,
-     * Signal, Telegram, WeChat and Messages all put the contact photo there for a
-     * one-to-one chat, and the group's picture there for a group — which is the right face
-     * for a group thread. `MessagingStyle`'s per-message sender would be more specific and
-     * usually worse, and the only extractor for it is androidx's, not the platform's.
+     * The notification's large icon wins when present. Conversation-aware apps do not all fill it,
+     * though: a genuine Nagram X notification on the target device had `largeIcon=null` while still
+     * carrying `Notification.EXTRA_MESSAGES`. The platform's public
+     * [Notification.MessagingStyle.Message.getMessagesFromBundleArray] reconstructs those message
+     * records without AndroidX, and each message exposes its sender [android.app.Person] and icon.
+     * The newest sender icon is therefore the fallback.
+     *
+     * This remains event-driven and in-memory. No shortcut query, provider read, timer, hidden API,
+     * reflection, or background lookup is added.
      *
      * Caught, because this is another app's [Icon] pointing at another app's resources and
      * a notification must not be able to bring the listener down. A resource-type icon
      * remembers the package that created it, so `loadDrawable` resolves it against that
      * package and needs no context beyond ours.
      */
+    @Suppress("DEPRECATION")
     private fun face(notification: Notification): ByteArray? = runCatching {
-        notification.getLargeIcon()?.loadDrawable(this)?.let { png(it) }
+        val messageIcon = notification.extras
+            .getParcelableArray(Notification.EXTRA_MESSAGES)
+            ?.let(Notification.MessagingStyle.Message::getMessagesFromBundleArray)
+            ?.asReversed()
+            ?.firstNotNullOfOrNull { message -> message.senderPerson?.icon }
+        val icon = notification.getLargeIcon() ?: messageIcon
+        icon?.loadDrawable(this)?.let { png(it) }
     }.getOrNull()
 
     private fun appIcon(pkg: String): ByteArray? =
