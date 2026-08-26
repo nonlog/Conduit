@@ -72,7 +72,12 @@
   - Day theme explicitly requests dark status/navigation glyphs; night theme explicitly requests
     light glyphs. This is app-window system-bar appearance, not notification small-icon artwork.
 - [ ] **Non-root clipboard fallback.**
-  - Planned M3 AccessibilityService path for devices without KernelSU/LSPosed.
+  - **Do not implement the old AccessibilityService-only plan.** Android 10+ returns `null` from
+    `ClipboardManager` for background apps that are neither focused nor the default IME; enabling an
+    accessibility service alone is not a documented exemption.
+  - A real M3 fallback now needs an explicitly platform-authorised route (for example, an opt-in
+    input-method design if that UX is acceptable) or a future Android API. Make that product decision
+    before adding accessibility privileges that would not actually solve the problem.
 - [x] **Windows notification actions / inline reply.**
   - Android mirrors only bounded action descriptors; PendingIntents never leave the phone.
   - Windows uses the already-resident toast thread's `ToastNotification::Activated` callback; no
@@ -107,8 +112,10 @@
 ### Feature-specific verification
 
 - [ ] **Visually confirm Android light/dark system-bar contrast while the phone is unlocked.**
-  - APK resources are verified and installed, but the device was locked during this implementation
-    pass, so do not substitute lockscreen SystemUI appearance for the Conduit Activity check.
+  - **Dark/night side is now visually confirmed** on the unlocked Conduit Activity: dark surface,
+    light status-bar glyphs and light navigation gesture bar render correctly.
+  - The light/day side still needs a visual check. Compiled day resources already request dark
+    status/navigation glyphs; do not substitute lockscreen SystemUI appearance for that final check.
 - [ ] **Nagram XF contact-avatar end-to-end proof.**
   - Capture a genuine notification carrying a large contact icon and verify the Windows toast uses it.
 - [ ] **Camera-photo -> Windows toast -> Snipping Tool regression.**
@@ -117,10 +124,14 @@
   - Verify desktop rename / re-pair / reinstall scenarios.
 - [ ] **Restrictive `content://` provider sharing.**
   - Exercise providers whose URI grants cannot be trivially re-granted.
-- [ ] **Large bidirectional file-transfer stress.**
-  - Verify long sends across heartbeat boundaries on the current proxy-accelerated Relay path.
-  - Confirm progress notifications remain correct after throttling.
-  - Confirm interrupted transfers leave no `.part`, reserved 0-byte destination, or pending MediaStore row.
+- [x] **Large bidirectional file-transfer stress.**
+  - 64 MiB PC→phone completed through TYO/Mihomo in 20.33 s with exact SHA-256 and remote
+    publication ACK.
+  - The same 64 MiB file phone→PC took about 4 min 46 s, crossed the Relay heartbeat boundary,
+    published atomically, kept the session linked, and matched SHA-256 exactly.
+  - Progress throttling is unit/device-covered separately; prior interrupted 64 MiB receive and
+    Windows finalisation tests already prove pending/partial/placeholder cleanup. Stress artifacts
+    were removed from the phone, workspace and Windows Downloads after verification.
 
 ## Protocol / migration cleanup
 

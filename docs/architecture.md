@@ -248,7 +248,11 @@ new peers correct user-facing semantics.
 - **Relay:** treats all post-preamble bytes as opaque ciphertext.  It should never gain a
   protobuf or Noise dependency.
 - **Android clipboard:** background clipboard access depends on the intentionally scoped
-  LSPosed hook on the rooted target device.  The planned non-root fallback is separate.
+  LSPosed hook on the rooted target device. Android 10+ returns no clipboard data to an ordinary
+  background app unless it currently has input focus or is the default IME; an
+  `AccessibilityService` by itself does not remove that `ClipboardManager` restriction. A future
+  non-root fallback therefore needs a genuinely platform-authorised input path (or a future API),
+  not a cosmetic accessibility-service wrapper around the same blocked call.
 - **Android notifications:** notification content may be redacted by Android before Conduit
   receives it.  The per-install `RECEIVE_SENSITIVE_NOTIFICATIONS` AppOp is distinct from
   Conduit's own *Hide notification content* setting.

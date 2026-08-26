@@ -60,6 +60,13 @@
     the Windows app theme/system accent, handles the target 125% DPI correctly, and exits to zero
     processes when closed. Preserve the immutable `OnceLock<Ui>` design; a mutex here caused a
     synchronous Win32 color-callback deadlock during Refresh.
+12. The old M3 “AccessibilityService non-root clipboard fallback” plan is invalid on current
+    Android: Android 10+ background clipboard access still requires input focus or default-IME
+    status. No accessibility service was added. Do not request that privilege unless a future design
+    can actually satisfy the clipboard contract.
+13. 64 MiB bidirectional Relay stress is green for integrity. PC→phone completed in 20.33 s;
+    phone→PC completed in about 4 min 46 s, crossed the 240-second heartbeat boundary, stayed linked,
+    and matched SHA-256. The reverse direction is materially slower but did not lose/corrupt data.
 
 ## Documentation created in this pass
 
@@ -166,7 +173,8 @@ See `docs/architecture.md` for full data flow and trust boundaries.
   screen.
 - Quick Settings `Conduit` tile toggles the same persisted connect/disconnect state as the app.
 - Android day/night theme resources now explicitly choose dark/light system-bar glyphs. The build
-  and compiled APK resources are verified and installed; an unlocked visual check is still pending.
+  and compiled APK resources are verified and installed. Night mode is now visually verified on the
+  unlocked Activity; the day/light visual check remains pending.
 - Direct Share target named after the remembered desktop.
 - Camera photo → Windows hero-image toast → Snipping Tool activation implementation exists.
 - Screenshot → Windows `New screenshot` toast → Snipping Tool is implemented and was verified

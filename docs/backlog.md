@@ -62,7 +62,7 @@ correct 125% DPI sizing; no heavier resident UI framework was introduced.
 | Item | Condition to revisit |
 | --- | --- |
 | Full desktop GUI beyond the thin control surface | Only if the lightweight surface proves insufficient. |
-| Non-root clipboard fallback | M3, via an AccessibilityService path that can work without KernelSU/LSPosed. |
+| Non-root clipboard fallback | M3 product/design decision first. Android 10+ blocks ordinary background clipboard reads unless focused/default IME; do not ship the former AccessibilityService-only idea as a fake fallback. |
 | `MessagingStyle` history | Only if ordinary title/body plus avatar evidence proves insufficient. |
 | General file browser/mount | Out of scope unless product scope is explicitly changed. |
 | Telephony, SMS, screen mirroring, remote control/input, media control | Permanently out of scope. |

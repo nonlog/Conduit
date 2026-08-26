@@ -119,8 +119,40 @@ cover both explicit-role peers and a deployed-format legacy phone reconnect.
   Both receiving and sending cards were visually checked on the device.
 - The app theme now sets `windowLightStatusBar/windowLightNavigationBar=true` in the day resource
   and `false` in `values-night`. `aapt2 dump resources` verified both compiled variants in the APK,
-  and the APK was installed. A final unlocked visual check remains because the device was on the
-  secure lockscreen during this pass; lockscreen SystemUI is not evidence for Activity bar colours.
+  and the APK was installed. The device later became unlocked naturally; a real Conduit Activity
+  screenshot then confirmed the **night** half visually: dark app surface with light status icons and
+  a light navigation gesture bar. The day/light half still needs a visual check; lockscreen SystemUI
+  is not evidence for Activity bar colours.
+
+### Large bidirectional Relay transfer stress — 2026-08-26
+
+- A generated **64 MiB** file (`67,108,864 B`) with SHA-256
+  `3b6a07d0d404fab4e23b6d34bc6696a6a312dd92821332385e5af7c01c421351` was sent from Windows to
+  Android through the current TYO + Mihomo path. `conduit-daemon send` waited for Android's remote
+  publication ACK and returned success after **20.33 s**; the Downloads file had the exact size and
+  hash.
+- The same Android Downloads object was then shared back to Windows through the real exported
+  `ShareActivity` URI-grant path. Android logged all **2048 × 32 KiB** chunks written. The Windows
+  receiver created its scratch at 20:31:54 and atomically published the final file at 20:36:40,
+  about **4 min 46 s** end to end. That crosses the Relay's 240-second outbound-idle heartbeat
+  boundary while Android's single sender is occupied, exercising the `pongPending` between-chunks
+  repair under a real large transfer. The session remained linked and the final Windows SHA-256
+  matched exactly.
+- A 90-second mid-transfer observation initially saw only the expected zero-length scratch and no
+  final filename. That is the same Windows metadata/publication timing pattern documented in the
+  earlier false “missing file” incident, not data loss: the final file appeared only after the full
+  transfer and rename completed. All three stress copies were removed afterward.
+
+### Non-root clipboard fallback constraint — 2026-08-26
+
+- The former M3 note proposed an `AccessibilityService` fallback. Current Android platform behaviour
+  makes that insufficient: on Android 10+ `ClipboardManager.getPrimaryClip()` returns no clipboard
+  data to an ordinary background app unless it has input focus or is the default IME. Accessibility
+  callbacks do not by themselves grant that clipboard role.
+- No accessibility service was added. Requiring a high-privilege accessibility toggle for a path
+  that still cannot read the clipboard would be misleading and would expand Conduit's permission
+  surface for no benefit. M3 is now explicitly a product/design decision around a truly authorised
+  input path or future platform API.
 
 ### Bidirectional file transfer / long-send heartbeat findings — 2026-08-26
 
