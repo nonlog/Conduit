@@ -568,3 +568,11 @@ part of M2 rather than part of protocol deployment.
 This progress record is not a release note.  Update its dated evidence when a test is run,
 when an unresolved item is actually resolved, or when deployment status changes.  Do not mark
 a milestone complete based solely on source review or a single happy-path run.
+
+## 2026-08-26 reconnect recovery checkpoint
+
+- Reproduced/diagnosed the long perceived outage as a combination of transient VPN/cellular reachability failure plus 5/10/20/.../300 s Android retry backoff.
+- Added strict Windows PONG challenge semantics and bounded Android recovery backoff without introducing periodic work.
+- Windows tests: 50 passed, 3 interactive toast tests ignored, 0 failed. Android JVM tests: 26 passed, 0 failed; debug APK assembled successfully.
+- Installed both sides on the target pair. Controlled stable-session loss recovered to a new Relay/Noise session in about 18.7 s and status returned to linked.
+- Post-recovery healthy-session check remained linked from 23:28:10 through 23:33:53 (>343 s), crossing the 240 s Relay PING boundary without a false disconnect; notification traffic still arrived at 23:33:30.

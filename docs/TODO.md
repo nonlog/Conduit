@@ -38,6 +38,10 @@
   - `conduit-daemon send <file>` now returns success only after Android publishes the Downloads row.
   - One `FILE_RESULT` is sent per whole file; there is no per-chunk ACK or stop-and-wait penalty.
 
+- [x] **Reconnect recovery hardening.**
+  - Windows Relay heartbeat now requires the actual PONG for its 10-second challenge; unrelated inbound frames cannot mask a one-way failure.
+  - Android treats loss of a >=60-second proven Relay session as a bounded recovery episode: normal 5-second floor, 60-second retry ceiling for 10 awake minutes, then the original 300-second ceiling.
+  - No wake lock, AlarmManager, periodic probe, or timer-driven Android scoring was added.
 ### Windows operability / UX
 
 - [x] **Windows daemon autostart at sign-in.**
@@ -102,6 +106,7 @@
   - Exercise the repaired Windows parked-socket keepalive path.
   - Keep Android socket/anon-inode FD classification in the evidence.
 - [ ] **Long-duration Relay + Mihomo stability.**
+  - Controlled stable-session loss recovered through TYO/Mihomo in about 18.7 s after this hardening; keep this item open for long idle/proxy-restart/network-flap evidence.
   - Verify the Windows SOCKS5 Relay path survives proxy restarts, network changes, and long idle periods.
   - Verify fallback/recovery when the configured proxy is temporarily unavailable.
 - [ ] **Deploy and validate the additional compatible Relay nodes.**

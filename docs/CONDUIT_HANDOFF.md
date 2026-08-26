@@ -99,7 +99,7 @@ same authoritative state as the architecture/progress/backlog records.
 ## Repository state at handoff
 
 ```text
-latest functional commit: 62a4516 Use MessagingStyle sender avatars
+latest functional commit: ee852b0 Harden reconnect recovery
 origin/master:             1c7e18c Send files from the share sheet, and stop toasting what the phone silenced
 recent feature commits:    d056b80 Fluent control surface; 7dd206d notification actions; 26427af control surface
 ```
@@ -211,8 +211,8 @@ See `docs/architecture.md` for full data flow and trust boundaries.
 
 ## Latest evidence
 
-- Android JVM tests: **25 passed, 0 failed**.
-- Windows daemon normal test run: **49 passed, 3 ignored, 0 failed**. The added ignored test is an
+- Android JVM tests: **26 passed, 0 failed**.
+- Windows daemon normal test run: **50 passed, 3 ignored, 0 failed**. The added ignored test is an
   interactive native-toast activation check; it was run manually and returned both action arguments
   and Windows `UserInput` on the target machine.
 - Fluent control-surface verification: the target Windows dark theme at 125% scaling rendered a full
@@ -383,3 +383,13 @@ git diff --check
 ```
 
 Follow `docs/development.md` for Scoop-first tool installation and safe Android device workflow.
+
+## 2026-08-26 reconnect recovery checkpoint
+
+- Frequent-disconnect diagnosis no longer points at the old Relay role/stale-waiter bug. In the observed failure, Android made repeated Relay dials that never reached TYO, consistent with a transient cellular/Bettbox path blackhole.
+- Windows heartbeat now keeps an absolute 10 s PONG deadline after its 240 s Relay PING. Ordinary inbound notification/file/clipboard frames no longer satisfy that challenge, so a one-way PC -> phone failure cannot be hidden by phone -> PC traffic.
+- Android recovery after a Relay session that was healthy for at least 60 s now uses the existing Handler/uptime retry mechanism with a 60 s ceiling for a bounded 10-minute awake-time recovery episode. Long outages still age back to the 300 s ceiling. No AlarmManager, wake lock, periodic probe, or extra radio wake was added.
+- Automatic verification on this change: Windows daemon 50 passed / 3 ignored / 0 failed; Android 26 passed / 0 failed and assembleDebug succeeded.
+- Real recovery check: a session that had been linked for >60 s was killed by stopping the Windows daemon at 23:27:51. The daemon was restarted 8 s later and the new Noise Relay session was up at 23:28:10, about 18.7 s after the forced loss. Current path remained TYO through Mihomo SOCKS5.
+- Keep long-duration Relay + Mihomo stability in TODO: this proves prompt recovery from one controlled loss, not the full M2/soak gate.
+- Post-recovery healthy-session check remained linked from 23:28:10 through 23:33:53 (>343 s), crossing the 240 s Relay PING boundary without a false disconnect; notification traffic still arrived at 23:33:30.
