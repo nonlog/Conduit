@@ -8,6 +8,7 @@ import com.conduit.sync.proto.ClipText
 import com.conduit.sync.proto.Envelope
 import com.conduit.sync.proto.FileChunk
 import com.conduit.sync.proto.FileOffer
+import com.conduit.sync.proto.FileResult
 import com.conduit.sync.proto.Kind
 import com.conduit.sync.proto.PairRequest
 import java.net.InetSocketAddress
@@ -527,9 +528,24 @@ class Link(
                                 offer.totalBytes,
                             )
                             incomingFileStartedMs = SystemClock.elapsedRealtime()
+                        } else {
+                            queueFileResult(
+                                offer.transferId.toByteArray(),
+                                offer.name,
+                                success = false,
+                                error = "phone receiver is unavailable",
+                            )
                         }
                     }
-                    .onFailure { Log.w(TAG, "refused a file offer", it) }
+                    .onFailure {
+                        Log.w(TAG, "refused a file offer", it)
+                        queueFileResult(
+                            offer.transferId.toByteArray(),
+                            offer.name,
+                            success = false,
+                            error = it.message ?: it.javaClass.simpleName,
+                        )
+                    }
                     .getOrNull()
             }
 
@@ -543,6 +559,12 @@ class Link(
                 runCatching { rx.push(chunk) }
                     .onFailure {
                         Log.w(TAG, "file transfer dropped", it)
+                        queueFileResult(
+                            chunk.transferId.toByteArray(),
+                            rx.name,
+                            success = false,
+                            error = it.message ?: it.javaClass.simpleName,
+                        )
                         events.onFileFailed(rx.name, FileTransferDirection.ToPhone)
                         rx.close()
                         incomingFile = null
@@ -568,6 +590,12 @@ class Link(
                                     (SystemClock.elapsedRealtime() - started).coerceAtLeast(1L),
                                 )
                             }
+                            queueFileResult(
+                                chunk.transferId.toByteArray(),
+                                name,
+                                success = true,
+                                error = "",
+                            )
                             events.onFileComplete(name, FileTransferDirection.ToPhone)
                         }
                     }
@@ -587,6 +615,27 @@ class Link(
                     teardown()
                 }
         }
+    }
+
+    /**
+     * Receiver-side publication result. Queued onto the one sender executor so the reader never
+     * touches the Noise write counter. It is intentionally one result per whole file, not a
+     * per-chunk ACK, so it adds no stop-and-wait behaviour to the data path.
+     */
+    private fun queueFileResult(
+        transferId: ByteArray,
+        name: String,
+        success: Boolean,
+        error: String,
+    ) {
+        if (transferId.isEmpty()) return
+        val result = FileResult.newBuilder()
+            .setTransferId(com.google.protobuf.ByteString.copyFrom(transferId))
+            .setSuccess(success)
+            .setName(name.take(200))
+            .setError(error.take(300))
+            .build()
+        send(Kind.FILE_RESULT, result.toByteArray(), "file result")
     }
 
     /** Runs only on the sender executor, either as its own task or between transfer chunks. */

@@ -30,11 +30,12 @@ enum Kind {
   NOTIF_ACTION       = 23;
   FILE_OFFER         = 30;
   FILE_CHUNK         = 31;
+  FILE_RESULT        = 32;
 }
 
 message Envelope {
   uint64 message_id = 1;  // per-session counter from 1; dedupe state resets with the session
-  uint64 ack_for    = 2;  // reserved: liveness is PING/PONG, so nothing sends an ACK
+  uint64 ack_for    = 2;  // reserved: whole-file completion uses FileResult + transfer_id instead
   Kind   kind       = 3;
   bytes  payload    = 4;  // serialized inner message below
 }
@@ -99,10 +100,10 @@ message ClipImageChunk {
 // of assembling the whole transfer in memory. Reusing the image path would have put a
 // 500 MB Vec in a daemon whose entire selling point is bounded memory.
 //
-// One transfer at a time per session, so there is no windowing and no ack: the chunks are
-// already ordered and already reliable inside one Noise session on one TCP stream. A
-// transfer dies with its session, which is what stops a half-written file from being
-// inherited by the next one.
+// One transfer at a time per session, so there is no windowing or per-chunk ack: chunks are already
+// ordered and reliable inside one Noise session on one TCP stream. A single FileResult is sent only
+// after receiver publication. A transfer dies with its session, which stops a half-written file
+// from being inherited by the next one.
 
 message FileOffer {
   string name         = 1;  // basename; the receiver sanitises it regardless
@@ -118,6 +119,17 @@ message FileChunk {
   uint64 index       = 1;
   bytes  data        = 2;
   bytes  transfer_id = 3;
+}
+
+// Receiver -> sender after publication (or a recoverable receive-side refusal). This is not a
+// per-chunk ACK and therefore adds no round-trip to the streaming data path. Its only purpose is to
+// distinguish "the sender wrote the last TCP frame" from "the receiver actually published the
+// file", which matters to the desktop CLI and future Explorer integration.
+message FileResult {
+  bytes  transfer_id = 1;
+  bool   success     = 2;
+  string error       = 3;
+  string name        = 4;
 }
 
 // --- notifications ---

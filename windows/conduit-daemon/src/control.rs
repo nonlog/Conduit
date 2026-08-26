@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeServer, ServerOptions};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
 use crate::file;
@@ -20,10 +20,16 @@ const PIPE: &str = r"\\.\pipe\Conduit.Send.v1";
 const MAX_REQUEST: usize = 32 * 1024;
 const CLIENT_RETRIES: usize = 20;
 const CLIENT_RETRY: Duration = Duration::from_millis(50);
+const REMOTE_RESULT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+
+pub struct SendRequest {
+    pub path: PathBuf,
+    pub completion: oneshot::Sender<std::result::Result<(), String>>,
+}
 
 /// Serves local send requests forever. Each connected client is tiny and independent; file bytes
 /// never enter this pipe, only the canonical path that the resident daemon will open itself.
-pub async fn serve(tx: mpsc::Sender<PathBuf>) -> Result<()> {
+pub async fn serve(tx: mpsc::Sender<SendRequest>) -> Result<()> {
     loop {
         let pipe = ServerOptions::new()
             .create(PIPE)
@@ -38,18 +44,29 @@ pub async fn serve(tx: mpsc::Sender<PathBuf>) -> Result<()> {
     }
 }
 
-async fn handle(mut pipe: NamedPipeServer, tx: mpsc::Sender<PathBuf>) -> Result<()> {
-    let outcome = read_path(&mut pipe).await.and_then(|path| {
-        let path = file::validate_outbound(&path)?;
-        tx.try_send(path.clone())
-            .map_err(|e| anyhow::anyhow!("outbound file queue is unavailable: {e}"))?;
-        Ok(path)
-    });
+async fn handle(mut pipe: NamedPipeServer, tx: mpsc::Sender<SendRequest>) -> Result<()> {
+    let outcome: Result<PathBuf> = async {
+        let path = file::validate_outbound(&read_path(&mut pipe).await?)?;
+        let (completion, done) = oneshot::channel();
+        tx.try_send(SendRequest {
+            path: path.clone(),
+            completion,
+        })
+        .map_err(|e| anyhow::anyhow!("outbound file queue is unavailable: {e}"))?;
+
+        match tokio::time::timeout(REMOTE_RESULT_TIMEOUT, done).await {
+            Ok(Ok(Ok(()))) => Ok(path),
+            Ok(Ok(Err(message))) => bail!("phone did not publish the file: {message}"),
+            Ok(Err(_)) => bail!("the Conduit session ended before the phone confirmed the file"),
+            Err(_) => bail!("timed out waiting for the phone to publish the file"),
+        }
+    }
+    .await;
 
     match outcome {
         Ok(path) => {
             pipe.write_all(b"OK\n").await?;
-            info!(path = %path.display(), "file queued for phone");
+            info!(path = %path.display(), "phone confirmed file publication");
         }
         Err(e) => {
             let reply = format!("ERR {e:#}\n");
@@ -73,7 +90,8 @@ async fn read_path(pipe: &mut NamedPipeServer) -> Result<PathBuf> {
     Ok(PathBuf::from(path))
 }
 
-/// CLI side of `conduit-daemon.exe send <path>`.
+/// CLI side of `conduit-daemon.exe send <path>`. Success means the upgraded phone published the
+/// Downloads row, not merely that the resident daemon accepted the local path.
 pub async fn queue(path: &Path) -> Result<PathBuf> {
     let path = file::validate_outbound(path)?;
     let text = path.to_str().context("the path cannot be represented as UTF-8")?;
@@ -107,7 +125,7 @@ pub async fn queue(path: &Path) -> Result<PathBuf> {
     client.write_u32(bytes.len() as u32).await?;
     client.write_all(bytes).await?;
     let mut reply = Vec::new();
-    tokio::time::timeout(Duration::from_secs(5), client.read_to_end(&mut reply))
+    tokio::time::timeout(REMOTE_RESULT_TIMEOUT + Duration::from_secs(5), client.read_to_end(&mut reply))
         .await
         .context("timed out waiting for the resident Conduit daemon")??;
     let reply = String::from_utf8(reply).context("control response is not UTF-8")?;

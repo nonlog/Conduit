@@ -97,6 +97,10 @@ impl Outbound {
         &self.offer.name
     }
 
+    pub fn transfer_id(&self) -> &[u8] {
+        &self.offer.transfer_id
+    }
+
     /// Sends the offer and every chunk, returning the number of encrypted frames written.
     pub async fn send(mut self, session: &mut Session, stream: &mut TcpStream) -> Result<u64> {
         session

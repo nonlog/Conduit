@@ -1,7 +1,10 @@
 package com.conduit.sync
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
+import com.conduit.sync.proto.FileResult
+import com.google.protobuf.ByteString
 
 /**
  * The chunk arithmetic, which is worth a test because both sides compute it independently
@@ -10,6 +13,20 @@ import org.junit.Test
  * mirrored by `a_dishonest_offer_is_refused_before_anything_is_created` in `file.rs`.
  */
 class FileChunkingTest {
+
+    @Test
+    fun fileResultCarriesTheTransferIdentityAndPublicationOutcome() {
+        val id = byteArrayOf(1, 2, 3, 4)
+        val result = FileResult.newBuilder()
+            .setTransferId(ByteString.copyFrom(id))
+            .setSuccess(true)
+            .setName("report.pdf")
+            .build()
+
+        assertTrue(result.transferId.toByteArray().contentEquals(id))
+        assertTrue(result.success)
+        assertEquals("report.pdf", result.name)
+    }
 
     private val chunk = 32 * 1024L
 

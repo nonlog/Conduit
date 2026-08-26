@@ -57,6 +57,12 @@ struct RelayArrival {
     endpoint: String,
 }
 
+struct PendingOutbound {
+    transfer_id: Vec<u8>,
+    name: String,
+    completion: tokio::sync::oneshot::Sender<std::result::Result<(), String>>,
+}
+
 impl Drop for SessionGuard {
     fn drop(&mut self) {
         let closed = self.0.closed.fetch_add(1, Ordering::Relaxed) + 1;
@@ -88,7 +94,7 @@ async fn main() -> Result<()> {
                 bail!("usage: conduit-daemon send <file>");
             }
             let path = control::queue(&PathBuf::from(path)).await?;
-            println!("Queued for phone: {}", path.display());
+            println!("Sent to phone: {}", path.display());
             return Ok(());
         }
         bail!("unknown command {:?}; usage: conduit-daemon [send <file>]", command);
@@ -116,7 +122,7 @@ async fn main() -> Result<()> {
     };
     // One local command queue for the process. File bytes never pass through this IPC; callers
     // name a local path and the resident daemon opens/streams it through its one live session.
-    let (outbound_tx, outbound_rx) = mpsc::channel::<PathBuf>(16);
+    let (outbound_tx, outbound_rx) = mpsc::channel::<control::SendRequest>(16);
     let outbound = Arc::new(Mutex::new(outbound_rx));
     tokio::spawn(async move {
         if let Err(e) = control::serve(outbound_tx).await {
@@ -268,7 +274,7 @@ async fn serve(
     local_priv: &[u8],
     metrics: &Metrics,
     bridge: &Arc<clip::Bridge>,
-    outbound: &Arc<Mutex<mpsc::Receiver<PathBuf>>>,
+    outbound: &Arc<Mutex<mpsc::Receiver<control::SendRequest>>>,
     toasts: Option<&toast::Notifier>,
     // "lan" or "relay". Only the keepalive interval and the log line care.
     path: &'static str,
@@ -309,6 +315,9 @@ async fn serve(
     // Same rule for a file, with teeth: `Incoming`'s Drop deletes the partial, so a
     // session ending mid-transfer cannot leave scratch files in Downloads.
     let mut arriving: Option<file::Incoming> = None;
+    // One desktop->phone file may be awaiting its receiver-side publication result. Other local
+    // requests stay in the bounded control queue until this completes, so results cannot cross.
+    let mut pending_outbound: Option<PendingOutbound> = None;
 
     loop {
         // Time left before this side owes the peer a frame. Measured from our last
@@ -363,23 +372,39 @@ async fn serve(
             local_file = async {
                 let mut rx = outbound.lock().await;
                 rx.recv().await
-            } => {
-                let Some(path) = local_file else {
+            }, if pending_outbound.is_none() => {
+                let Some(request) = local_file else {
                     bail!("local outbound file queue closed")
                 };
+                let path = request.path;
                 // Refuse a bad/missing local path before FILE_OFFER reaches the phone. Once an
                 // offer is on the wire, a read/send error ends this session so Android drops its
                 // pending MediaStore row rather than inheriting a partial into the next session.
                 match file::Outbound::open(&path).await {
                     Ok(outbound_file) => {
                         let name = outbound_file.name().to_string();
-                        let frames = outbound_file
-                            .send(&mut session, &mut stream)
-                            .await
-                            .with_context(|| format!("sending {name} to the phone"))?;
-                        metrics.frames_out.fetch_add(frames, Ordering::Relaxed);
+                        let transfer_id = outbound_file.transfer_id().to_vec();
+                        match outbound_file.send(&mut session, &mut stream).await {
+                            Ok(frames) => {
+                                metrics.frames_out.fetch_add(frames, Ordering::Relaxed);
+                                pending_outbound = Some(PendingOutbound {
+                                    transfer_id,
+                                    name,
+                                    completion: request.completion,
+                                });
+                            }
+                            Err(e) => {
+                                let message = format!("sending {name} to the phone: {e:#}");
+                                let _ = request.completion.send(Err(message.clone()));
+                                return Err(e).with_context(|| format!("sending {name} to the phone"));
+                            }
+                        }
                     }
-                    Err(e) => warn!(path = %path.display(), error = %e, "local file was not sent"),
+                    Err(e) => {
+                        let message = format!("opening {}: {e:#}", path.display());
+                        let _ = request.completion.send(Err(message));
+                        warn!(path = %path.display(), error = %e, "local file was not sent");
+                    }
                 }
                 continue;
             }
@@ -572,6 +597,33 @@ async fn serve(
                         // Assigning None runs the Drop that deletes the partial.
                         arriving = None;
                     }
+                }
+            }
+            pb::Kind::FileResult => {
+                let result = pb::FileResult::decode(&envelope.payload[..])?;
+                let Some(pending) = pending_outbound.take() else {
+                    warn!("file result arrived with no desktop transfer pending");
+                    continue;
+                };
+                if result.transfer_id != pending.transfer_id {
+                    warn!(
+                        name = %pending.name,
+                        "file result belongs to a different transfer, ignored"
+                    );
+                    pending_outbound = Some(pending);
+                    continue;
+                }
+                if result.success {
+                    info!(name = %pending.name, "phone published file");
+                    let _ = pending.completion.send(Ok(()));
+                } else {
+                    let reason = if result.error.is_empty() {
+                        "receiver refused the file".to_string()
+                    } else {
+                        result.error
+                    };
+                    warn!(name = %pending.name, error = %reason, "phone refused file");
+                    let _ = pending.completion.send(Err(reason));
                 }
             }
             other => warn!(?other, "unhandled kind"),
