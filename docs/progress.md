@@ -172,6 +172,24 @@ cover both explicit-role peers and a deployed-format legacy phone reconnect.
 - The Windows copy, temporary APK/app and complete temporary Gradle project were removed after the
   check. No repository source change was required.
 
+### Direct Share desktop-name refresh — 2026-08-26
+
+- Android's current dynamic sharing shortcut was inspected directly through
+  `cmd shortcut get-shortcuts com.conduit.sync`; before the test it reported the expected
+  `id=desktop`, `shortLabel=LOG`, long-lived/dynamic flags and the Conduit sharing category.
+- To exercise the rename path without changing the user's Windows hostname or pairing, the resident
+  daemon was restarted once with only its process-local `COMPUTERNAME=CONDUIT-RENAME-TEST`
+  environment changed. The Noise identity/config remained the same. On the next relay handshake the
+  phone consumed the desktop's `PAIR_REQUEST` name and the same shortcut id changed in place to
+  `shortLabel=CONDUIT-RENAME-TEST`.
+- The temporary daemon was then stopped and the ordinary daemon relaunched. The phone reconnected and
+  the shortcut changed back to `shortLabel=LOG`. Final daemon state was again `linked` to
+  `OnePlus 12` through TYO. The real Windows machine name was never modified.
+- The current Conduit APK had already been reinstalled earlier in this development pass and the
+  dynamic shortcut existed afterward, providing the corresponding app-update/reinstall evidence.
+  A destructive identity wipe/re-pair would not exercise any additional name-publication code and
+  was intentionally avoided.
+
 ### Bidirectional file transfer / long-send heartbeat findings — 2026-08-26
 
 - Desktop→phone reuses the existing `FILE_OFFER` / `FILE_CHUNK` protocol rather than adding a

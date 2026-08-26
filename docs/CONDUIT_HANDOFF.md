@@ -72,6 +72,11 @@
     through `ShareActivity` → `SyncService` → Windows with an exact SHA-256 match. The fixture was
     removed. Preserve the current `ClipData` + `FLAG_GRANT_READ_URI_PERMISSION` handoff; replacing it
     with a plain URI extra would regress this case.
+15. Direct Share desktop-name refresh is verified without touching the real Windows hostname. A
+    process-local daemon name override changed Android's long-lived `desktop` sharing shortcut from
+    `LOG` → `CONDUIT-RENAME-TEST`; restoring the normal daemon changed it back to `LOG`. Same Noise
+    identity, same pairing and same shortcut id throughout. The current APK reinstall path also
+    republished the shortcut successfully earlier in this pass.
 
 ## Documentation created in this pass
 

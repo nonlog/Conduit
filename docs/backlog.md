@@ -54,8 +54,10 @@ correct 125% DPI sizing; no heavier resident UI framework was introduced.
 - Verify `filesDir` persistence after an app reinstall/update.
 - Re-grant and test `RECEIVE_SENSITIVE_NOTIFICATIONS` after every reinstall on Android 15+.
 - Keep the in-app hide-content setting separate from Android platform redaction.
-- Test Direct Share name refresh after pairing/desktop rename. Restrictive `content://` sharing is
-  now verified with a non-exported provider and one-time URI grant.
+- Direct Share desktop-name refresh is now verified by a same-identity process-local rename and
+  restoration (`LOG` → test name → `LOG`), and the current APK reinstall path republished it.
+  Restrictive `content://` sharing is also verified with a non-exported provider and one-time URI
+  grant.
 
 ## P2 — intentionally deferred
 

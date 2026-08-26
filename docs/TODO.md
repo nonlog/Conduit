@@ -120,8 +120,15 @@
   - Capture a genuine notification carrying a large contact icon and verify the Windows toast uses it.
 - [ ] **Camera-photo -> Windows toast -> Snipping Tool regression.**
   - Re-run an interactive real-device capture after the recent shared capture/toast changes.
-- [ ] **Direct Share desktop-name refresh.**
-  - Verify desktop rename / re-pair / reinstall scenarios.
+- [x] **Direct Share desktop-name refresh.**
+  - `cmd shortcut get-shortcuts com.conduit.sync` initially reported `shortLabel=LOG`.
+  - With the same desktop identity and only a temporary daemon `COMPUTERNAME` environment override,
+    the next encrypted handshake changed the shortcut to `CONDUIT-RENAME-TEST`; restoring the normal
+    daemon changed it back to `LOG`. The Windows machine name, pairing key and stored peer id were not
+    modified.
+  - The current APK had already been reinstalled earlier in this pass and the shortcut was present
+    afterward, so republishing after app update/reinstall is also covered. Destructive unpair/re-pair
+    is not needed just to prove the name-update mechanism.
 - [x] **Restrictive `content://` provider sharing.**
   - A temporary Android fixture exposed a **non-exported** provider with `grantUriPermissions=true`.
     Direct shell access was rejected with `SecurityException: provider ... is not exported`.
