@@ -31,4 +31,25 @@ class UiModelTest {
         assertEquals("1.0 KB", formatBytes(1024))
         assertEquals("1.0 MB", formatBytes(1024L * 1024L))
     }
+
+    @Test
+    fun transferProgressGateCapsIntermediateRefreshesButNeverDelaysEdges() {
+        var now = 1_000L
+        val gate = TransferProgressGate(minIntervalMs = 250L) { now }
+
+        assertTrue(gate.shouldPublish(0, 1_000))
+        now += 20
+        assertTrue(!gate.shouldPublish(100, 1_000))
+        now += 229
+        assertTrue(!gate.shouldPublish(200, 1_000))
+        now += 1
+        assertTrue(gate.shouldPublish(300, 1_000))
+
+        // Completion is immediate even if it follows the last repaint by one millisecond.
+        now += 1
+        assertTrue(gate.shouldPublish(1_000, 1_000))
+
+        gate.reset()
+        assertTrue(gate.shouldPublish(1, 1_000))
+    }
 }

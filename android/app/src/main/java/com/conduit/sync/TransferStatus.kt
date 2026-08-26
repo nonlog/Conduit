@@ -1,8 +1,11 @@
 package com.conduit.sync
 
+import android.os.SystemClock
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+
+private const val PROGRESS_MIN_INTERVAL_MS = 250L
 
 enum class FileTransferDirection {
     ToDesktop,
@@ -62,6 +65,44 @@ object FileTransfers {
     fun clearAll() {
         toDesktop = null
         toPhone = null
+    }
+}
+
+/**
+ * Keeps transfer UI/SystemUI updates bounded without changing the wire cadence.
+ *
+ * File chunks can arrive much faster than a human-readable progress indicator needs to repaint.
+ * Publishing every 32 KiB chunk turns a large transfer into hundreds or thousands of main-thread
+ * posts and notification-manager IPCs. Intermediate updates are therefore capped at 4 Hz; start
+ * and final progress are always published immediately. One gate is used per transfer direction.
+ */
+class TransferProgressGate(
+    private val minIntervalMs: Long = PROGRESS_MIN_INTERVAL_MS,
+    private val clockMs: () -> Long = SystemClock::elapsedRealtime,
+) {
+    private var lastPublishedAt = Long.MIN_VALUE
+
+    @Synchronized
+    fun shouldPublish(transferred: Long, total: Long): Boolean {
+        if (transferred <= 0L) {
+            lastPublishedAt = clockMs()
+            return true
+        }
+        if (total > 0L && transferred >= total) {
+            lastPublishedAt = clockMs()
+            return true
+        }
+        val now = clockMs()
+        if (lastPublishedAt == Long.MIN_VALUE || now - lastPublishedAt >= minIntervalMs) {
+            lastPublishedAt = now
+            return true
+        }
+        return false
+    }
+
+    @Synchronized
+    fun reset() {
+        lastPublishedAt = Long.MIN_VALUE
     }
 }
 

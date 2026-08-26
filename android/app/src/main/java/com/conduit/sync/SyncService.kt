@@ -100,6 +100,8 @@ class SyncService : Service() {
     private lateinit var connectivity: ConnectivityManager
     private val main = Handler(Looper.getMainLooper())
     private var foregroundVisible = false
+    private val uploadProgressGate = TransferProgressGate()
+    private val downloadProgressGate = TransferProgressGate()
 
     /**
      * Last text seen in either direction, LF-normalised. A change equal to this is our
@@ -216,6 +218,11 @@ class SyncService : Service() {
                     transferred: Long,
                     total: Long,
                 ) {
+                    val gate = when (direction) {
+                        FileTransferDirection.ToDesktop -> uploadProgressGate
+                        FileTransferDirection.ToPhone -> downloadProgressGate
+                    }
+                    if (!gate.shouldPublish(transferred, total)) return
                     main.post {
                         FileTransfers.update(direction, name, transferred, total)
                         showTransferNotification(direction)
@@ -223,6 +230,7 @@ class SyncService : Service() {
                 }
 
                 override fun onFileComplete(name: String, direction: FileTransferDirection) {
+                    progressGate(direction).reset()
                     main.post {
                         FileTransfers.clear(direction)
                         hideTransferNotification(direction)
@@ -235,6 +243,7 @@ class SyncService : Service() {
                 }
 
                 override fun onFileFailed(name: String, direction: FileTransferDirection) {
+                    progressGate(direction).reset()
                     main.post {
                         FileTransfers.clear(direction)
                         hideTransferNotification(direction)
@@ -335,6 +344,12 @@ class SyncService : Service() {
     }
 
     override fun onBind(intent: Intent): IBinder? = null
+
+    private fun progressGate(direction: FileTransferDirection): TransferProgressGate =
+        when (direction) {
+            FileTransferDirection.ToDesktop -> uploadProgressGate
+            FileTransferDirection.ToPhone -> downloadProgressGate
+        }
 
     /**
      * Schedules the next attempt, doubling up to [RETRY_MAX_MS].

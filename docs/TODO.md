@@ -8,9 +8,9 @@
 
 ### P0 / near-term product work
 
-- [ ] **Throttle Android file-transfer progress refreshes.**
+- [x] **Throttle Android file-transfer progress refreshes.**
   - Do not update Compose/SystemUI on every 32 KiB chunk.
-  - Gate updates by elapsed time and/or percent change (target roughly 200–250 ms or >=1%).
+  - Intermediate updates are capped at one per 250 ms (4 Hz).
   - Preserve final 100% and failure/completion notifications immediately.
 - [ ] **Multi-relay selection and failover.**
   - Support a configured set of Relay endpoints rather than one hard-coded TYO endpoint.

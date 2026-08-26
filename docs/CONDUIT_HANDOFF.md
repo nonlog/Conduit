@@ -277,9 +277,9 @@ Do not remove legacy relay inference merely because current clients are upgraded
 after the compatibility window and M2 evidence are sufficient.
 
 Also throttle Android transfer progress/notification refreshes before treating the UX as finished:
-the wire protocol uses 32 KiB chunks and the current UI path may refresh on every chunk. A
-time/percentage gate (for example around 200–250 ms or at least 1% progress) will reduce
-SystemUI/Binder work without changing the file wire protocol.
+this is now implemented. Intermediate updates are capped at 4 Hz while the initial and final
+progress edges remain immediate, so the 32 KiB wire cadence no longer becomes hundreds or
+thousands of main-thread/SystemUI updates during a large transfer.
 
 `docs/TODO.md` is now the canonical short checklist for remaining implementation and verification
 work. It explicitly includes multi-relay selection/failover. The design is now fixed as battery-first
