@@ -8,6 +8,7 @@ mod advert;
 mod autostart;
 mod clip;
 mod control;
+mod explorer;
 mod file;
 mod image;
 mod toast;
@@ -117,8 +118,27 @@ async fn main() -> Result<()> {
             }
             return Ok(());
         }
+        if command == "explorer" {
+            let action = args.next().context("usage: conduit-daemon explorer <install|remove|status>")?;
+            if args.next().is_some() {
+                bail!("usage: conduit-daemon explorer <install|remove|status>");
+            }
+            match action.to_string_lossy().as_ref() {
+                "install" => println!("Explorer integration installed: {}", explorer::install()?),
+                "remove" => println!(
+                    "Explorer integration {}",
+                    if explorer::remove()? { "removed" } else { "was not installed" }
+                ),
+                "status" => match explorer::status() {
+                    Some(value) => println!("Explorer integration installed: {value}"),
+                    None => println!("Explorer integration not installed"),
+                },
+                _ => bail!("usage: conduit-daemon explorer <install|remove|status>"),
+            }
+            return Ok(());
+        }
         bail!(
-            "unknown command {:?}; usage: conduit-daemon [send <file> | autostart <install|remove|status>]",
+            "unknown command {:?}; usage: conduit-daemon [send <file> | autostart <install|remove|status> | explorer <install|remove|status>]",
             command
         );
     }

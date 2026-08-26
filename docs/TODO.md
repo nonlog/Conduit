@@ -47,9 +47,10 @@
 - [ ] **Thin Fluent Windows control surface.**
   - Separate process from the daemon.
   - Surface link status, peer identity, diagnostics, Relay/proxy configuration, and basic controls.
-- [ ] **Explorer / shell file-send integration.**
-  - Reuse the existing local named-pipe `send <path>` control seam.
-  - Keep transport ownership in the resident daemon.
+- [x] **Explorer / shell file-send integration.**
+  - HKCU file context menu uses a tiny on-demand `conduit-send.exe` GUI helper.
+  - The helper starts no transport; it invokes the existing hidden `send <path>` CLI, which reuses
+    the resident daemon's named pipe and waits for Android's publication ACK.
 - [ ] **Relay/proxy settings UX.**
   - Replace machine-only environment-variable setup with an explicit user-facing configuration path.
   - Do not proxy LAN traffic.

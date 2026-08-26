@@ -338,6 +338,23 @@ process remains resident. A normal daemon binds 41112 before creating any other 
 if another daemon already owns it, the duplicate exits immediately. Re-run `autostart install` after
 moving/installing the executable so the Run value follows the stable binary path.
 
+### Explorer right-click file send
+
+Build/install both Windows binaries beside each other, then register the per-user verb:
+
+```powershell
+cargo build -p conduit-daemon --bins
+.\target\debug\conduit-daemon.exe explorer install
+.\target\debug\conduit-daemon.exe explorer status
+```
+
+Explorer invokes `conduit-send.exe "%1"`. That helper is a GUI-subsystem, on-demand process; it
+spawns `conduit-daemon.exe send <file>` with `CREATE_NO_WINDOW`, waits for the remote file result,
+and exits. It never opens a listener/Relay session itself. On failure it shows a small native error
+dialog; on success it stays silent because Android already shows transfer/completion state. Remove
+the verb with `conduit-daemon.exe explorer remove`. Re-run `explorer install` after moving the two
+binaries so the registry command follows the installed path.
+
 Do not infer a completed transfer or live session solely from a stale buffered daemon log.
 Confirm current timestamps and filesystem state after the transfer has had time to finish.
 

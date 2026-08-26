@@ -26,7 +26,7 @@ compatible relay, and the installed Android/Windows endpoints now send explicit 
 | Area | Last recorded result | What it establishes | Limitation |
 | --- | --- | --- | --- |
 | Android JVM suite | **25 passed, 0 failed** | Noise transcript, frame limits, bounded/searchable history model, file/image validation including capture flags, throttled transfer-progress model, notification payload budget, wire behaviours, explicit initiator relay preamble, fake-IP relay fallback, passive multi-relay candidate/cooldown persistence, and file-publication result encoding. | No actual system-server hook, notification listener, Quick Settings host, or device radio lifecycle. |
-| Windows daemon | **46 passed, 2 ignored, 0 failed** on the last full normal run | Rust transport, clipboard/image/file/toast helpers, desktop→phone outbound-file validation, file-finalisation cleanup failures, screenshot semantics, resource-bound assertions, explicit responder relay preamble, multi-relay config parsing/parking, cancel/resume receive safety across an intervening Noise send, SOCKS5 relay domain routing, and autostart command quoting. | Ignored tests show real toasts and require interactive validation. |
+| Windows daemon | **47 passed, 2 ignored, 0 failed** on the last full normal run | Rust transport, clipboard/image/file/toast helpers, desktop→phone outbound-file validation, file-finalisation cleanup failures, screenshot semantics, resource-bound assertions, explicit responder relay preamble, multi-relay config parsing/parking, cancel/resume receive safety across an intervening Noise send, SOCKS5 relay domain routing, autostart command quoting, and Explorer verb command generation. | Ignored tests show real toasts and require interactive validation. |
 | Compatible relay migration | **9 passed, 0 failed** | Explicit-role splice, legacy 47-byte role inference without consuming Noise, both mixed upgrade orders, stale same-role replacement for new and legacy phones, dead-waiter recovery, and rendezvous isolation. | Production rollout is complete; long-duration M2 flap evidence and eventual legacy-path retirement remain. |
 | Noise interoperability | JVM transcript test + Rust `snow` fixture | The hand-written Android Noise XX agrees byte-for-byte with a reference implementation. | Does not replace live-network testing. |
 
@@ -201,6 +201,21 @@ cover both explicit-role peers and a deployed-format legacy phone reconnect.
   manually as a login-equivalent check. It started exactly one daemon process successfully. The
   current development Run value points at `D:\Workspace\Conduit\target\debug\conduit-daemon.exe`;
   release packaging should reinstall it to the eventual stable installed path.
+
+### Explorer file-send integration — 2026-08-26
+
+- `conduit-daemon explorer install|remove|status` manages a per-user
+  `HKCU\Software\Classes\*\shell\Conduit.SendToPhone` verb labelled **Send to phone with Conduit**.
+  It is single-file today, matching the daemon's serialized explicit-send contract.
+- The first hidden-PowerShell command design was rejected during testing because a legitimate
+  apostrophe in a file path can be reinterpreted by `powershell.exe -Command`. The shipped design
+  instead uses a separate **~283 KiB** GUI-subsystem `conduit-send.exe` beside the daemon. It receives
+  the Explorer path as ordinary argv, starts `conduit-daemon.exe send <file>` with
+  `CREATE_NO_WINDOW`, waits for remote publication, and exits. No helper remains resident.
+- The real HKCU verb is installed on LOG. A **262,144-byte** test file named
+  `Conduit O'Brien test.bin` traversed the helper successfully, appeared under the exact name in
+  Android Downloads, and the resident daemon logged Android publication confirmation. The test file
+  was then removed.
 
 ### Phone → PC file incident resolved — 2026-08-25
 

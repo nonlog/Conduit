@@ -45,6 +45,10 @@
    points to the development binary under `D:\Workspace\Conduit\target\debug`; reinstall the entry
    when a stable packaged path exists. The daemon binds 41112 before starting long-lived workers, so
    duplicate manual/login launches fail fast instead of owning a second clipboard/Relay stack.
+9. Explorer **Send to phone with Conduit** is installed for the current user. It points to the
+   on-demand `target\debug\conduit-send.exe` helper beside the daemon; the helper is non-resident and
+   reuses the daemon's named-pipe send/remote-ACK path. Reinstall the verb after packaging/moving the
+   binaries.
 
 ## Documentation created in this pass
 
@@ -161,7 +165,7 @@ See `docs/architecture.md` for full data flow and trust boundaries.
 ## Latest evidence
 
 - Android JVM tests: **25 passed, 0 failed**.
-- Windows daemon normal test run: **46 passed, 2 ignored, 0 failed**.
+- Windows daemon normal test run: **47 passed, 2 ignored, 0 failed**.
 - Compatible relay migration: **9 passed, 0 failed**, including legacy↔legacy, both mixed
   upgrade orders, explicit stale-role replacement, and legacy stale-phone replacement.
 - Production rollout: old↔old and old-phone↔new-desktop connected through the compatible relay;

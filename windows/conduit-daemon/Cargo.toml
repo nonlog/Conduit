@@ -23,7 +23,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # crate: Windows already ships PNG and BMP codecs, and this dependency was here anyway.
 # Storage + ApplicationModel_DataTransfer are for the photo toast: handing a file to
 # Snipping Tool means minting a SharedStorageAccessManager token for it.
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Data_Xml_Dom", "UI_Notifications", "Foundation_Collections", "Graphics_Imaging", "Storage", "Storage_Streams", "ApplicationModel_DataTransfer"] }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Data_Xml_Dom", "UI_Notifications", "Foundation_Collections", "Graphics_Imaging", "Storage", "Storage_Streams", "ApplicationModel_DataTransfer"] }
 windows-registry = "0.6.1"
 
 [build-dependencies]
