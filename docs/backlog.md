@@ -15,8 +15,12 @@
   peer/socket loss; removing a forwarding rule alone does not close an established session.
 - `scripts/soak.ps1` now supplies repeatable samples, lifecycle gaps, PID stability and Android
   coverage, and can follow ADB transport changes by physical-device serial. Short self-tests,
-  including a live ADB transport failover, passed; what remains is the real 48-hour run and
-  deliberate network transition campaign, not more sampler scaffolding.
+  including a live ADB transport failover, passed. It also classifies Android socket/anon-inode/
+  APK/ashmem descriptors so notification resource caching is not mistaken for a network leak.
+- The first real foreign-Wi-Fi↔cellular campaign is green after fixing Bettbox fake-IP relay DNS:
+  six transitions kept lifecycle counts balanced, and a classified follow-up showed socket and
+  anon-inode FD delta zero. What remains is a longer M2 campaign including hotspot/default-network
+  variants, plus the independent 48-hour M0 LAN run.
 
 ## P1 — verification and operational quality
 

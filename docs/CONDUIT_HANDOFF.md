@@ -97,8 +97,8 @@ See `docs/architecture.md` for full data flow and trust boundaries.
 
 ### Do not overclaim
 
-- M0/M2 endurance gates are not passed: a 48-hour zero-delta lifecycle/resource run and
-  network-flap proof remain outstanding.
+- M0/M2 endurance gates are not passed: the 48-hour LAN run is still outstanding, and M2 has
+  clean short-cycle foreign-Wi-Fi↔cellular evidence but still needs a longer/hotspot campaign.
 - Actual Nagram XF contact-avatar rendering has not yet been proven with a genuine notification.
 - The former 259,737-byte “missing received file” caveat is resolved. The exact historical
   screenshot was replayed over the production relay: it was absent through six seconds,
@@ -110,7 +110,7 @@ See `docs/architecture.md` for full data flow and trust boundaries.
 
 ## Latest evidence
 
-- Android JVM tests: **16 passed, 0 failed**.
+- Android JVM tests: **17 passed, 0 failed**.
 - Windows daemon normal test run: **39 passed, 2 ignored, 0 failed**.
 - Compatible relay migration: **9 passed, 0 failed**, including legacy↔legacy, both mixed
   upgrade orders, explicit stale-role replacement, and legacy stale-phone replacement.
@@ -123,6 +123,15 @@ See `docs/architecture.md` for full data flow and trust boundaries.
   counts back at baseline. It can also follow ADB transport changes by `ro.serialno`; a live
   `15557 → 15556` failover retained 100% Android sample coverage and a quiescent follow-up still
   ended with both lifecycle gaps at zero. This proves the collector works, not that M0 is complete.
+- Bettbox fake-IP handover fix: the relay hostname resolved to `198.18.0.137` and produced
+  `Broken pipe` after underlying-network changes without reaching TYO. Conduit now replaces only
+  a `198.18.0.0/15` relay answer with TYO's public fallback `138.3.214.175`; actual traffic still
+  follows Android/VPN routing. The device reconnects successfully with `legacy=false` after the
+  substitution, and the selection logic is JVM-tested.
+- M2 short-cycle evidence: six foreign-Wi-Fi↔cellular transitions kept lifecycle counters
+  balanced. FD-class analysis proved apparent total-FD changes were APK/ashmem resource caching,
+  not socket growth. A classified follow-up ended Windows threads 11→10, handles 264→261,
+  Android sockets 7→7, anon-inodes unchanged, and both lifecycle gaps zero at 100% sample coverage.
 - Last sampled daemon: about **9 threads**, **247 handles**, **24.1 MB working set**, about
   **276 minutes** uptime.
 - Earlier lifecycle observation: 14 completed sessions with `created == closed`; an active
@@ -198,8 +207,10 @@ The two stale-waiter regressions are `a_peer_is_never_spliced_to_a_stale_copy_of
 
 ## Recommended next work
 
-The highest-value remaining P0 is now the evidence run itself: use `scripts/soak.ps1` for the
-48-hour M0 window and controlled cellular ↔ Wi-Fi/hotspot M2 transitions.
+The highest-value remaining P0 is now the evidence run itself. M2 should extend the successful
+foreign-Wi-Fi↔cellular short cycles into a longer campaign including hotspot/default-network
+variants. M0 still needs a true same-LAN phone/desktop setup before starting its 48-hour window;
+the currently saved `www` Wi-Fi is a different subnet and cannot count as an M0 LAN run.
 Do not remove legacy relay inference merely because current clients are upgraded; retire it only
 after the compatibility window and M2 evidence are sufficient.
 

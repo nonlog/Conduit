@@ -142,6 +142,10 @@ function Get-AndroidSample {
             AndroidPid = $null
             AndroidThreads = $null
             AndroidFds = $null
+            AndroidSocketFds = $null
+            AndroidAnonInodeFds = $null
+            AndroidApkFds = $null
+            AndroidAshmemFds = $null
             AndroidRssKb = $null
         }
     }
@@ -152,15 +156,30 @@ function Get-AndroidSample {
     $rssKb = if ($status -match '(?m)^VmRSS:\s+(\d+)\s+kB') { [int64]$Matches[1] } else { $null }
 
     # /proc/<other uid>/fd is hidden from the shell on the target device. Root is used only
-    # for this count; failure leaves the field blank rather than aborting a 48-hour run.
-    $fdLine = Invoke-Adb @('shell', "su -c 'ls /proc/$androidPid/fd | wc -l'") -AllowFailure |
-        Select-Object -First 1
-    $fds = if ($fdLine -and $fdLine.Trim() -match '^\d+$') { [int]$fdLine.Trim() } else { $null }
+    # for this inventory; failure leaves the fields blank rather than aborting a 48-hour run.
+    # Keep the classes separate because Android's PackageManager/resource stack may lazily hold
+    # APK/ashmem descriptors after a new app notification. Those are relevant to total process
+    # cost, but they must not be mistaken for a transport socket leak during M0/M2 flaps.
+    $fdLines = @(Invoke-Adb @('shell', "su -c 'ls -l /proc/$androidPid/fd'") -AllowFailure)
+    $targets = @(
+        $fdLines | ForEach-Object {
+            if ($_ -match ' -> (.+)$') { $Matches[1] }
+        }
+    )
+    $fds = if ($targets.Count -gt 0) { $targets.Count } else { $null }
+    $socketFds = if ($null -ne $fds) { @($targets | Where-Object { $_ -like 'socket:*' }).Count } else { $null }
+    $anonFds = if ($null -ne $fds) { @($targets | Where-Object { $_ -like 'anon_inode:*' }).Count } else { $null }
+    $apkFds = if ($null -ne $fds) { @($targets | Where-Object { $_ -like '*.apk' }).Count } else { $null }
+    $ashmemFds = if ($null -ne $fds) { @($targets | Where-Object { $_ -like '/dev/ashmem*' }).Count } else { $null }
 
     return [pscustomobject]@{
         AndroidPid = [int]$androidPid
         AndroidThreads = $threads
         AndroidFds = $fds
+        AndroidSocketFds = $socketFds
+        AndroidAnonInodeFds = $anonFds
+        AndroidApkFds = $apkFds
+        AndroidAshmemFds = $ashmemFds
         AndroidRssKb = $rssKb
     }
 }
@@ -203,16 +222,21 @@ function Add-Sample([string]$Phase, [int]$DaemonPid, [string]$Csv) {
         AndroidPid = $android.AndroidPid
         AndroidThreads = $android.AndroidThreads
         AndroidFds = $android.AndroidFds
+        AndroidSocketFds = $android.AndroidSocketFds
+        AndroidAnonInodeFds = $android.AndroidAnonInodeFds
+        AndroidApkFds = $android.AndroidApkFds
+        AndroidAshmemFds = $android.AndroidAshmemFds
         AndroidRssKb = $android.AndroidRssKb
         AndroidOpened = if ($androidLifecycle) { $androidLifecycle.Opened } else { $null }
         AndroidClosed = if ($androidLifecycle) { $androidLifecycle.Closed } else { $null }
     }
     $sample | Export-Csv -LiteralPath $Csv -NoTypeInformation -Append -Encoding utf8
     Write-Host (
-        '[soak] {0} {1} win(t={2} h={3} ws={4}K tcp={5}) android(pid={6} t={7} fd={8} rss={9}K)' -f
+        '[soak] {0} {1} win(t={2} h={3} ws={4}K tcp={5}) android(pid={6} t={7} fd={8} sock={9} apk={10} ash={11} rss={12}K)' -f
         $sample.TimestampUtc, $Phase, $sample.WindowsThreads, $sample.WindowsHandles,
         $sample.WindowsWorkingSetKb, $sample.WindowsTcpEstablished, $sample.AndroidPid,
-        $sample.AndroidThreads, $sample.AndroidFds, $sample.AndroidRssKb
+        $sample.AndroidThreads, $sample.AndroidFds, $sample.AndroidSocketFds,
+        $sample.AndroidApkFds, $sample.AndroidAshmemFds, $sample.AndroidRssKb
     )
     return $sample
 }
@@ -445,6 +469,10 @@ $summary = [ordered]@{
             WindowsTcpTotal = Delta $initial $last 'WindowsTcpTotal'
             AndroidThreads = Delta $initial $last 'AndroidThreads'
             AndroidFds = Delta $initial $last 'AndroidFds'
+            AndroidSocketFds = Delta $initial $last 'AndroidSocketFds'
+            AndroidAnonInodeFds = Delta $initial $last 'AndroidAnonInodeFds'
+            AndroidApkFds = Delta $initial $last 'AndroidApkFds'
+            AndroidAshmemFds = Delta $initial $last 'AndroidAshmemFds'
             AndroidRssKb = Delta $initial $last 'AndroidRssKb'
         }
     } else { $null }
@@ -479,6 +507,12 @@ $summary = [ordered]@{
         } else { $null }
         AndroidFdNoGrowth = if ($initial -and $last -and $null -ne (Delta $initial $last 'AndroidFds')) {
             (Delta $initial $last 'AndroidFds') -le 0
+        } else { $null }
+        AndroidSocketNoGrowth = if ($initial -and $last -and $null -ne (Delta $initial $last 'AndroidSocketFds')) {
+            (Delta $initial $last 'AndroidSocketFds') -le 0
+        } else { $null }
+        AndroidAnonInodeNoGrowth = if ($initial -and $last -and $null -ne (Delta $initial $last 'AndroidAnonInodeFds')) {
+            (Delta $initial $last 'AndroidAnonInodeFds') -le 0
         } else { $null }
     }
 }

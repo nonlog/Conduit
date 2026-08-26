@@ -174,10 +174,14 @@ phone, where the hardware serial and local `127.0.0.1:15556/15557` transports ca
 independently. Every sample records the transport it actually used, and the summary records the
 initial/final transport plus the failover count.
 The quiescent settling windows are outside `DurationMinutes`, so 2880 means a full 48 hours of
-observed run time. A negative resource delta is acceptable for leak detection; the summary's
-`NoGrowth` booleans reject only positive thread/handle/FD/socket growth. Memory deltas remain
-numeric because allocator/RSS noise makes a one-sample boolean misleading. Review the CSV as
-well as the summary before declaring M0/M2 complete.
+observed run time. Android FD sampling also classifies `socket`, `anon_inode`, APK and ashmem
+descriptors. This matters because notification icon/resource loading can lazily keep another
+app's APK splits and ashmem open; a rising **total** FD count is not evidence of a transport leak
+unless the descriptor classes support that conclusion. A negative resource delta is acceptable
+for leak detection; the summary's `NoGrowth` booleans reject positive thread/handle/socket growth
+and report total-FD growth separately. Memory deltas remain numeric because allocator/RSS noise
+makes a one-sample boolean misleading. Review the CSV and FD classes as well as the summary before
+declaring M0/M2 complete.
 
 ## Android device workflow
 

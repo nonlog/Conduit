@@ -25,7 +25,7 @@ compatible relay, and the installed Android/Windows endpoints now send explicit 
 
 | Area | Last recorded result | What it establishes | Limitation |
 | --- | --- | --- | --- |
-| Android JVM suite | **16 passed, 0 failed** | Noise transcript, frame limits, bounded history, file/image validation including capture flags, notification payload budget, wire behaviours, and explicit initiator relay preamble. | No actual system-server hook, notification listener, or device radio lifecycle. |
+| Android JVM suite | **17 passed, 0 failed** | Noise transcript, frame limits, bounded history, file/image validation including capture flags, notification payload budget, wire behaviours, explicit initiator relay preamble, and narrow fake-IP relay fallback selection. | No actual system-server hook, notification listener, or device radio lifecycle. |
 | Windows daemon | **39 passed, 2 ignored, 0 failed** on the last full normal run | Rust transport, clipboard/image/file/toast helpers, file-finalisation cleanup failures, screenshot semantics, resource-bound assertions, and explicit responder relay preamble. | Ignored tests show real toasts and require interactive validation. |
 | Compatible relay migration | **9 passed, 0 failed** | Explicit-role splice, legacy 47-byte role inference without consuming Noise, both mixed upgrade orders, stale same-role replacement for new and legacy phones, dead-waiter recovery, and rendezvous isolation. | Production rollout is complete; long-duration M2 flap evidence and eventual legacy-path retirement remain. |
 | Noise interoperability | JVM transcript test + Rust `snow` fixture | The hand-written Android Noise XX agrees byte-for-byte with a reference implementation. | Does not replace live-network testing. |
@@ -190,6 +190,41 @@ These values are encouraging samples, not exit criteria:
   finished at Windows `created=11 closed=11` and Android `opened=9 closed=9`. The best-effort raw
   host logcat stream correctly reported that its original transport exited; lifecycle snapshots
   in the samples/final quiescent event preserved the invariant evidence across the transport swap.
+- Android FD samples now include socket, anon-inode, APK and ashmem counts. This was added after
+  real network-flap testing showed that total FDs could rise even while session/socket ownership
+  remained balanced; exact `/proc/<pid>/fd` multiset comparison identified newly loaded third-party
+  APK splits and ashmem rather than new network sockets.
+
+### M2 short-cycle network-flap evidence — 2026-08-26
+
+The full M2 milestone still needs broader/longer evidence, but the first controlled campaign is
+now useful rather than blocked by relay/fake-DNS failures:
+
+- The phone's saved Wi-Fi `www` gives it `192.168.137.x`, while the Windows host is on
+  `192.168.17.x`, so this is a genuine **foreign Wi-Fi → empty mDNS burst → relay fallback** test,
+  not an accidental LAN success.
+- Before the repair, switching Wi-Fi on/off caused `Broken pipe` against Bettbox's
+  `198.18.0.137` fake relay address. TYO recorded no matching phone arrivals. A direct probe to
+  `138.3.214.175:41113` from the same phone did arrive, isolating the fault to the VPN fake-IP
+  mapping rather than Conduit's role-aware relay.
+- The installed repair preserves hostname DNS normally and substitutes `138.3.214.175` only when
+  the relay resolves into `198.18.0.0/15`. Device logs now show
+  `relay DNS ... -> fake 198.18.0.137; using 138.3.214.175`, followed by a real `session up` and
+  an explicit-role `legacy=false` splice at TYO.
+- Six Wi-Fi↔cellular transitions across two three-cycle runs kept lifecycle counters balanced.
+  One warm run finished Windows `created=17 closed=17` and Android `opened=4 closed=4`; TCP count
+  returned to baseline. A later 30-second-settle run again ended at `19/19` and `6/6`.
+- Total Android FDs varied during those runs, but a one-cycle exact target diff showed **zero new
+  sockets and zero new anon-inodes**; its +8 total came from +5 Reddit APK/split files and +3
+  ashmem descriptors, consistent with notification icon/resource loading rather than transport.
+- After adding FD-class sampling, a fresh foreign-Wi-Fi→cellular cycle ended with Windows
+  threads **11→10**, handles **264→261**, TCP total unchanged, Android threads **19→17**, socket
+  FDs **7→7**, anon-inode FDs unchanged, and both lifecycle gaps zero. Total Android FDs were +3,
+  exactly accounted for by ashmem +3. Android sample coverage was 100%.
+
+This establishes that the reproduced handover failure is fixed and provides clean short-cycle
+socket/lifecycle evidence. It does **not** replace the longer M2 campaign or the separate 48-hour
+M0 LAN run.
 
 The mandatory interpretation is:
 
@@ -254,8 +289,9 @@ part of M2 rather than part of protocol deployment.
 
 1. **M0 endurance:** 48 hours with zero net Android/Windows resource delta and lifecycle
    counters matching the invariant. The sampler is ready; the actual 48-hour evidence is pending.
-2. **M2 flap resilience:** repeated cellular ↔ Wi-Fi/hotspot changes with no growing session
-   count, thread count, or relay-pair leak.
+2. **M2 flap resilience:** short foreign-Wi-Fi ↔ cellular cycles now pass with balanced lifecycle
+   and zero socket/anon-inode growth; extend this to a longer campaign and include hotspot/default-
+   network variants before marking M2 complete.
 3. **Legacy relay retirement:** remove one-second 47-byte role inference only after old clients
    are no longer expected and M2 has supplied enough real reconnection evidence.
 4. **Avatar proof:** capture a real incoming Nagram XF notification carrying a contact icon.
