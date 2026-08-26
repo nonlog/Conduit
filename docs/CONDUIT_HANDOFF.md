@@ -405,3 +405,8 @@ Follow `docs/development.md` for Scoop-first tool installation and safe Android 
 - Real recovery check: a session that had been linked for >60 s was killed by stopping the Windows daemon at 23:27:51. The daemon was restarted 8 s later and the new Noise Relay session was up at 23:28:10, about 18.7 s after the forced loss. Current path remained TYO through Mihomo SOCKS5.
 - Keep long-duration Relay + Mihomo stability in TODO: this proves prompt recovery from one controlled loss, not the full M2/soak gate.
 - Post-recovery healthy-session check remained linked from 23:28:10 through 23:33:53 (>343 s), crossing the 240 s Relay PING boundary without a false disconnect; notification traffic still arrived at 23:33:30.
+## 2026-08-27 sleep-aware reconnect observation
+
+- The bounded 60-second Android recovery ceiling is **awake-time scheduling**, not an alarm. `Handler.postDelayed` intentionally does not wake a sleeping phone, preserving Conduit's low-radio/low-CPU design.
+- In the final runtime normalization test, a 60-second retry became overdue while the phone slept and therefore did not execute. Waking only to the lockscreen (no unlock/screenshot) let the overdue retry run immediately: TYO spliced at 00:36:33 and Noise was up at 00:36:33.819; status returned to `linked`.
+- Do not "fix" this by adding AlarmManager/WakeLock/background polling. If product requirements ever demand reconnect while the phone is fully asleep, treat the battery cost as an explicit design decision.

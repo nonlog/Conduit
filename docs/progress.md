@@ -598,3 +598,8 @@ a milestone complete based solely on source review or a single happy-path run.
   than faked with AccessibilityService. Current Android only authorises background clipboard reads
   for focused/default-IME contexts; making Conduit the default IME solely for clipboard access would
   replace the user's normal keyboard and is deliberately deferred.
+## 2026-08-27 sleep-aware reconnect observation
+
+- After final daemon normalization, the phone entered sleep while a 60-second recovery retry was pending. No later retry ran while asleep, which is expected because the service uses `Handler.postDelayed`, not a wakeup alarm.
+- Waking only to the lockscreen caused the overdue retry to execute immediately. TYO logged the phone splice at 00:36:33, Android completed Noise at 00:36:33.819, and Windows status returned to `linked`.
+- This preserves the battery-first contract: Conduit does not wake a sleeping Android device merely to re-dial Relay. The pending long Relay/Mihomo verification should distinguish "asleep until natural wake" from a retry/backoff bug.
