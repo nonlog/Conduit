@@ -10,10 +10,10 @@ Conduit has functioning implementation paths beyond the original pre-M0 descript
 has **not** earned M0/M2 completion.  The central endurance requirement remains open: a
 48-hour run must show no net thread, handle/FD, or session-lifecycle growth.
 
-The latest functional implementation commit on local `master` is `d056b80`:
+The latest functional implementation commit on local `master` is `62a4516`:
 
 ```text
-Polish the Windows control surface
+Use MessagingStyle sender avatars
 ```
 
 Local `master` remains ahead of `origin/master`; do not treat the source commits as published.
@@ -92,7 +92,7 @@ cover both explicit-role peers and a deployed-format legacy phone reconnect.
 | Windows notification action / inline reply | **Implemented and real-device verified.** The Windows resident toast thread receives foreground action activation and free-form `UserInput`, sends one `NOTIF_ACTION` through the live Noise session, and Android resolves/executes the current notification's `PendingIntent`/`RemoteInput`. A temporary fixture notification returned `REPLY=Conduit reply E2E`; its ordinary `Mark read` action returned `MARK`. | No durable action queue exists by design; clicks while disconnected are dropped. Multiple free-form reply actions on one Android notification are reduced to one Windows reply box; ordinary buttons remain available. |
 | Notification filtering | Device-shade inspection confirmed normal Play Store notification mirroring while media playback and Pano Scrobbler silent notifications were dropped. | Test other OEM/ranking edge cases when encountered. |
 | Notification privacy setting | User-owned hide switch persists and defaults off. | Android listener redaction still needs the post-install AppOp. |
-| Notification app icons / avatars | App icon and large-icon cache paths are implemented. | A genuine Nagram XF contact-avatar notification still needs end-to-end proof. |
+| Notification app icons / avatars | App icon and large-icon paths are implemented; sender `Person.icon` from public MessagingStyle messages is now the fallback when an app omits `largeIcon`. A sender-icon-only fixture matched the Windows face-cache PNG byte-for-byte. | A genuine next Nagram XF notification still needs the final opportunistic visual/path confirmation; existing private notifications are not replayed. |
 | Phone → PC file share | Implemented and re-verified byte-for-byte over the production relay, including the exact historical 259,737-byte screenshot source and a 4 MiB current build transfer. Android shows byte/percent progress in-app and in a separate upload notification. | Continue endurance/very-large-file testing; the final Windows filename remains atomic and therefore appears only after all chunks arrive. |
 | PC → phone file send | **Implemented and device-verified.** `conduit-daemon send <path>` hands a validated path to the resident daemon over a local named pipe; Android streams it into a pending Downloads MediaStore row. 131,071-byte and 1 MiB transfers matched SHA-256; a 64 MiB interrupted transfer deleted its pending row at 7,471,104 bytes. The CLI now waits for Android's post-publication `FILE_RESULT` before returning success. | A future Windows UI/right-click surface can reuse the same local control pipe and remote-result semantics. |
 | Direct Share target | The remembered desktop name is published to Android’s share sheet. | Verify after desktop rename/reinstall scenarios as needed. |
@@ -189,6 +189,29 @@ cover both explicit-role peers and a deployed-format legacy phone reconnect.
   dynamic shortcut existed afterward, providing the corresponding app-update/reinstall evidence.
   A destructive identity wipe/re-pair would not exercise any additional name-publication code and
   was intentionally avoided.
+
+### MessagingStyle sender-avatar fallback — 2026-08-26
+
+- The pending Nagram check identified a real source-format mismatch rather than a Windows cache
+  problem. A genuine Nagram X notification on the target phone exposed
+  `Notification.EXTRA_MESSAGES` but `android.largeIcon=null`. The notification also referenced a
+  real long-lived conversation shortcut, but Android's public `ShortcutInfo` API intentionally does
+  not expose its icon to ordinary clients; no reflection or hidden-API workaround was added.
+- `NotificationRelay` now reconstructs the platform `Notification.MessagingStyle.Message` records
+  from `EXTRA_MESSAGES` and, when the normal large icon is absent, uses the newest sender
+  `Person.icon`. The ranking snapshot is captured once per notification and reused for the existing
+  silent-notification decision. There is no new thread, provider lookup, timer, AndroidX dependency,
+  or polling path.
+- Android build and JVM tests passed (**25/25**), and the resulting APK was installed on the target
+  phone. Listener reconnect intentionally did **not** replay existing Nagram notifications, preserving
+  Conduit's “no historical notification burst” behaviour.
+- A temporary MessagingStyle fixture then posted a notification with **no `largeIcon`**; its only
+  face was `Message.senderPerson.icon`. Windows created `faces/4e6be015c27e5126.png`, and the file's
+  complete SHA-256 exactly matched the fixture's expected rasterised PNG:
+  `4e6be015c27e512677d33dd72fd90f1d9f402ab4ff5cc116f64b4629ed8106c3`.
+  This proves public MessagingStyle extraction, encrypted transfer and Windows face caching end to
+  end without exposing real message content. The fixture app/project and test face file were removed.
+- The remaining Nagram task is only the final naturally occurring real-notification confirmation.
 
 ### Bidirectional file transfer / long-send heartbeat findings — 2026-08-26
 

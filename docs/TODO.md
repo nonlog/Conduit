@@ -117,7 +117,14 @@
   - The light/day side still needs a visual check. Compiled day resources already request dark
     status/navigation glyphs; do not substitute lockscreen SystemUI appearance for that final check.
 - [ ] **Nagram XF contact-avatar end-to-end proof.**
-  - Capture a genuine notification carrying a large contact icon and verify the Windows toast uses it.
+  - A genuine target-device Nagram X notification was inspected structurally: it carried
+    `Notification.EXTRA_MESSAGES` while `android.largeIcon=null`, so the former large-icon-only
+    extractor could never have shown its contact face.
+  - Android now falls back to the newest public `MessagingStyle.Message.senderPerson.icon` without
+    AndroidX, hidden APIs, shortcut queries or polling. A sender-icon-only fixture produced an exact
+    PNG match in the Windows `faces/` cache, proving Android extraction → Noise → Windows avatar.
+  - Still pending only the opportunistic check on the **next naturally posted Nagram notification**.
+    Do not replay an existing private notification merely to force this checkbox green.
 - [ ] **Camera-photo -> Windows toast -> Snipping Tool regression.**
   - Re-run an interactive real-device capture after the recent shared capture/toast changes.
 - [x] **Direct Share desktop-name refresh.**

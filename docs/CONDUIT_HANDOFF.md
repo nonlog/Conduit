@@ -77,6 +77,11 @@
     `LOG` → `CONDUIT-RENAME-TEST`; restoring the normal daemon changed it back to `LOG`. Same Noise
     identity, same pairing and same shortcut id throughout. The current APK reinstall path also
     republished the shortcut successfully earlier in this pass.
+16. Nagram X on the target phone does **not** populate `Notification.largeIcon` for the inspected
+    conversation notification; it does carry `EXTRA_MESSAGES`. `NotificationRelay` now falls back to
+    the newest public `MessagingStyle.Message.senderPerson.icon`. A sender-icon-only fixture produced
+    an exact Windows face-cache SHA-256 match. Do not replay old private Nagram notifications just to
+    close the final genuine-event check; wait for the next naturally posted notification.
 
 ## Documentation created in this pass
 
@@ -94,9 +99,9 @@ same authoritative state as the architecture/progress/backlog records.
 ## Repository state at handoff
 
 ```text
-latest functional commit: d056b80 Polish the Windows control surface
+latest functional commit: 62a4516 Use MessagingStyle sender avatars
 origin/master:             1c7e18c Send files from the share sheet, and stop toasting what the phone silenced
-recent feature commits:    7dd206d notification actions; 26427af control surface; be2d317 event status
+recent feature commits:    d056b80 Fluent control surface; 7dd206d notification actions; 26427af control surface
 ```
 
 Local `master` includes the tested persistence fix, screenshot implementation, compatible relay
@@ -171,7 +176,8 @@ See `docs/architecture.md` for full data flow and trust boundaries.
 - Android-side suppression of Conduit’s own, ongoing, group-summary, media, and silent
   notifications.
 - User-owned notification content-hide switch, persisted in app-private storage.
-- App-icon/large-icon/Windows avatar cache path implemented.
+- App-icon/large-icon/Windows avatar cache path implemented, with public MessagingStyle sender-icon
+  fallback for conversation apps that omit `Notification.largeIcon`.
 - Phone → PC file share via Android’s share sheet; transfer is chunked to disk and partials are
   deleted on session failure.
 - PC → phone file sending via `conduit-daemon send <path>`; Android publishes into Downloads only
