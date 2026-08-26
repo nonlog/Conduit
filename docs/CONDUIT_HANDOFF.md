@@ -138,6 +138,8 @@ See `docs/architecture.md` for full data flow and trust boundaries.
 - Android clipboard history is a dedicated searchable child page instead of occupying the home
   screen.
 - Quick Settings `Conduit` tile toggles the same persisted connect/disconnect state as the app.
+- Android day/night theme resources now explicitly choose dark/light system-bar glyphs. The build
+  and compiled APK resources are verified and installed; an unlocked visual check is still pending.
 - Direct Share target named after the remembered desktop.
 - Camera photo → Windows hero-image toast → Snipping Tool activation implementation exists.
 - Screenshot → Windows `New screenshot` toast → Snipping Tool is implemented and was verified

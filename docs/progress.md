@@ -116,6 +116,10 @@ cover both explicit-role peers and a deployed-format legacy phone reconnect.
   click restored `link_wanted=true`, established a new relay session, and restored the active tile.
 - The home page shows one transfer card per active direction with filename, bytes and percentage.
   Both receiving and sending cards were visually checked on the device.
+- The app theme now sets `windowLightStatusBar/windowLightNavigationBar=true` in the day resource
+  and `false` in `values-night`. `aapt2 dump resources` verified both compiled variants in the APK,
+  and the APK was installed. A final unlocked visual check remains because the device was on the
+  secure lockscreen during this pass; lockscreen SystemUI is not evidence for Activity bar colours.
 
 ### Bidirectional file transfer / long-send heartbeat findings — 2026-08-26
 

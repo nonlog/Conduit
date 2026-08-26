@@ -7,5 +7,10 @@
         <item name="android:windowNoTitle">true</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
+        <!-- The Compose light surface reaches behind the transparent system bars. Explicitly ask
+             for dark glyphs; ColorOS otherwise keeps white status icons from the base DayNight
+             theme and they disappear against the light dynamic-colour background. -->
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
     </style>
 </resources>

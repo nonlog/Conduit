@@ -56,8 +56,9 @@
 
 ### Android / notification extensions
 
-- [ ] **Fix light-surface Android status-bar icon contrast.**
-  - This is app-window system-bar appearance, not notification small-icon artwork.
+- [x] **Fix light-surface Android status-bar icon contrast — implementation complete.**
+  - Day theme explicitly requests dark status/navigation glyphs; night theme explicitly requests
+    light glyphs. This is app-window system-bar appearance, not notification small-icon artwork.
 - [ ] **Non-root clipboard fallback.**
   - Planned M3 AccessibilityService path for devices without KernelSU/LSPosed.
 - [ ] **Windows notification actions / inline reply.**
@@ -87,6 +88,9 @@
 
 ### Feature-specific verification
 
+- [ ] **Visually confirm Android light/dark system-bar contrast while the phone is unlocked.**
+  - APK resources are verified and installed, but the device was locked during this implementation
+    pass, so do not substitute lockscreen SystemUI appearance for the Conduit Activity check.
 - [ ] **Nagram XF contact-avatar end-to-end proof.**
   - Capture a genuine notification carrying a large contact icon and verify the Windows toast uses it.
 - [ ] **Camera-photo -> Windows toast -> Snipping Tool regression.**
