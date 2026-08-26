@@ -10,10 +10,10 @@ Conduit has functioning implementation paths beyond the original pre-M0 descript
 has **not** earned M0/M2 completion.  The central endurance requirement remains open: a
 48-hour run must show no net thread, handle/FD, or session-lifecycle growth.
 
-The latest functional implementation commit on local `master` is `7dd206d`:
+The latest functional implementation commit on local `master` is `d056b80`:
 
 ```text
-Mirror notification actions to Windows
+Polish the Windows control surface
 ```
 
 Local `master` remains ahead of `origin/master`; do not treat the source commits as published.
@@ -257,10 +257,18 @@ cover both explicit-role peers and a deployed-format legacy phone reconnect.
   `Path: relay · tyo.414222.xyz:41113`, with the current Mihomo proxy and both installed integration
   checkboxes. Sending WM_CLOSE through `CloseMainWindow()` returned true and process count became
   **0**, proving the UI does not become a hidden resident process.
-- The first visual pass uses native Win32 controls, white event-driven content, Segoe/system font,
-  flat buttons and Windows theme hints. It is intentionally not yet claimed as final Fluent polish;
-  that visual-only refinement remains in TODO rather than pulling a heavy always-loaded UI stack
-  into the product.
+- Fluent visual refinement is now complete without changing that lifecycle. The raw Win32 window
+  reads the Windows app theme and system accent, uses a matching DWM title bar, rounded cards,
+  Segoe UI Variable typography and Common Controls v6 through a short-lived activation context.
+  Sizing comes from the actual HWND DPI; at the target machine's 125% scale the prior black/unpainted
+  DPI gutter disappeared and the complete 640-DIP layout rendered in an 818×729 physical window.
+- An early themed prototype exposed a real Win32 re-entrancy deadlock: `Refresh` held a UI mutex while
+  `BM_SETCHECK` synchronously caused the parent color callback to request that same mutex. UI metadata
+  is immutable after creation, so the mutex was removed entirely in favour of read-only
+  `OnceLock<Ui>`. A real Refresh after that fix stayed responsive.
+- While open, the control process sampled **3 threads**, **141 handles**, and about **12.3 MB working
+  set**. A normal close left **0** `conduit-control` processes and removed its temporary Common
+  Controls activation manifest. The daemon remains the only resident Conduit process.
 
 ### Phone → PC file incident resolved — 2026-08-25
 

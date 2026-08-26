@@ -50,10 +50,12 @@
   - It surfaces live snapshot state/phone/path/Relay, Relay/proxy configuration, autostart and
     Explorer integration, plus manual Refresh/diagnostics actions.
   - Event-written `status.txt` and startup-read `config.txt` remain the only state seams.
-- [ ] **Fluent visual polish for the Windows control surface.**
-  - Current native Win32 layout is deliberately lightweight and functional but still visually
-    conservative/classic. Improve spacing/typography/control styling without introducing a
-    resident WinUI process or background refresh loop.
+- [x] **Fluent visual polish for the Windows control surface.**
+  - Still pure/on-demand Win32: no WinUI, WebView, tray, watcher, or background refresh loop.
+  - Uses Windows app-theme/accent settings, DWM dark/light title bar, rounded cards, Segoe UI
+    Variable, themed common controls, and HWND-derived DPI sizing.
+  - Target-machine visual check at 125% scaling showed the old black DPI gutter is gone and the full
+    layout fits. Refresh remained responsive; normal close returned the process count to zero.
 - [x] **Explorer / shell file-send integration.**
   - HKCU file context menu uses a tiny on-demand `conduit-send.exe` GUI helper.
   - The helper starts no transport; it invokes the existing hidden `send <path>` CLI, which reuses

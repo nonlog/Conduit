@@ -55,6 +55,11 @@
     resolves the current notification only after a real click, and rejects stale action metadata.
     A real fixture E2E passed both reply text and a normal `Mark read` action through the encrypted
     session. Do not add a durable action queue across reconnects.
+11. `conduit-control.exe` has completed its lightweight Fluent pass. It is still raw Win32 and
+    on-demand only: no tray, WinUI/WebView runtime, timer, watcher, or transport ownership. It follows
+    the Windows app theme/system accent, handles the target 125% DPI correctly, and exits to zero
+    processes when closed. Preserve the immutable `OnceLock<Ui>` design; a mutex here caused a
+    synchronous Win32 color-callback deadlock during Refresh.
 
 ## Documentation created in this pass
 
@@ -72,9 +77,9 @@ same authoritative state as the architecture/progress/backlog records.
 ## Repository state at handoff
 
 ```text
-latest functional commit: 7dd206d Mirror notification actions to Windows
+latest functional commit: d056b80 Polish the Windows control surface
 origin/master:             1c7e18c Send files from the share sheet, and stop toasting what the phone silenced
-recent feature commits:    26427af control surface; be2d317 event status; eb31c73 Explorer send
+recent feature commits:    7dd206d notification actions; 26427af control surface; be2d317 event status
 ```
 
 Local `master` includes the tested persistence fix, screenshot implementation, compatible relay
@@ -123,9 +128,9 @@ history is independently verified.
 - **Control-surface seam:** `%LOCALAPPDATA%\Conduit\status.txt` is an event-written snapshot, not a
   polled status service. `conduit-daemon status` currently reports daemon/link/phone/path/Relay state
   on demand. Android announces its device name once per encrypted session (`OnePlus 12` on the test
-  phone). `conduit-control.exe` now consumes this seam as an on-demand GUI and exits fully when its
-  window closes. Do not turn it into a tray app/background watcher. Functional UI is complete;
-  lighter Fluent visual refinement remains separate TODO work.
+  phone). `conduit-control.exe` consumes this seam as an on-demand GUI and exits fully when its
+  window closes. Its Fluent pass is complete using native Win32/DWM/Common Controls only; do not turn
+  it into a tray app, background watcher, WinUI host, or second transport owner.
 - **Wire/security:** `Noise_XX_25519_ChaChaPoly_BLAKE2s`, prologue `conduit/1`; encrypted
   protobuf envelopes; `MAX_FRAME = 65535`, usable plaintext `65519`.  Images/files use 32 KiB
   chunks to fit after protobuf framing.
@@ -186,6 +191,9 @@ See `docs/architecture.md` for full data flow and trust boundaries.
 - Windows daemon normal test run: **49 passed, 3 ignored, 0 failed**. The added ignored test is an
   interactive native-toast activation check; it was run manually and returned both action arguments
   and Windows `UserInput` on the target machine.
+- Fluent control-surface verification: the target Windows dark theme at 125% scaling rendered a full
+  818×729 physical window with rounded cards and no black DPI gutter. Manual Refresh stayed
+  responsive; a normal close left 0 UI processes and no `%TEMP%\conduit-control-v6.manifest`.
 - Compatible relay migration: **9 passed, 0 failed**, including legacy↔legacy, both mixed
   upgrade orders, explicit stale-role replacement, and legacy stale-phone replacement.
 - Production rollout: old↔old and old-phone↔new-desktop connected through the compatible relay;

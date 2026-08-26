@@ -42,11 +42,12 @@ HKCU Run starts the daemon hidden in the interactive user session. Binding port 
 long-lived workers and doubles as a zero-extra-resource single-instance gate; duplicate startup was
 live-tested and exits immediately.
 
-### 5. Thin Windows control surface — functional, visual polish remains
+### 5. Thin Windows control surface — complete
 
 `conduit-control.exe` is now a separate non-resident GUI-subsystem process reading event-written
 status/config state on demand. It owns no transport, tray, watcher, or timer and exits fully with the
-window. Remaining work is Fluent visual refinement without turning it into another resident stack.
+window. Its Fluent pass is complete with native Win32/DWM/Common Controls, Windows theme/accent and
+correct 125% DPI sizing; no heavier resident UI framework was introduced.
 
 ### 6. Re-run device-specific persistence/permission checks after platform changes
 
