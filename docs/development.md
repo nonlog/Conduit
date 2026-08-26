@@ -143,6 +143,36 @@ cargo test --workspace
 Run Android and Rust checks independently after a protobuf contract change.  A successful
 compile on just one side does not prove interoperation.
 
+### Endurance / lifecycle sampler
+
+`scripts/soak.ps1` is the repeatable M0/M2 evidence collector. It samples the live Windows
+daemon and Android app into `samples.csv`, captures the two lifecycle logs, and writes a
+`summary.json` containing first→last resource deltas, PID stability, Android sample coverage,
+and `created/closed` / `opened/closed` gaps.
+
+For an already-running daemon whose stdout is being captured:
+
+```powershell
+Set-Location D:\Workspace\Conduit
+.\scripts\soak.ps1 `
+  -Attach `
+  -AdbSerial <serial from adb devices -l> `
+  -DaemonLogPath $env:TEMP\conduit-soak-current.out.log `
+  -DurationMinutes 2880 `
+  -IntervalSeconds 60 `
+  -QuiescentBaseline `
+  -QuiesceSeconds 30 `
+  -RestoreLink
+```
+
+`-QuiescentBaseline` needs root on the test phone because `SyncService` is deliberately not
+exported; the script uses the existing root environment instead of weakening the manifest.
+The quiescent settling windows are outside `DurationMinutes`, so 2880 means a full 48 hours of
+observed run time. A negative resource delta is acceptable for leak detection; the summary's
+`NoGrowth` booleans reject only positive thread/handle/FD/socket growth. Memory deltas remain
+numeric because allocator/RSS noise makes a one-sample boolean misleading. Review the CSV as
+well as the summary before declaring M0/M2 complete.
+
 ## Android device workflow
 
 ### Install a debug APK

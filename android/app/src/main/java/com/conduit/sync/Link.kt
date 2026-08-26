@@ -275,6 +275,7 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
 
     private fun pump(address: InetSocketAddress, rendezvous: String?) {
         val count = opened.incrementAndGet()
+        Log.i(TAG, "session $count opened: opened=$count closed=${closed.get()}")
         var established = false
         try {
             Socket().use { sock ->

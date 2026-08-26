@@ -166,6 +166,24 @@ These values are encouraging samples, not exit criteria:
   `created=4 closed=4`; the final session then came up normally. This is additional churn evidence,
   not a substitute for the 48-hour/M2 gates.
 
+### M0/M2 sampler implemented — 2026-08-26
+
+- `scripts/soak.ps1` now records timestamped Windows thread/handle/working-set/private-memory/TCP
+  counts and Android PID/thread/FD/RSS samples, plus raw Android and daemon lifecycle logs.
+- Windows now logs `session created created=N closed=M` at session creation; Android similarly logs
+  `session N opened: opened=N closed=M`. This lets the sampler see the current lifecycle gap while
+  a session is active instead of only learning the counters on teardown.
+- `-QuiescentBaseline` controls the non-exported Android service through the existing rooted test
+  environment, waits a configurable settling interval before both baseline samples, excludes those
+  waits from the requested soak duration, and optionally restores the link only after evidence is
+  frozen into `summary.json`.
+- A short attach self-test held both platforms flat over its sample window. A separate controlled
+  quiescent→connected→quiescent self-test with 10-second settling ended at Windows
+  `created=5 closed=5` and Android `opened=4 closed=4`; Windows threads returned 10→10 and Android
+  threads/FDs returned 19→19 / 141→141. Windows handles ended one below baseline. Small RSS/private
+  memory movement remained, as expected over a seconds-long diagnostic. This validates the
+  collector, **not** the 48-hour milestone.
+
 The mandatory interpretation is:
 
 ```text
@@ -228,7 +246,7 @@ part of M2 rather than part of protocol deployment.
 ## Known gaps and evidence still required
 
 1. **M0 endurance:** 48 hours with zero net Android/Windows resource delta and lifecycle
-   counters matching the invariant.
+   counters matching the invariant. The sampler is ready; the actual 48-hour evidence is pending.
 2. **M2 flap resilience:** repeated cellular ↔ Wi-Fi/hotspot changes with no growing session
    count, thread count, or relay-pair leak.
 3. **Legacy relay retirement:** remove one-second 47-byte role inference only after old clients

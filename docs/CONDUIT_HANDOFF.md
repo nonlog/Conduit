@@ -21,7 +21,7 @@
    Android/Windows endpoints use explicit roles; keep legacy inference for older clients until M2
    evidence and deliberate retirement.
 4. Screenshot → native Windows toast → Snipping Tool is implemented and device-verified. The next
-   P0 is endurance/flap instrumentation and evidence, not more relay protocol work.
+   P0 is the actual endurance/flap evidence. `scripts/soak.ps1` is implemented and short-tested.
 
 ## Documentation created in this pass
 
@@ -117,6 +117,10 @@ See `docs/architecture.md` for full data flow and trust boundaries.
 - Production rollout: old↔old and old-phone↔new-desktop connected through the compatible relay;
   installed new Android + new Windows now connect with `legacy=false` on both sides. Three forced
   phone restart cycles left Windows at `created=4 closed=4` before the fifth session became active.
+- M0/M2 sampler: `scripts/soak.ps1` records resource samples and lifecycle logs; creation-side
+  lifecycle counters are now emitted by both Android and Windows. A controlled short quiescent
+  self-test ended at Windows `created=5 closed=5` and Android `opened=4 closed=4` with thread/FD
+  counts back at baseline. This proves the collector works, not that M0 is complete.
 - Last sampled daemon: about **9 threads**, **247 handles**, **24.1 MB working set**, about
   **276 minutes** uptime.
 - Earlier lifecycle observation: 14 completed sessions with `created == closed`; an active
@@ -192,8 +196,8 @@ The two stale-waiter regressions are `a_peer_is_never_spliced_to_a_stale_copy_of
 
 ## Recommended next work
 
-The highest-value remaining P0 is endurance/flap instrumentation and evidence: automate resource
-sampling, then run the 48-hour M0 window and controlled cellular ↔ Wi-Fi/hotspot M2 transitions.
+The highest-value remaining P0 is now the evidence run itself: use `scripts/soak.ps1` for the
+48-hour M0 window and controlled cellular ↔ Wi-Fi/hotspot M2 transitions.
 Do not remove legacy relay inference merely because current clients are upgraded; retire it only
 after the compatibility window and M2 evidence are sufficient.
 

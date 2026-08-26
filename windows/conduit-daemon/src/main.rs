@@ -137,7 +137,12 @@ async fn main() -> Result<()> {
             previous.abort();
             let _ = previous.await; // guard drop runs here — closed is counted
         }
-        metrics.created.fetch_add(1, Ordering::Relaxed);
+        let created = metrics.created.fetch_add(1, Ordering::Relaxed) + 1;
+        info!(
+            created,
+            closed = metrics.closed.load(Ordering::Relaxed),
+            "session created"
+        );
         let metrics = metrics.clone();
         let local_priv = identity.private.clone();
         let bridge = bridge.clone();
