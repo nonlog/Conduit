@@ -75,13 +75,7 @@
 - [x] **Fix light-surface Android status-bar icon contrast — implementation complete.**
   - Day theme explicitly requests dark status/navigation glyphs; night theme explicitly requests
     light glyphs. This is app-window system-bar appearance, not notification small-icon artwork.
-- [ ] **Non-root clipboard fallback.**
-  - **Do not implement the old AccessibilityService-only plan.** Android 10+ returns `null` from
-    `ClipboardManager` for background apps that are neither focused nor the default IME; enabling an
-    accessibility service alone is not a documented exemption.
-  - A real M3 fallback now needs an explicitly platform-authorised route (for example, an opt-in
-    input-method design if that UX is acceptable) or a future Android API. Make that product decision
-    before adding accessibility privileges that would not actually solve the problem.
+
 - [x] **Windows notification actions / inline reply.**
   - Android mirrors only bounded action descriptors; PendingIntents never leave the phone.
   - Windows uses the already-resident toast thread's `ToastNotification::Activated` callback; no
@@ -90,8 +84,28 @@
     `StatusBarNotification` on demand and refuses stale index/label/RemoteInput targets.
   - Real device E2E verified both a free-form reply (`REPLY=Conduit reply E2E`) and a normal
     `Mark read` PendingIntent (`MARK`). Action-list changes silently rebuild the same Windows tag.
-- [ ] **MessagingStyle conversation history.**
-  - Revisit only if title/body/avatar rendering proves insufficient.
+- [x] **MessagingStyle conversation history.**
+  - Android reuses the public `Notification.EXTRA_MESSAGES` records already present on a
+    MessagingStyle notification; it performs no active-notification/shortcut/provider lookup.
+  - Only the newest 3 non-empty messages cross the wire. Sender names are capped at 80 characters
+    and message text at 320 characters, keeping notification payloads strictly inside one Noise frame.
+  - `NotifUpdate` carries the same bounded history, so a conversation can update the existing
+    Windows Toast silently instead of generating a second popup.
+  - Real target-device E2E used Android's system MessagingStyle notification generator: the source
+    notification contained Alice/Bob/Alice messages, Android logged `messages=3`, and the Windows
+    daemon decoded `messages=3` over the live TYO/Mihomo Noise session.
+
+## Platform-blocked / deliberately deferred
+
+- **Automatic non-root clipboard fallback is not an actionable implementation item on current Android.**
+  - **Do not implement the old AccessibilityService-only plan.** Android 10+ background clipboard
+    access is restricted to an app with input focus or the default IME; accessibility alone does not
+    provide the automatic clipboard contract Conduit needs.
+  - Making Conduit the default IME merely to gain clipboard access would replace the user's normal
+    keyboard; Android provides no supported way for a thin Conduit IME to delegate text entry to
+    another installed IME. That UX/invasion is disproportionate to this project's lightweight goal.
+  - Reopen this only if Android exposes an appropriate platform-authorised clipboard API, or if the
+    user explicitly chooses a fundamentally different input-method product design.
 
 ## Pending verification
 

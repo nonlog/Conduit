@@ -60,10 +60,12 @@
     the Windows app theme/system accent, handles the target 125% DPI correctly, and exits to zero
     processes when closed. Preserve the immutable `OnceLock<Ui>` design; a mutex here caused a
     synchronous Win32 color-callback deadlock during Refresh.
-12. The old M3 “AccessibilityService non-root clipboard fallback” plan is invalid on current
-    Android: Android 10+ background clipboard access still requires input focus or default-IME
-    status. No accessibility service was added. Do not request that privilege unless a future design
-    can actually satisfy the clipboard contract.
+12. Automatic non-root clipboard mirroring is now explicitly platform-blocked/deferred rather than
+    an implementation backlog item. Android 10+ background clipboard access requires input focus or
+    default-IME status; AccessibilityService alone does not satisfy the contract. Making Conduit the
+    default IME solely for clipboard access would replace the user's normal keyboard, and Android has
+    no supported thin-IME delegation path. Do not add accessibility/IME privileges unless the user
+    explicitly chooses a different input-method product design or Android gains a suitable API.
 13. 64 MiB bidirectional Relay stress is green for integrity. PC→phone completed in 20.33 s;
     phone→PC completed in about 4 min 46 s, crossed the 240-second heartbeat boundary, stayed linked,
     and matched SHA-256. The reverse direction is materially slower but did not lose/corrupt data.
@@ -83,6 +85,14 @@
     an exact Windows face-cache SHA-256 match. Do not replay old private Nagram notifications just to
     close the final genuine-event check; wait for the next naturally posted notification.
 
+17. MessagingStyle conversation history is implemented without new background work. Android reuses
+    the public `Notification.EXTRA_MESSAGES` already present on a posted notification, keeps only the
+    newest 3 non-empty messages (sender <=80 chars, text <=320 chars), and sends them on both New and
+    Update. Windows renders the bounded records in the existing Toast body binding. A real Android
+    system MessagingStyle notification carried Alice/Bob/Alice messages; Android logged
+    `messages=3`, and the Windows daemon decoded `messages=3` across the live TYO/Mihomo Noise
+    session. No query loop, provider read, extra thread, or new resident cache was added.
+
 ## Documentation created in this pass
 
 | File | Purpose |
@@ -99,14 +109,14 @@ same authoritative state as the architecture/progress/backlog records.
 ## Repository state at handoff
 
 ```text
-latest functional commit: ee852b0 Harden reconnect recovery
+latest functional commit: 25db650 Mirror MessagingStyle conversation history
 origin/master:             1c7e18c Send files from the share sheet, and stop toasting what the phone silenced
 recent feature commits:    d056b80 Fluent control surface; 7dd206d notification actions; 26427af control surface
 ```
 
 Local `master` includes the tested persistence fix, screenshot implementation, compatible relay
 migration, M0/M2 sampling, bidirectional file-transfer UX, long-transfer heartbeat fixes, Windows
-parked-socket keepalive, Windows Relay SOCKS5 support, and notification actions/inline reply. None of these local commits has been
+parked-socket keepalive, Windows Relay SOCKS5 support, notification actions/inline reply, and bounded MessagingStyle conversation history. None of these local commits has been
 pushed. The compatible TYO relay and installed endpoints were built from this local line. A future
 Git push is still outward-facing: obtain explicit approval unless requested in the same context.
 
@@ -170,6 +180,8 @@ See `docs/architecture.md` for full data flow and trust boundaries.
 - Bidirectional text clipboard sync with normalised echo suppression.
 - Bidirectional image clipboard sync.
 - Android notifications as genuine native Windows toasts, including update/removal.
+- Bounded MessagingStyle conversation history (newest 3 messages) is carried on both new/update events;
+  Windows reuses the existing Toast body binding, so updates remain silent/in-place.
 - Mirrored Android notification actions, including one free-form inline reply plus ordinary
   buttons. Windows keeps only bounded action descriptors; Android executes the current notification's
   PendingIntent after stale-metadata checks.
@@ -212,7 +224,7 @@ See `docs/architecture.md` for full data flow and trust boundaries.
 ## Latest evidence
 
 - Android JVM tests: **26 passed, 0 failed**.
-- Windows daemon normal test run: **50 passed, 3 ignored, 0 failed**. The added ignored test is an
+- Windows daemon normal test run: **51 passed, 3 ignored, 0 failed**. The added ignored test is an
   interactive native-toast activation check; it was run manually and returned both action arguments
   and Windows `UserInput` on the target machine.
 - Fluent control-surface verification: the target Windows dark theme at 125% scaling rendered a full

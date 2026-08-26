@@ -25,8 +25,8 @@ compatible relay, and the installed Android/Windows endpoints now send explicit 
 
 | Area | Last recorded result | What it establishes | Limitation |
 | --- | --- | --- | --- |
-| Android JVM suite | **25 passed, 0 failed** | Noise transcript, frame limits, bounded/searchable history model, file/image validation including capture flags, throttled transfer-progress model, notification payload budget, wire behaviours, explicit initiator relay preamble, fake-IP relay fallback, passive multi-relay candidate/cooldown persistence, and file-publication result encoding. | No actual system-server hook, notification listener, Quick Settings host, or device radio lifecycle. |
-| Windows daemon | **49 passed, 3 ignored, 0 failed** on the last full normal run | Rust transport, clipboard/image/file/toast helpers, desktop→phone outbound-file validation, file-finalisation cleanup failures, screenshot semantics, resource-bound assertions, explicit responder relay preamble, multi-relay config parsing/parking, cancel/resume receive safety across an intervening Noise send, SOCKS5 relay domain routing, autostart/Explorer helpers, event-driven control-surface status snapshots, and notification-action XML/activation parsing. | The three ignored tests exercise real Windows toasts and require interactive validation; the new action callback test was also run interactively on the target Windows machine. |
+| Android JVM suite | **26 passed, 0 failed** | Noise transcript, frame limits, bounded/searchable history model, file/image validation including capture flags, throttled transfer-progress model, notification payload budget, wire behaviours, explicit initiator relay preamble, fake-IP relay fallback, passive multi-relay candidate/cooldown persistence, and file-publication result encoding. | No actual system-server hook, notification listener, Quick Settings host, or device radio lifecycle. |
+| Windows daemon | **51 passed, 3 ignored, 0 failed** on the last full normal run | Rust transport, clipboard/image/file/toast helpers, desktop→phone outbound-file validation, file-finalisation cleanup failures, screenshot semantics, resource-bound assertions, explicit responder relay preamble, multi-relay config parsing/parking, cancel/resume receive safety across an intervening Noise send, SOCKS5 relay domain routing, autostart/Explorer helpers, event-driven control-surface status snapshots, and notification-action XML/activation parsing. | The three ignored tests exercise real Windows toasts and require interactive validation; the new action callback test was also run interactively on the target Windows machine. |
 | Compatible relay migration | **9 passed, 0 failed** | Explicit-role splice, legacy 47-byte role inference without consuming Noise, both mixed upgrade orders, stale same-role replacement for new and legacy phones, dead-waiter recovery, and rendezvous isolation. | Production rollout is complete; long-duration M2 flap evidence and eventual legacy-path retirement remain. |
 | Noise interoperability | JVM transcript test + Rust `snow` fixture | The hand-written Android Noise XX agrees byte-for-byte with a reference implementation. | Does not replace live-network testing. |
 
@@ -559,9 +559,10 @@ part of M2 rather than part of protocol deployment.
 3. **Legacy relay retirement:** remove one-second 47-byte role inference only after old clients
    are no longer expected and M2 has supplied enough real reconnection evidence.
 4. **Avatar proof:** capture a real incoming Nagram XF notification carrying a contact icon.
-5. **UI polish:** fix light-surface status-bar icon appearance in the Android app itself.  This
-   is distinct from the already corrected monochrome foreground-service notification icon.
-6. **Windows operability:** add daemon autostart at login and later a non-resident Fluent UI.
+5. **Light/day visual proof:** implementation requests the correct day/night system-bar glyph mode;
+   dark/night is visually confirmed, but the final unlocked day-theme check remains.
+6. **Relay longevity/fleet:** long Relay+Mihomo idle/proxy-restart evidence and real additional-node
+   deployment/failover remain verification/deployment work, not missing client implementation.
 
 ## Documentation maintenance
 
@@ -576,3 +577,24 @@ a milestone complete based solely on source review or a single happy-path run.
 - Windows tests: 50 passed, 3 interactive toast tests ignored, 0 failed. Android JVM tests: 26 passed, 0 failed; debug APK assembled successfully.
 - Installed both sides on the target pair. Controlled stable-session loss recovered to a new Relay/Noise session in about 18.7 s and status returned to linked.
 - Post-recovery healthy-session check remained linked from 23:28:10 through 23:33:53 (>343 s), crossing the 240 s Relay PING boundary without a false disconnect; notification traffic still arrived at 23:33:30.
+
+## 2026-08-26 MessagingStyle conversation-history checkpoint
+
+- Functional commit `25db650` populates the existing `NotifNew.messages` field and extends
+  `NotifUpdate` with the same bounded `TextMessage` history.
+- Android reads only public `Notification.EXTRA_MESSAGES` already delivered with the posted event;
+  it keeps the newest 3 non-empty records, caps sender at 80 characters and text at 320, and adds
+  no query loop, provider read, timer, thread, or resident cache.
+- The worst-case notification frame-budget JVM test remains green with all three bounded messages.
+  Android JVM suite: **26 passed, 0 failed**; debug APK assembled successfully.
+- Windows formats 2+ records as chronological `sender: text` lines inside the existing Toast body
+  binding; a single record keeps the ordinary body to avoid duplication. Daemon tests:
+  **51 passed, 3 interactive Toast tests ignored, 0 failed**.
+- Real-device E2E used Android `cmd notification -S messaging`: the source notification had
+  `android.messages=Bundle[] (3)` with Alice/Bob/Alice; after an explicit listener rebind Android
+  logged `messages=3`, and the live Windows daemon decoded `pkg=com.android.shell messages=3`
+  through the current TYO/Mihomo Noise session.
+- Automatic non-root clipboard mirroring was removed from actionable implementation work rather
+  than faked with AccessibilityService. Current Android only authorises background clipboard reads
+  for focused/default-IME contexts; making Conduit the default IME solely for clipboard access would
+  replace the user's normal keyboard and is deliberately deferred.
