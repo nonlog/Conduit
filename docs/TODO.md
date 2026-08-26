@@ -122,8 +122,12 @@
   - Re-run an interactive real-device capture after the recent shared capture/toast changes.
 - [ ] **Direct Share desktop-name refresh.**
   - Verify desktop rename / re-pair / reinstall scenarios.
-- [ ] **Restrictive `content://` provider sharing.**
-  - Exercise providers whose URI grants cannot be trivially re-granted.
+- [x] **Restrictive `content://` provider sharing.**
+  - A temporary Android fixture exposed a **non-exported** provider with `grantUriPermissions=true`.
+    Direct shell access was rejected with `SecurityException: provider ... is not exported`.
+  - The fixture then explicitly shared the same URI to Conduit's `ShareActivity` with a one-time read
+    grant. `ShareActivity` forwarded the grant to `SyncService`; Windows received the 1 MiB private
+    file and its SHA-256 exactly matched the provider source. The fixture and artifacts were removed.
 - [x] **Large bidirectional file-transfer stress.**
   - 64 MiB PC→phone completed through TYO/Mihomo in 20.33 s with exact SHA-256 and remote
     publication ACK.

@@ -67,6 +67,11 @@
 13. 64 MiB bidirectional Relay stress is green for integrity. PC→phone completed in 20.33 s;
     phone→PC completed in about 4 min 46 s, crossed the 240-second heartbeat boundary, stayed linked,
     and matched SHA-256. The reverse direction is materially slower but did not lose/corrupt data.
+14. Restrictive-provider sharing is now real-device verified. A temporary **non-exported** Android
+    provider was unreadable to shell without a grant, then successfully shared a 1 MiB private file
+    through `ShareActivity` → `SyncService` → Windows with an exact SHA-256 match. The fixture was
+    removed. Preserve the current `ClipData` + `FLAG_GRANT_READ_URI_PERMISSION` handoff; replacing it
+    with a plain URI extra would regress this case.
 
 ## Documentation created in this pass
 

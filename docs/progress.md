@@ -154,6 +154,24 @@ cover both explicit-role peers and a deployed-format legacy phone reconnect.
   surface for no benefit. M3 is now explicitly a product/design decision around a truly authorised
   input path or future platform API.
 
+### Restrictive `content://` share-grant verification — 2026-08-26
+
+- A temporary Android fixture was built outside the repository with a provider declared
+  `exported=false` and `grantUriPermissions=true`. Its private file was therefore genuinely
+  inaccessible without an explicit grant: `adb shell content query` was rejected by Android with
+  `SecurityException` because the provider was not exported.
+- The fixture created a deterministic **1 MiB** private file and explicitly targeted
+  `com.conduit.sync/.ShareActivity` with `ACTION_SEND`, `EXTRA_STREAM`, `ClipData`, and
+  `FLAG_GRANT_READ_URI_PERMISSION`. This is the exact constrained-provider case the share path was
+  designed for: Conduit has no blanket provider access and can read the URI only because of that
+  share grant.
+- `ShareActivity` passed the URI/grant into the existing `SyncService` path; Android logged
+  `sent restricted-provider.bin, 1048576 B as 32 chunks`. Windows published the file in Downloads
+  immediately afterward. Source and destination SHA-256 were both
+  `631b84027d6b9e52b539c4e8373622d23032dfadc64d60af87339c9037e4f769`.
+- The Windows copy, temporary APK/app and complete temporary Gradle project were removed after the
+  check. No repository source change was required.
+
 ### Bidirectional file transfer / long-send heartbeat findings — 2026-08-26
 
 - Desktop→phone reuses the existing `FILE_OFFER` / `FILE_CHUNK` protocol rather than adding a
