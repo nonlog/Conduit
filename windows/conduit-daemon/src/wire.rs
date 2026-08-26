@@ -45,9 +45,13 @@ const RENDEZVOUS_LEN: usize = 43;
 /// until it is paired, so one `peek` is the entire wait — no timer, no poll, and the
 /// bytes stay in the socket for the handshake that follows. `Ok(0)` means the relay hung
 /// up, which is also what being spliced onto a dead peer looks like from here.
-pub async fn park(endpoint: &str, rendezvous: &str) -> Result<tokio::net::TcpStream> {
-    let mut stream = match relay_proxy() {
-        Some(proxy) => connect_socks5(&proxy, endpoint)
+pub async fn park(
+    endpoint: &str,
+    rendezvous: &str,
+    relay_proxy: Option<&str>,
+) -> Result<tokio::net::TcpStream> {
+    let mut stream = match relay_proxy {
+        Some(proxy) => connect_socks5(proxy, endpoint)
             .await
             .with_context(|| format!("dialling relay {endpoint} through {proxy}"))?,
         None => tokio::net::TcpStream::connect(endpoint)
@@ -71,19 +75,6 @@ pub async fn park(endpoint: &str, rendezvous: &str) -> Result<tokio::net::TcpStr
         bail!("relay closed the parked connection");
     }
     Ok(stream)
-}
-
-/// Optional relay-only proxy. LAN accepts/dials never come through this function, so setting
-/// this cannot accidentally hairpin a same-LAN transfer through a proxy.
-///
-/// The environment variable deliberately names a SOCKS endpoint rather than inheriting the
-/// Windows HTTP proxy: a raw Noise/TCP session is not HTTP, and silently treating WinHTTP as a
-/// generic tunnel would be surprising. `socks5://127.0.0.1:7891` is the common Mihomo shape.
-fn relay_proxy() -> Option<String> {
-    std::env::var("CONDUIT_RELAY_PROXY")
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
 }
 
 async fn connect_socks5(proxy: &str, endpoint: &str) -> Result<tokio::net::TcpStream> {

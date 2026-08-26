@@ -7,6 +7,7 @@
 mod advert;
 mod autostart;
 mod clip;
+mod config;
 mod control;
 mod explorer;
 mod file;
@@ -137,14 +138,74 @@ async fn main() -> Result<()> {
             }
             return Ok(());
         }
+        if command == "config" {
+            let dir = config_dir()?;
+            std::fs::create_dir_all(&dir)?;
+            let mut config = config::Config::load(&dir)?;
+            let action = args.next().context(
+                "usage: conduit-daemon config <show|relay-proxy <value|off>|relays <list|off>>",
+            )?;
+            match action.to_string_lossy().as_ref() {
+                "show" if args.next().is_none() => {
+                    println!("Config file: {}", dir.join("config.txt").display());
+                    println!(
+                        "relay_proxy={}",
+                        config.relay_proxy.as_deref().filter(|v| !v.is_empty()).unwrap_or("off")
+                    );
+                    println!(
+                        "relays={}",
+                        config.relays.as_deref().unwrap_or(RELAY)
+                    );
+                    if std::env::var_os("CONDUIT_RELAY_PROXY").is_some()
+                        || std::env::var_os("CONDUIT_RELAYS").is_some()
+                        || std::env::var_os("CONDUIT_RELAY").is_some()
+                    {
+                        println!("Note: one or more CONDUIT_* environment variables override this file.");
+                    }
+                }
+                "relay-proxy" => {
+                    let value = args.next().context("usage: conduit-daemon config relay-proxy <value|off>")?;
+                    if args.next().is_some() {
+                        bail!("usage: conduit-daemon config relay-proxy <value|off>");
+                    }
+                    let value = value.to_string_lossy();
+                    config.relay_proxy = Some(if value.eq_ignore_ascii_case("off") {
+                        String::new()
+                    } else {
+                        value.into_owned()
+                    });
+                    println!("Saved {}", config.save(&dir)?.display());
+                    println!("Restart the daemon to apply this change.");
+                }
+                "relays" => {
+                    let value = args.next().context("usage: conduit-daemon config relays <list|off>")?;
+                    if args.next().is_some() {
+                        bail!("usage: conduit-daemon config relays <list|off>");
+                    }
+                    let value = value.to_string_lossy();
+                    config.relays = Some(if value.eq_ignore_ascii_case("off") {
+                        String::new()
+                    } else {
+                        value.into_owned()
+                    });
+                    println!("Saved {}", config.save(&dir)?.display());
+                    println!("Restart the daemon to apply this change.");
+                }
+                _ => bail!(
+                    "usage: conduit-daemon config <show|relay-proxy <value|off>|relays <list|off>>"
+                ),
+            }
+            return Ok(());
+        }
         bail!(
-            "unknown command {:?}; usage: conduit-daemon [send <file> | autostart <install|remove|status> | explorer <install|remove|status>]",
+            "unknown command {:?}; usage: conduit-daemon [send <file> | autostart <install|remove|status> | explorer <install|remove|status> | config ...]",
             command
         );
     }
 
     let dir = config_dir()?;
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let user_config = config::Config::load(&dir)?;
     let identity = wire::load_or_create_identity(&dir.join("identity.bin"))?;
     let device_id = wire::device_id(&identity.public);
     let fingerprint = wire::fingerprint(&identity.public);
@@ -191,7 +252,13 @@ async fn main() -> Result<()> {
     // Two ways in now, and the difference ends here: a relay stream is spliced to the
     // phone by a process that cannot read it, so from `serve`'s point of view it is an
     // ordinary socket carrying an ordinary Noise session.
-    let relays = relay_endpoints();
+    let relays = user_config.resolved_relays(RELAY);
+    let relay_proxy = user_config.resolved_proxy();
+    info!(
+        relays = ?relays,
+        proxy = relay_proxy.as_deref().unwrap_or("direct"),
+        "relay configuration"
+    );
     let (relay_tx, mut relay_rx) =
         tokio::sync::mpsc::channel::<RelayArrival>((relays.len().max(1) * 2).max(2));
     for endpoint in &relays {
@@ -201,6 +268,7 @@ async fn main() -> Result<()> {
             endpoint.clone(),
             rendezvous,
             relay_tx.clone(),
+            relay_proxy.clone(),
         ));
     }
     // Only the per-relay workers own senders. With no configured relays this closes the
@@ -257,29 +325,6 @@ async fn main() -> Result<()> {
     }
 }
 
-/// Multi-relay configuration. `CONDUIT_RELAYS` is a comma/semicolon-separated list. An explicitly
-/// empty value disables Relay parking. The old singular variable remains a compatibility fallback.
-fn relay_endpoints() -> Vec<String> {
-    relay_endpoints_from(
-        std::env::var("CONDUIT_RELAYS").ok().as_deref(),
-        std::env::var("CONDUIT_RELAY").ok().as_deref(),
-    )
-}
-
-fn relay_endpoints_from(relays: Option<&str>, relay: Option<&str>) -> Vec<String> {
-    let source = match relays {
-        Some(value) => value,
-        None => relay.unwrap_or(RELAY),
-    };
-    let mut out = Vec::new();
-    for endpoint in source.split([',', ';']).map(str::trim).filter(|s| !s.is_empty()) {
-        if !out.iter().any(|seen| seen == endpoint) {
-            out.push(endpoint.to_owned());
-        }
-    }
-    out
-}
-
 /// Keeps exactly one connection parked at the relay for the life of the process.
 ///
 /// Re-parks immediately after handing a stream over, so a reconnecting phone always
@@ -290,9 +335,10 @@ async fn park_forever(
     endpoint: String,
     rendezvous: String,
     tx: tokio::sync::mpsc::Sender<RelayArrival>,
+    relay_proxy: Option<String>,
 ) {
     loop {
-        match wire::park(&endpoint, &rendezvous).await {
+        match wire::park(&endpoint, &rendezvous, relay_proxy.as_deref()).await {
             Ok(stream) => {
                 if let Err(e) = set_keepalive(&stream) {
                     warn!(error = %e, "relay stream without keepalive");
@@ -722,30 +768,4 @@ fn set_keepalive(stream: &TcpStream) -> Result<()> {
 
 fn config_dir() -> Result<PathBuf> {
     Ok(PathBuf::from(std::env::var("LOCALAPPDATA").context("LOCALAPPDATA is unset")?).join("Conduit"))
-}
-
-#[cfg(test)]
-mod config_tests {
-    use super::*;
-
-    #[test]
-    fn multi_relay_config_is_trimmed_deduplicated_and_ordered() {
-        assert_eq!(
-            relay_endpoints_from(
-                Some(" us.example:41113;wa.example:41113, us.example:41113 "),
-                Some("ignored.example:41113"),
-            ),
-            vec!["us.example:41113", "wa.example:41113"],
-        );
-    }
-
-    #[test]
-    fn empty_multi_relay_config_disables_relays_and_singular_remains_compatible() {
-        assert!(relay_endpoints_from(Some("  "), Some("old.example:41113")).is_empty());
-        assert_eq!(
-            relay_endpoints_from(None, Some("old.example:41113")),
-            vec!["old.example:41113"],
-        );
-        assert_eq!(relay_endpoints_from(None, None), vec![RELAY]);
-    }
 }
