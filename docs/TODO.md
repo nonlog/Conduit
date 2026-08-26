@@ -47,6 +47,8 @@
 - [ ] **Thin Fluent Windows control surface.**
   - Separate process from the daemon.
   - Surface link status, peer identity, diagnostics, Relay/proxy configuration, and basic controls.
+  - Foundation complete: event-written `status.txt`, `conduit-daemon status`, and persistent
+    `config.txt` mean the UI can remain entirely on-demand with zero resident polling process.
 - [x] **Explorer / shell file-send integration.**
   - HKCU file context menu uses a tiny on-demand `conduit-send.exe` GUI helper.
   - The helper starts no transport; it invokes the existing hidden `send <path>` CLI, which reuses

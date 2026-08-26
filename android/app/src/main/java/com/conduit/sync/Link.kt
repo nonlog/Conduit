@@ -103,6 +103,7 @@ internal fun isVpnFakeIp(address: InetAddress): Boolean {
  */
 class Link(
     private val privateKey: ByteArray,
+    private val localDeviceName: String,
     private val events: Events,
     private val openIncomingFile: (FileOffer) -> Files.Incoming? = { null },
 ) {
@@ -419,6 +420,10 @@ class Link(
                 Log.i(TAG, "session $count up to $target, peer $peer")
                 events.onPeer(Identity.deviceId(live.peerStatic))
                 events.onState(LinkState.Connected, peer)
+                val hello = PairRequest.newBuilder()
+                    .setDeviceName(localDeviceName.take(PEER_NAME_MAX))
+                    .build()
+                send(Kind.PAIR_REQUEST, hello.toByteArray(), "device name")
 
                 while (true) dispatch(live.recv())
             }

@@ -16,6 +16,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
+import android.os.Build
 import android.util.Log
 import android.widget.Toast
 import java.net.InetSocketAddress
@@ -189,9 +190,15 @@ class SyncService : Service() {
         relayEndpoints = RelayCatalog.load(filesDir)
         relayQuality = RelayQualityStore(filesDir)
         Log.i(TAG, "relay inventory: ${relayEndpoints.joinToString { it.id }}")
+        val localDeviceName = android.provider.Settings.Global
+            .getString(contentResolver, "device_name")
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?: Build.MODEL
 
         link = Link(
             identity.private,
+            localDeviceName,
             object : Link.Events {
                 override fun onState(state: LinkState, peer: String?) {
                     LinkStatus.state = state

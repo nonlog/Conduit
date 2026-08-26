@@ -114,6 +114,10 @@ history is independently verified.
   mDNS advert. Relay parking optionally dials through `CONDUIT_RELAY_PROXY`; the current Windows
   runtime points this at local Mihomo SOCKS5. Parked Relay sockets enable TCP keepalive before
   blocking for a partner so a dead remote waiter cannot strand the parker forever.
+- **Control-surface seam:** `%LOCALAPPDATA%\Conduit\status.txt` is an event-written snapshot, not a
+  polled status service. `conduit-daemon status` currently reports daemon/link/phone/path/Relay state
+  on demand. Android announces its device name once per encrypted session (`OnePlus 12` on the test
+  phone). Use this seam for the non-resident Windows control window; do not add a background watcher.
 - **Wire/security:** `Noise_XX_25519_ChaChaPoly_BLAKE2s`, prologue `conduit/1`; encrypted
   protobuf envelopes; `MAX_FRAME = 65535`, usable plaintext `65519`.  Images/files use 32 KiB
   chunks to fit after protobuf framing.
@@ -168,7 +172,7 @@ See `docs/architecture.md` for full data flow and trust boundaries.
 ## Latest evidence
 
 - Android JVM tests: **25 passed, 0 failed**.
-- Windows daemon normal test run: **47 passed, 2 ignored, 0 failed**.
+- Windows daemon normal test run: **48 passed, 2 ignored, 0 failed**.
 - Compatible relay migration: **9 passed, 0 failed**, including legacy↔legacy, both mixed
   upgrade orders, explicit stale-role replacement, and legacy stale-phone replacement.
 - Production rollout: old↔old and old-phone↔new-desktop connected through the compatible relay;

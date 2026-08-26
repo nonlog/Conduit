@@ -12,6 +12,7 @@ mod control;
 mod explorer;
 mod file;
 mod image;
+mod status;
 mod toast;
 mod wire;
 
@@ -53,7 +54,10 @@ struct Metrics {
 /// Increments `closed` on drop — normal return, error, panic or task abort alike —
 /// so `created == closed` after quiesce holds without bookkeeping at every exit.
 /// That invariant is the entire reason this project exists.
-struct SessionGuard(Arc<Metrics>);
+struct SessionGuard {
+    metrics: Arc<Metrics>,
+    status: Arc<status::StatusFile>,
+}
 
 struct RelayArrival {
     stream: TcpStream,
@@ -68,12 +72,13 @@ struct PendingOutbound {
 
 impl Drop for SessionGuard {
     fn drop(&mut self) {
-        let closed = self.0.closed.fetch_add(1, Ordering::Relaxed) + 1;
+        self.status.disconnected();
+        let closed = self.metrics.closed.fetch_add(1, Ordering::Relaxed) + 1;
         info!(
-            created = self.0.created.load(Ordering::Relaxed),
+            created = self.metrics.created.load(Ordering::Relaxed),
             closed,
-            frames_in = self.0.frames_in.load(Ordering::Relaxed),
-            frames_out = self.0.frames_out.load(Ordering::Relaxed),
+            frames_in = self.metrics.frames_in.load(Ordering::Relaxed),
+            frames_out = self.metrics.frames_out.load(Ordering::Relaxed),
             "session closed"
         );
     }
@@ -197,8 +202,20 @@ async fn main() -> Result<()> {
             }
             return Ok(());
         }
+        if command == "status" && args.next().is_none() {
+            let dir = config_dir()?;
+            // The daemon itself owns 0.0.0.0:41112. Binding that exact address/port is a
+            // side-effect-free, on-demand liveness check; binding only loopback can succeed on
+            // Windows even while the wildcard listener exists and would therefore misreport.
+            let daemon_running = std::net::TcpListener::bind(("0.0.0.0", PORT)).is_err();
+            println!("daemon={}", if daemon_running { "running" } else { "stopped" });
+            if let Some(snapshot) = status::read(&dir) {
+                print!("{snapshot}");
+            }
+            return Ok(());
+        }
         bail!(
-            "unknown command {:?}; usage: conduit-daemon [send <file> | autostart <install|remove|status> | explorer <install|remove|status> | config ...]",
+            "unknown command {:?}; usage: conduit-daemon [send <file> | status | autostart <install|remove|status> | explorer <install|remove|status> | config ...]",
             command
         );
     }
@@ -206,6 +223,7 @@ async fn main() -> Result<()> {
     let dir = config_dir()?;
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let user_config = config::Config::load(&dir)?;
+    let desktop_status = Arc::new(status::StatusFile::new(&dir)?);
     let identity = wire::load_or_create_identity(&dir.join("identity.bin"))?;
     let device_id = wire::device_id(&identity.public);
     let fingerprint = wire::fingerprint(&identity.public);
@@ -304,8 +322,12 @@ async fn main() -> Result<()> {
         let toasts = toasts.clone();
         let outbound = outbound.clone();
         let relay_endpoint = relay_endpoint.clone();
+        let desktop_status = desktop_status.clone();
         active = Some(tokio::spawn(async move {
-            let _guard = SessionGuard(metrics.clone());
+            let _guard = SessionGuard {
+                metrics: metrics.clone(),
+                status: desktop_status.clone(),
+            };
             if let Err(e) = serve(
                 stream,
                 peer,
@@ -316,6 +338,7 @@ async fn main() -> Result<()> {
                 toasts.as_deref(),
                 via,
                 relay_endpoint.as_deref(),
+                &desktop_status,
             )
             .await
             {
@@ -374,6 +397,7 @@ async fn serve(
     // "lan" or "relay". Only the keepalive interval and the log line care.
     path: &'static str,
     relay_endpoint: Option<&str>,
+    desktop_status: &status::StatusFile,
 ) -> Result<()> {
     stream.set_nodelay(true)?;
     set_keepalive(&stream)?;
@@ -386,6 +410,11 @@ async fn serve(
         via = path,
         relay = relay_endpoint.unwrap_or("-"),
         "session up"
+    );
+    desktop_status.linked(
+        &wire::device_id(&session.peer_static),
+        path,
+        relay_endpoint,
     );
     // The phone has no other way to learn this machine's name. mDNS carries it, but a
     // relay session never sees an mDNS record — and off-LAN is precisely when a phone
@@ -641,6 +670,7 @@ async fn serve(
             pb::Kind::PairRequest => {
                 let hello = pb::PairRequest::decode(&envelope.payload[..])?;
                 info!(name = %hello.device_name, version = %hello.version, "peer named itself");
+                desktop_status.peer_name(&hello.device_name);
             }
             // A file, same leniency as an image: a refused offer costs the transfer and
             // nothing else. The session is also carrying the clipboard, and a phone that

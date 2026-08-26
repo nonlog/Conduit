@@ -26,7 +26,7 @@ compatible relay, and the installed Android/Windows endpoints now send explicit 
 | Area | Last recorded result | What it establishes | Limitation |
 | --- | --- | --- | --- |
 | Android JVM suite | **25 passed, 0 failed** | Noise transcript, frame limits, bounded/searchable history model, file/image validation including capture flags, throttled transfer-progress model, notification payload budget, wire behaviours, explicit initiator relay preamble, fake-IP relay fallback, passive multi-relay candidate/cooldown persistence, and file-publication result encoding. | No actual system-server hook, notification listener, Quick Settings host, or device radio lifecycle. |
-| Windows daemon | **47 passed, 2 ignored, 0 failed** on the last full normal run | Rust transport, clipboard/image/file/toast helpers, desktop→phone outbound-file validation, file-finalisation cleanup failures, screenshot semantics, resource-bound assertions, explicit responder relay preamble, multi-relay config parsing/parking, cancel/resume receive safety across an intervening Noise send, SOCKS5 relay domain routing, autostart command quoting, and Explorer verb command generation. | Ignored tests show real toasts and require interactive validation. |
+| Windows daemon | **48 passed, 2 ignored, 0 failed** on the last full normal run | Rust transport, clipboard/image/file/toast helpers, desktop→phone outbound-file validation, file-finalisation cleanup failures, screenshot semantics, resource-bound assertions, explicit responder relay preamble, multi-relay config parsing/parking, cancel/resume receive safety across an intervening Noise send, SOCKS5 relay domain routing, autostart/Explorer helpers, and event-driven control-surface status snapshots. | Ignored tests show real toasts and require interactive validation. |
 | Compatible relay migration | **9 passed, 0 failed** | Explicit-role splice, legacy 47-byte role inference without consuming Noise, both mixed upgrade orders, stale same-role replacement for new and legacy phones, dead-waiter recovery, and rendezvous isolation. | Production rollout is complete; long-duration M2 flap evidence and eventual legacy-path retirement remain. |
 | Noise interoperability | JVM transcript test + Rust `snow` fixture | The hand-written Android Noise XX agrees byte-for-byte with a reference implementation. | Does not replace live-network testing. |
 
@@ -230,6 +230,18 @@ cover both explicit-role peers and a deployed-format legacy phone reconnect.
   environment variable was removed. A daemon started with no process proxy variable logged
   `proxy="socks5://127.0.0.1:7891"`, connected to TYO with peer `127.0.0.1:7891`, and the phone
   remained `Linked to LOG`. Current config also records `relays=tyo.414222.xyz:41113`.
+
+### Event-driven Windows control-surface status foundation — 2026-08-26
+
+- The daemon now owns `%LOCALAPPDATA%\Conduit\status.txt`. It is rewritten only on actual session
+  transitions or when the phone supplies its display name; there is no watcher, polling timer, or
+  telemetry loop. `conduit-daemon status` reads the snapshot on demand.
+- Android now announces its system device name through the existing encrypted `PAIR_REQUEST` after
+  a completed Noise handshake, using the same single sender executor as every other outbound frame.
+  This adds one tiny frame per session and no idle work.
+- A real Relay session reported `daemon=running`, `state=linked`, `peer_name=OnePlus 12`,
+  `path=relay`, and `relay=tyo.414222.xyz:41113`. A controlled phone disconnect changed the snapshot
+  to `state=disconnected`; reconnect restored the full linked snapshot and `Linked to LOG`.
 
 ### Phone → PC file incident resolved — 2026-08-25
 
