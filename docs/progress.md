@@ -26,7 +26,7 @@ compatible relay, and the installed Android/Windows endpoints now send explicit 
 | Area | Last recorded result | What it establishes | Limitation |
 | --- | --- | --- | --- |
 | Android JVM suite | **25 passed, 0 failed** | Noise transcript, frame limits, bounded/searchable history model, file/image validation including capture flags, throttled transfer-progress model, notification payload budget, wire behaviours, explicit initiator relay preamble, fake-IP relay fallback, passive multi-relay candidate/cooldown persistence, and file-publication result encoding. | No actual system-server hook, notification listener, Quick Settings host, or device radio lifecycle. |
-| Windows daemon | **45 passed, 2 ignored, 0 failed** on the last full normal run | Rust transport, clipboard/image/file/toast helpers, desktop→phone outbound-file validation, file-finalisation cleanup failures, screenshot semantics, resource-bound assertions, explicit responder relay preamble, multi-relay config parsing/parking, cancel/resume receive safety across an intervening Noise send, and SOCKS5 relay domain routing. | Ignored tests show real toasts and require interactive validation. |
+| Windows daemon | **46 passed, 2 ignored, 0 failed** on the last full normal run | Rust transport, clipboard/image/file/toast helpers, desktop→phone outbound-file validation, file-finalisation cleanup failures, screenshot semantics, resource-bound assertions, explicit responder relay preamble, multi-relay config parsing/parking, cancel/resume receive safety across an intervening Noise send, SOCKS5 relay domain routing, and autostart command quoting. | Ignored tests show real toasts and require interactive validation. |
 | Compatible relay migration | **9 passed, 0 failed** | Explicit-role splice, legacy 47-byte role inference without consuming Noise, both mixed upgrade orders, stale same-role replacement for new and legacy phones, dead-waiter recovery, and rendezvous isolation. | Production rollout is complete; long-duration M2 flap evidence and eventual legacy-path retirement remain. |
 | Noise interoperability | JVM transcript test + Rust `snow` fixture | The hand-written Android Noise XX agrees byte-for-byte with a reference implementation. | Does not replace live-network testing. |
 
@@ -182,6 +182,21 @@ cover both explicit-role peers and a deployed-format legacy phone reconnect.
   content rather than synthetic benchmark traffic.
 - Only TYO currently has a public Conduit Relay listening on port 41113. US/WA/JP deployment and
   live cross-node selection remain separate outward-facing work.
+
+### Windows sign-in autostart — 2026-08-26
+
+- `conduit-daemon autostart install|remove|status` now manages one per-user
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Conduit` value. The Run command uses a
+  short-lived hidden Windows PowerShell process to `Start-Process` the console-subsystem daemon
+  hidden; PowerShell does not wait and therefore adds no steady-state process.
+- The daemon binds TCP 41112 immediately after identity load, before clipboard, toast, local-control
+  or Relay workers exist. That listener is also the single-instance gate. With one live daemon, a
+  second normal launch exited in **0.04 s** with `os error 10048`; process inspection still showed
+  exactly one daemon.
+- The real current-user Run value was installed on LOG and its hidden launch command was executed
+  manually as a login-equivalent check. It started exactly one daemon process successfully. The
+  current development Run value points at `D:\Workspace\Conduit\target\debug\conduit-daemon.exe`;
+  release packaging should reinstall it to the eventual stable installed path.
 
 ### Phone → PC file incident resolved — 2026-08-25
 

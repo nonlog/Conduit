@@ -40,9 +40,10 @@
 
 ### Windows operability / UX
 
-- [ ] **Windows daemon autostart at sign-in.**
-  - Start exactly one daemon instance.
-  - Avoid duplicate listener / Relay parker ownership.
+- [x] **Windows daemon autostart at sign-in.**
+  - Per-user HKCU Run entry starts the daemon hidden in the interactive login session.
+  - Early 41112 bind is the zero-extra-resource single-instance gate; duplicate launches exit before
+    clipboard/toast/Relay workers start.
 - [ ] **Thin Fluent Windows control surface.**
   - Separate process from the daemon.
   - Surface link status, peer identity, diagnostics, Relay/proxy configuration, and basic controls.

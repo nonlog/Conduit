@@ -41,6 +41,10 @@
    + sticky failover: Windows may park on all configured Relays; Android keeps one session and learns
    only from real connection/session/content-transfer events. Only TYO is deployed publicly today,
    so live cross-node production failover still waits for explicit deployment approval.
+8. Windows sign-in autostart is installed for the current user through HKCU Run. The current value
+   points to the development binary under `D:\Workspace\Conduit\target\debug`; reinstall the entry
+   when a stable packaged path exists. The daemon binds 41112 before starting long-lived workers, so
+   duplicate manual/login launches fail fast instead of owning a second clipboard/Relay stack.
 
 ## Documentation created in this pass
 
@@ -155,7 +159,7 @@ See `docs/architecture.md` for full data flow and trust boundaries.
 ## Latest evidence
 
 - Android JVM tests: **25 passed, 0 failed**.
-- Windows daemon normal test run: **45 passed, 2 ignored, 0 failed**.
+- Windows daemon normal test run: **46 passed, 2 ignored, 0 failed**.
 - Compatible relay migration: **9 passed, 0 failed**, including legacy↔legacy, both mixed
   upgrade orders, explicit stale-role replacement, and legacy stale-phone replacement.
 - Production rollout: old↔old and old-phone↔new-desktop connected through the compatible relay;

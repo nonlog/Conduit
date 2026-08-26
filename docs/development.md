@@ -321,6 +321,23 @@ zero exit code therefore means remote publication, not merely local queue accept
 session, receiver refusal, or publication timeout returns an error to the caller. File chunks still
 stream without per-chunk acknowledgements.
 
+### Windows sign-in autostart
+
+The daemon owns its user-session autostart entry directly:
+
+```powershell
+conduit-daemon.exe autostart install
+conduit-daemon.exe autostart status
+conduit-daemon.exe autostart remove
+```
+
+This is an HKCU `Run` entry, not a Windows Service: clipboard and Toast integration belong to the
+interactive user session. The registered command launches the console-subsystem daemon through one
+short-lived hidden Windows PowerShell `Start-Process`, so no console flashes at login and no shell
+process remains resident. A normal daemon binds 41112 before creating any other long-lived worker;
+if another daemon already owns it, the duplicate exits immediately. Re-run `autostart install` after
+moving/installing the executable so the Run value follows the stable binary path.
+
 Do not infer a completed transfer or live session solely from a stale buffered daemon log.
 Confirm current timestamps and filesystem state after the transfer has had time to finish.
 

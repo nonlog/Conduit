@@ -5,6 +5,7 @@
 //! neither a thread nor a timer per message.
 
 mod advert;
+mod autostart;
 mod clip;
 mod control;
 mod file;
@@ -97,7 +98,29 @@ async fn main() -> Result<()> {
             println!("Sent to phone: {}", path.display());
             return Ok(());
         }
-        bail!("unknown command {:?}; usage: conduit-daemon [send <file>]", command);
+        if command == "autostart" {
+            let action = args.next().context("usage: conduit-daemon autostart <install|remove|status>")?;
+            if args.next().is_some() {
+                bail!("usage: conduit-daemon autostart <install|remove|status>");
+            }
+            match action.to_string_lossy().as_ref() {
+                "install" => println!("Autostart installed: {}", autostart::install()?),
+                "remove" => println!(
+                    "Autostart {}",
+                    if autostart::remove()? { "removed" } else { "was not installed" }
+                ),
+                "status" => match autostart::status() {
+                    Some(value) => println!("Autostart installed: {value}"),
+                    None => println!("Autostart not installed"),
+                },
+                _ => bail!("usage: conduit-daemon autostart <install|remove|status>"),
+            }
+            return Ok(());
+        }
+        bail!(
+            "unknown command {:?}; usage: conduit-daemon [send <file> | autostart <install|remove|status>]",
+            command
+        );
     }
 
     let dir = config_dir()?;
@@ -106,6 +129,14 @@ async fn main() -> Result<()> {
     let device_id = wire::device_id(&identity.public);
     let fingerprint = wire::fingerprint(&identity.public);
     info!(id = %device_id, %fingerprint, "identity");
+
+    // Bind before creating clipboard/toast/control workers. Besides being the LAN listener, this
+    // is the process's zero-extra-resource single-instance gate: a manual launch racing the Run
+    // entry exits here before it can own any long-lived Conduit resource.
+    let listener = TcpListener::bind(("0.0.0.0", PORT))
+        .await
+        .with_context(|| format!("binding Conduit listener on port {PORT}; is another daemon running?"))?;
+    info!(port = PORT, "listening");
 
     let metrics = Arc::new(Metrics::default());
     // One listener thread for the process, started before the socket so a clip copied
@@ -129,8 +160,6 @@ async fn main() -> Result<()> {
             warn!(error = %e, "local control pipe stopped");
         }
     });
-    let listener = TcpListener::bind(("0.0.0.0", PORT)).await?;
-    info!(port = PORT, "listening");
     // Bound, not dropped: this is what the phone's discovery burst finds. Advertised
     // only once the socket is accepting, so a resolve is never answered by a refusal.
     let _advert = advert::Advert::start(PORT, &device_id, &fingerprint)?;
