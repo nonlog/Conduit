@@ -44,11 +44,16 @@
   - Per-user HKCU Run entry starts the daemon hidden in the interactive login session.
   - Early 41112 bind is the zero-extra-resource single-instance gate; duplicate launches exit before
     clipboard/toast/Relay workers start.
-- [ ] **Thin Fluent Windows control surface.**
-  - Separate process from the daemon.
-  - Surface link status, peer identity, diagnostics, Relay/proxy configuration, and basic controls.
-  - Foundation complete: event-written `status.txt`, `conduit-daemon status`, and persistent
-    `config.txt` mean the UI can remain entirely on-demand with zero resident polling process.
+- [x] **Thin Windows control surface — functional on-demand implementation complete.**
+  - `conduit-control.exe` is a separate GUI-subsystem process from the daemon and exits completely
+    when the window closes; there is no tray process, timer, watcher, or resident UI framework.
+  - It surfaces live snapshot state/phone/path/Relay, Relay/proxy configuration, autostart and
+    Explorer integration, plus manual Refresh/diagnostics actions.
+  - Event-written `status.txt` and startup-read `config.txt` remain the only state seams.
+- [ ] **Fluent visual polish for the Windows control surface.**
+  - Current native Win32 layout is deliberately lightweight and functional but still visually
+    conservative/classic. Improve spacing/typography/control styling without introducing a
+    resident WinUI process or background refresh loop.
 - [x] **Explorer / shell file-send integration.**
   - HKCU file context menu uses a tiny on-demand `conduit-send.exe` GUI helper.
   - The helper starts no transport; it invokes the existing hidden `send <path>` CLI, which reuses

@@ -243,6 +243,24 @@ cover both explicit-role peers and a deployed-format legacy phone reconnect.
   `path=relay`, and `relay=tyo.414222.xyz:41113`. A controlled phone disconnect changed the snapshot
   to `state=disconnected`; reconnect restored the full linked snapshot and `Linked to LOG`.
 
+### On-demand Windows control surface — 2026-08-26
+
+- `conduit-control.exe` is a separate GUI-subsystem binary. It owns no socket, notification thread,
+  tray icon, watcher, periodic refresh timer, or transport state. The window reads `status.txt` and
+  `config.txt` on open and only rereads them when the user selects **Refresh**.
+- The current window shows daemon/link state, phone name, path/Relay, Relay endpoint list, SOCKS5
+  proxy, autostart state, Explorer integration, Save/Refresh, and diagnostics-folder access. Saving
+  writes the same `config.txt` that the daemon already reads on its next start; toggles invoke the
+  existing daemon integration commands rather than adding a second settings backend.
+- A real launch displayed `Desktop daemon: Running`, `Link: linked`, `Phone: OnePlus 12`, and
+  `Path: relay · tyo.414222.xyz:41113`, with the current Mihomo proxy and both installed integration
+  checkboxes. Sending WM_CLOSE through `CloseMainWindow()` returned true and process count became
+  **0**, proving the UI does not become a hidden resident process.
+- The first visual pass uses native Win32 controls, white event-driven content, Segoe/system font,
+  flat buttons and Windows theme hints. It is intentionally not yet claimed as final Fluent polish;
+  that visual-only refinement remains in TODO rather than pulling a heavy always-loaded UI stack
+  into the product.
+
 ### Phone → PC file incident resolved — 2026-08-25
 
 The earlier backlog entry described a roughly 259,737-byte receive as “logged completed but

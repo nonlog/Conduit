@@ -66,9 +66,9 @@ same authoritative state as the architecture/progress/backlog records.
 ## Repository state at handoff
 
 ```text
-latest functional commit: 2c95ade Persist Windows relay configuration
+latest functional commit: 26427af Add on-demand Windows control surface
 origin/master:             1c7e18c Send files from the share sheet, and stop toasting what the phone silenced
-recent feature commits:    eb31c73 Explorer send; edb0650 autostart; 7d5db21 Android system bars
+recent feature commits:    d0ef970 event status; eb31c73 Explorer send; edb0650 autostart
 ```
 
 Local `master` includes the tested persistence fix, screenshot implementation, compatible relay
@@ -117,7 +117,9 @@ history is independently verified.
 - **Control-surface seam:** `%LOCALAPPDATA%\Conduit\status.txt` is an event-written snapshot, not a
   polled status service. `conduit-daemon status` currently reports daemon/link/phone/path/Relay state
   on demand. Android announces its device name once per encrypted session (`OnePlus 12` on the test
-  phone). Use this seam for the non-resident Windows control window; do not add a background watcher.
+  phone). `conduit-control.exe` now consumes this seam as an on-demand GUI and exits fully when its
+  window closes. Do not turn it into a tray app/background watcher. Functional UI is complete;
+  lighter Fluent visual refinement remains separate TODO work.
 - **Wire/security:** `Noise_XX_25519_ChaChaPoly_BLAKE2s`, prologue `conduit/1`; encrypted
   protobuf envelopes; `MAX_FRAME = 65535`, usable plaintext `65519`.  Images/files use 32 KiB
   chunks to fit after protobuf framing.
