@@ -5,9 +5,13 @@ import com.conduit.sync.proto.Kind
 import java.io.DataOutputStream
 import java.io.PipedInputStream
 import java.io.PipedOutputStream
+import java.net.InetAddress
+import java.net.UnknownHostException
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -24,6 +28,26 @@ class WireSessionTest {
         assertEquals('>'.code.toByte(), preamble[4])
         assertArrayEquals(id.toByteArray(), preamble.copyOfRange(5, preamble.size))
         assertThrows(IllegalArgumentException::class.java) { relayPreamble("short") }
+    }
+
+    @Test
+    fun relayFakeIpFallbackIsNarrowAndDeterministic() {
+        val public = InetAddress.getByName("138.3.214.175")
+        val fallback = "138.3.214.175"
+        assertEquals(public, relayTargetAddress(public, "203.0.113.9"))
+        assertFalse(isVpnFakeIp(public))
+
+        for (fake in listOf("198.18.0.137", "198.19.255.254")) {
+            val address = InetAddress.getByName(fake)
+            assertTrue(isVpnFakeIp(address))
+            assertEquals(public, relayTargetAddress(address, fallback))
+        }
+
+        assertFalse(isVpnFakeIp(InetAddress.getByName("198.20.0.1")))
+        assertFalse(isVpnFakeIp(InetAddress.getByName("2001:db8::1")))
+        assertThrows(UnknownHostException::class.java) {
+            relayTargetAddress(InetAddress.getByName("198.18.1.1"), null)
+        }
     }
 
     @Test

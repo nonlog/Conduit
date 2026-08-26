@@ -79,6 +79,14 @@ notification, image, or file contents.
 4. Relay use requires the desktop's remembered device ID, obtained from a prior completed
    direct handshake.  An unpaired phone must pair on a LAN first.
 
+The relay remains configured by hostname (`tyo.414222.xyz`). On the tested phone, Bettbox uses
+the benchmark range `198.18.0.0/15` as fake-IP DNS. During an underlying Wi-Fi/cellular handover,
+that local fake mapping can accept a connect and fail it before any preamble reaches TYO. Android
+therefore treats **only** a `198.18/15` answer for the relay as synthetic and substitutes the
+relay's pinned public fallback (`138.3.214.175`). Ordinary public DNS answers are left untouched.
+The resulting socket is still a normal Android `Socket`, so VPN/routing policy continues to own
+the data path; the fallback bypasses the broken fake address, not the VPN.
+
 A network loss closes the active socket but preserves the Android `Link` object and its
 single sender executor.  This is deliberate: reconnecting reuses those resources instead of
 creating a fresh transport stack.  Retries are one bounded `Handler` callback with

@@ -8,7 +8,9 @@ import com.conduit.sync.proto.Envelope
 import com.conduit.sync.proto.Kind
 import com.conduit.sync.proto.PairRequest
 import java.net.InetSocketAddress
+import java.net.InetAddress
 import java.net.Socket
+import java.net.UnknownHostException
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
@@ -54,6 +56,28 @@ internal fun relayPreamble(rendezvous: String): ByteArray {
 
 private fun relayIdChar(c: Char): Boolean =
     c in 'A'..'Z' || c in 'a'..'z' || c in '0'..'9' || c == '-' || c == '_'
+
+/**
+ * Replaces only Android/VPN benchmark-range fake DNS with the relay's known public fallback.
+ * A normal public answer is returned unchanged, so the hostname remains authoritative whenever
+ * the resolver is honest.
+ */
+internal fun relayTargetAddress(resolved: InetAddress, fallbackIp: String?): InetAddress {
+    if (!isVpnFakeIp(resolved)) return resolved
+    return fallbackIp?.let(InetAddress::getByName)
+        ?: throw UnknownHostException(
+            "relay resolved to VPN fake IP ${resolved.hostAddress}; no fallback configured",
+        )
+}
+
+/** 198.18.0.0/15 is the benchmark range commonly used by Android fake-IP VPN DNS. */
+internal fun isVpnFakeIp(address: InetAddress): Boolean {
+    val bytes = address.address
+    if (bytes.size != 4) return false
+    val first = bytes[0].toInt() and 0xff
+    val second = bytes[1].toInt() and 0xff
+    return first == 198 && (second == 18 || second == 19)
+}
 
 
 /**
@@ -203,7 +227,7 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
     }
 
     /** Dials on the reader thread. A no-op while a connection is already up. */
-    fun connect(address: InetSocketAddress) = dial(address, null)
+    fun connect(address: InetSocketAddress) = dial(address, null, null)
     /**
      * Parks at the relay under [rendezvous] and waits to be spliced onto the desktop.
      *
@@ -211,15 +235,16 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
      * changes which address is dialled and adds a 48-byte role-aware preamble, so nothing
      * about the `opened == closed` invariant depends on which path was taken.
      */
-    fun connectVia(relay: InetSocketAddress, rendezvous: String) = dial(relay, rendezvous)
+    fun connectVia(relay: InetSocketAddress, rendezvous: String, fallbackIp: String? = null) =
+        dial(relay, rendezvous, fallbackIp)
 
-    private fun dial(address: InetSocketAddress, rendezvous: String?) = sender.execute {
+    private fun dial(address: InetSocketAddress, rendezvous: String?, fallbackIp: String?) = sender.execute {
         if (reader?.isAlive == true) {
             Log.d(TAG, "already connected, ignoring dial to $address")
             return@execute
         }
         events.onState(LinkState.Discovering, null)
-        reader = Thread({ pump(address, rendezvous) }, "conduit-recv").apply { start() }
+        reader = Thread({ pump(address, rendezvous, fallbackIp) }, "conduit-recv").apply { start() }
     }
 
     /**
@@ -273,7 +298,7 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
         reader = null
     }
 
-    private fun pump(address: InetSocketAddress, rendezvous: String?) {
+    private fun pump(address: InetSocketAddress, rendezvous: String?, fallbackIp: String?) {
         val count = opened.incrementAndGet()
         Log.i(TAG, "session $count opened: opened=$count closed=${closed.get()}")
         var established = false
@@ -287,9 +312,27 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
                     if (rendezvous == null) READ_DEADLINE_MS else RELAY_READ_DEADLINE_MS
                 // The relay arrives as a hostname, and resolving it blocks. This is the
                 // one thread here that is allowed to, so it is resolved here rather than
-                // on the connectivity callback that asked for the dial.
+                // on the connectivity callback that asked for the dial. Some Android VPNs
+                // use 198.18/15 fake-IP DNS. That mapping can become a dead local TCP sink
+                // during an underlying network handover, so only that unmistakable result
+                // is replaced with the relay's pinned public fallback. The actual socket is
+                // still an ordinary Socket, so Android/VPN routing remains in force.
                 val target = if (address.isUnresolved) {
-                    InetSocketAddress(address.hostName, address.port)
+                    val host = address.hostString
+                    val resolved = resolve(host)
+                    val targetAddress = if (rendezvous != null) {
+                        val fallback = relayTargetAddress(resolved, fallbackIp)
+                        if (fallback != resolved) {
+                        Log.i(
+                            TAG,
+                            "relay DNS $host -> fake ${resolved.hostAddress}; using ${fallback.hostAddress}",
+                        )
+                        }
+                        fallback
+                    } else {
+                        resolved
+                    }
+                    InetSocketAddress(targetAddress, address.port)
                 } else {
                     address
                 }
@@ -318,7 +361,9 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
                 while (true) dispatch(live.recv())
             }
         } catch (t: Throwable) {
-            Log.w(TAG, "session $count ended", t)
+            // Some OEM log pipelines drop Throwable stack continuations from logcat. Keep the
+            // class/message in the first line so field diagnostics still say what failed.
+            Log.w(TAG, "session $count ended: ${t.javaClass.name}: ${t.message}", t)
         } finally {
             session = null
             socket = null
@@ -329,6 +374,13 @@ class Link(private val privateKey: ByteArray, private val events: Events) {
             Log.i(TAG, "session $count closed: opened=$count closed=${closed.incrementAndGet()}")
             if (established) events.onSessionLost()
         }
+    }
+
+    private fun resolve(host: String): InetAddress = try {
+        InetAddress.getByName(host)
+    } catch (t: Throwable) {
+        Log.w(TAG, "relay DNS $host failed: ${t.javaClass.name}: ${t.message}")
+        throw t
     }
 
     private fun dispatch(envelope: Envelope) {

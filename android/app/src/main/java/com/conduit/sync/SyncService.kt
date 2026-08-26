@@ -28,6 +28,12 @@ private const val PORT = 41112
 /** Ours, in Tokyo. Must match `RELAY` in the daemon's `main.rs`. */
 private const val RELAY_HOST = "tyo.414222.xyz"
 private const val RELAY_PORT = 41113
+/**
+ * Only used when a VPN resolves [RELAY_HOST] into the fake-IP benchmark range 198.18/15.
+ * Normal DNS keeps using the hostname, so a future relay move needs this updated only for
+ * fake-IP VPN users rather than turning the endpoint into a permanently pinned address.
+ */
+private const val RELAY_FALLBACK_IPV4 = "138.3.214.175"
 
 /** Matches the desktop's ceiling; a longer clip is skipped, never truncated. */
 private const val MAX_TEXT = 64_000
@@ -367,7 +373,11 @@ class SyncService : Service() {
             return
         }
         LinkStatus.path = "Relay"
-        link.connectVia(InetSocketAddress.createUnresolved(RELAY_HOST, RELAY_PORT), peer)
+        link.connectVia(
+            InetSocketAddress.createUnresolved(RELAY_HOST, RELAY_PORT),
+            peer,
+            RELAY_FALLBACK_IPV4,
+        )
     }
 
     /** First handshake with a given desktop is the only one that writes. */
