@@ -19,18 +19,24 @@
 
 use anyhow::{anyhow, Context, Result};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
+use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
-use windows::core::HSTRING;
+use windows::core::{HSTRING, Interface};
+use windows::Foundation::{IPropertyValue, TypedEventHandler};
 use windows::ApplicationModel::DataTransfer::SharedStorageAccessManager;
 use windows::Data::Xml::Dom::XmlDocument;
 use windows::Storage::StorageFile;
 use windows::UI::Notifications::{
-    NotificationData, ToastNotification, ToastNotificationManager, ToastNotifier,
+    NotificationData, ToastActivatedEventArgs, ToastNotification, ToastNotificationManager,
+    ToastNotifier,
 };
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
+
+use crate::wire::pb;
 
 /// Must match the registry key below. Reverse-DNS-ish because that is the convention
 /// Windows uses for AUMIDs and it keeps us out of anyone else's namespace.
@@ -142,6 +148,12 @@ pub enum Cmd {
         app_icon: Vec<u8>,
         /// The contact photo, when the notification carried one. Empty otherwise.
         avatar: Vec<u8>,
+        /// Bounded on Android to at most five descriptors. PendingIntents stay on Android;
+        /// Windows gets only labels, indexes and a possible free-form reply key.
+        actions: Vec<pb::NotifActionDesc>,
+        /// An already-visible Android notification changed structural action metadata. Rebuild the
+        /// same Windows tag silently rather than generating a second popup merely to refresh buttons.
+        suppress_popup: bool,
     },
     /// Same key, new text. Silent — Windows does not re-alert on an update, which is the
     /// point: a chat thread gaining a message should not pop a second time.
@@ -262,7 +274,7 @@ pub struct Notifier {
 impl Notifier {
     /// `cache` is where the phone's icons are written; a toast image can only be named by
     /// URI, so they have to land somewhere the shell can read them.
-    pub fn start(cache: &Path) -> Result<Self> {
+    pub fn start(cache: &Path, action_tx: broadcast::Sender<pb::NotifAction>) -> Result<Self> {
         register_aumid().context("registering the toast AppUserModelID")?;
         let cache = Cache::prepare(cache).context("preparing the toast icon cache")?;
 
@@ -283,7 +295,7 @@ impl Notifier {
                 match ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(AUMID)) {
                     Ok(notifier) => {
                         if ready_tx.send(Ok(())).is_ok() {
-                            pump(&notifier, &cache, rx);
+                            pump(&notifier, &cache, rx, action_tx);
                         }
                     }
                     Err(e) => {
@@ -327,11 +339,19 @@ impl Drop for Notifier {
     }
 }
 
-fn pump(notifier: &ToastNotifier, cache: &Cache, rx: mpsc::Receiver<Cmd>) {
+fn pump(
+    notifier: &ToastNotifier,
+    cache: &Cache,
+    rx: mpsc::Receiver<Cmd>,
+    action_tx: broadcast::Sender<pb::NotifAction>,
+) {
     // The broker token for the phone capture currently on screen. At most one is ever
     // outstanding, because a new capture replaces the toast that named the old one — so
     // this is a slot, not a collection, and it cannot grow over a long run.
     let mut staged: Option<String> = None;
+    // A ToastNotification owns its Activated delegate. Keep only currently mirrored toasts alive,
+    // with the same hard ceiling Android already uses for remembered notification keys.
+    let mut actionable: HashMap<String, ToastNotification> = HashMap::new();
     while let Ok(cmd) = rx.recv() {
         let result = match cmd {
             Cmd::Show {
@@ -342,6 +362,8 @@ fn pump(notifier: &ToastNotifier, cache: &Cache, rx: mpsc::Receiver<Cmd>) {
                 body,
                 app_icon,
                 avatar,
+                actions,
+                suppress_popup,
             } => {
                 // A cache write that fails costs the toast its picture, nothing more, so
                 // the logo is resolved leniently and the toast still shows.
@@ -351,10 +373,38 @@ fn pump(notifier: &ToastNotifier, cache: &Cache, rx: mpsc::Receiver<Cmd>) {
                         warn!(error = %e, "could not cache the notification icon");
                         None
                     });
-                show(notifier, &key, &app, &title, &body, logo.as_deref())
+                match show(
+                    notifier,
+                    &key,
+                    &app,
+                    &title,
+                    &body,
+                    logo.as_deref(),
+                    &actions,
+                    suppress_popup,
+                    &action_tx,
+                ) {
+                    Ok(toast) => {
+                        if let Some(toast) = toast {
+                            if actionable.len() >= 256 && !actionable.contains_key(&key) {
+                                if let Some(evict) = actionable.keys().next().cloned() {
+                                    actionable.remove(&evict);
+                                }
+                            }
+                            actionable.insert(key, toast);
+                        } else {
+                            actionable.remove(&key);
+                        }
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                }
             }
             Cmd::Update { key, title, body } => update(notifier, &key, &title, &body),
-            Cmd::Hide { key } => hide(&key),
+            Cmd::Hide { key } => {
+                actionable.remove(&key);
+                hide(&key)
+            }
             Cmd::Photo { path } => show_capture(notifier, &path, &mut staged, false),
             Cmd::Screenshot { path } => show_capture(notifier, &path, &mut staged, true),
             Cmd::File { path } => show_file(notifier, &path),
@@ -379,18 +429,68 @@ fn show(
     title: &str,
     body: &str,
     logo: Option<&Path>,
-) -> Result<()> {
+    actions: &[pb::NotifActionDesc],
+    suppress_popup: bool,
+    action_tx: &broadcast::Sender<pb::NotifAction>,
+) -> Result<Option<ToastNotification>> {
     let xml = XmlDocument::new()?;
-    xml.LoadXml(&HSTRING::from(show_xml(app, logo)))?;
+    xml.LoadXml(&HSTRING::from(show_xml(app, logo, actions)))?;
 
     let toast = ToastNotification::CreateToastNotification(&xml)?;
     let tag = tag_for(key);
     toast.SetTag(&HSTRING::from(&tag))?;
     toast.SetGroup(&HSTRING::from(GROUP))?;
     toast.SetData(&data(title, body)?)?;
+    toast.SetSuppressPopup(suppress_popup)?;
+    if !actions.is_empty() {
+        let key = key.to_owned();
+        let actions = actions.to_vec();
+        let action_tx = action_tx.clone();
+        let handler = TypedEventHandler::<ToastNotification, windows::core::IInspectable>::new(
+            move |_sender, args| {
+                let Some(args) = &*args else { return Ok(()) };
+                let args: ToastActivatedEventArgs = args.cast()?;
+                let arguments = args.Arguments()?.to_string();
+                let Some(index) = parse_action_index(&arguments) else {
+                    return Ok(())
+                };
+                let Some(desc) = actions.iter().find(|action| action.index == index) else {
+                    return Ok(())
+                };
+                let reply = if desc.has_remote_input {
+                    let input = args.UserInput()?;
+                    if input.HasKey(&HSTRING::from("reply"))? {
+                        input
+                            .Lookup(&HSTRING::from("reply"))?
+                            .cast::<IPropertyValue>()?
+                            .GetString()?
+                            .to_string()
+                            .trim_end_matches(['\r', '\n'])
+                            .to_owned()
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                };
+                let action = pb::NotifAction {
+                    key: key.clone(),
+                    action_index: index,
+                    reply_text: reply,
+                    action_label: desc.label.clone(),
+                    result_key: desc.result_key.clone(),
+                };
+                // No active Noise session means no broadcast receiver; send then fails and the
+                // click is discarded instead of being queued for a later, potentially stale session.
+                let _ = action_tx.send(action);
+                Ok(())
+            },
+        );
+        toast.Activated(&handler)?;
+    }
     notifier.Show(&toast)?;
-    debug!(%tag, logo = logo.is_some(), "toast shown");
-    Ok(())
+    debug!(%tag, logo = logo.is_some(), suppress_popup, "toast shown");
+    Ok((!actions.is_empty()).then_some(toast))
 }
 
 /// Split out so the markup can be checked without a notifier, the same as [`photo_xml`].
@@ -399,7 +499,7 @@ fn show(
 /// bound — which also settles what [`update`] can do: a later message in the same thread
 /// rewrites the text and keeps the picture the first one arrived with. Re-showing to change
 /// a face would pop and re-alert, which is the thing update exists to avoid.
-fn show_xml(app: &str, logo: Option<&Path>) -> String {
+fn show_xml(app: &str, logo: Option<&Path>, actions: &[pb::NotifActionDesc]) -> String {
     let image = match logo {
         // Circle-cropped because that is what the slot is for, and because an Android
         // adaptive icon has already been drawn through the platform's own round mask.
@@ -409,6 +509,7 @@ fn show_xml(app: &str, logo: Option<&Path>) -> String {
         ),
         None => String::new(),
     };
+    let actions = action_xml(actions);
     format!(
         r#"<toast>
              <visual>
@@ -419,9 +520,48 @@ fn show_xml(app: &str, logo: Option<&Path>) -> String {
                  <text placement="attribution">{}</text>
                </binding>
              </visual>
+             {actions}
            </toast>"#,
         escape(app)
     )
+}
+
+fn action_xml(actions: &[pb::NotifActionDesc]) -> String {
+    if actions.is_empty() {
+        return String::new();
+    }
+    let remote_position = actions.iter().position(|action| action.has_remote_input);
+    let mut xml = String::from("<actions>");
+    if remote_position.is_some() {
+        xml.push_str(r#"<input id="reply" type="text" placeHolderContent="Reply"/>"#);
+    }
+    for (position, action) in actions.iter().enumerate() {
+        if action.label.is_empty() {
+            continue;
+        }
+        // Windows supplies one free-form text box per toast in this design. Preserve ordinary
+        // buttons, but expose only the first Android free-form reply action rather than attaching
+        // the wrong text field to a later one.
+        if action.has_remote_input && Some(position) != remote_position {
+            continue;
+        }
+        let input = if action.has_remote_input {
+            r#" hint-inputId="reply""#
+        } else {
+            ""
+        };
+        xml.push_str(&format!(
+            r#"<action content="{}" arguments="action={}" activationType="foreground"{input}/>"#,
+            escape(&action.label),
+            action.index,
+        ));
+    }
+    xml.push_str("</actions>");
+    xml
+}
+
+fn parse_action_index(arguments: &str) -> Option<u32> {
+    arguments.strip_prefix("action=")?.parse().ok()
 }
 
 /// A phone-capture toast: the picture itself, and a click that opens it in Snipping Tool.
@@ -771,7 +911,7 @@ mod tests {
         let logo = Path::new(r"C:\Users\a b\Conduit\icons\deadbeef.png");
 
         let xml = XmlDocument::new()?;
-        xml.LoadXml(&HSTRING::from(show_xml("WeChat", Some(logo))))?;
+        xml.LoadXml(&HSTRING::from(show_xml("WeChat", Some(logo), &[])))?;
         let images = xml.GetElementsByTagName(&HSTRING::from("image"))?;
         assert_eq!(images.Length()?, 1, "the toast has no logo element");
         let image = images.GetAt(0)?;
@@ -791,8 +931,44 @@ mod tests {
 
         // No icon yet: still a valid toast, just a bare one.
         let plain = XmlDocument::new()?;
-        plain.LoadXml(&HSTRING::from(show_xml("WeChat", None)))?;
+        plain.LoadXml(&HSTRING::from(show_xml("WeChat", None, &[])))?;
         assert_eq!(plain.GetElementsByTagName(&HSTRING::from("image"))?.Length()?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn notification_actions_parse_escape_and_expose_only_one_reply_box() -> Result<()> {
+        crate::image::ensure_mta();
+        let actions = vec![
+            pb::NotifActionDesc {
+                label: "Reply & send".into(),
+                index: 3,
+                has_remote_input: true,
+                result_key: "message".into(),
+            },
+            pb::NotifActionDesc {
+                label: "Second reply".into(),
+                index: 4,
+                has_remote_input: true,
+                result_key: "other".into(),
+            },
+            pb::NotifActionDesc {
+                label: "Mark <read>".into(),
+                index: 7,
+                has_remote_input: false,
+                result_key: String::new(),
+            },
+        ];
+        let xml = XmlDocument::new()?;
+        xml.LoadXml(&HSTRING::from(show_xml("Chat", None, &actions)))?;
+        assert_eq!(xml.GetElementsByTagName(&HSTRING::from("input"))?.Length()?, 1);
+        let buttons = xml.GetElementsByTagName(&HSTRING::from("action"))?;
+        assert_eq!(buttons.Length()?, 2, "later RemoteInput action must be omitted");
+        assert!(show_xml("Chat", None, &actions).contains("Reply &amp; send"));
+        assert!(show_xml("Chat", None, &actions).contains("Mark &lt;read&gt;"));
+        assert_eq!(parse_action_index("action=7"), Some(7));
+        assert_eq!(parse_action_index("action=nope"), None);
+        assert_eq!(parse_action_index("launch=7"), None);
         Ok(())
     }
 
@@ -883,7 +1059,8 @@ mod tests {
         println!("token: {token}");
         println!("launch: {}", snip_url(&token));
 
-        let notifier = Notifier::start(&scratch("photo"))?;
+        let (action_tx, _) = broadcast::channel(4);
+        let notifier = Notifier::start(&scratch("photo"), action_tx)?;
         notifier.post(Cmd::Photo { path });
         std::thread::sleep(std::time::Duration::from_millis(2000));
         assert!(
@@ -908,7 +1085,8 @@ mod tests {
     fn a_toast_shows_updates_and_withdraws() -> Result<()> {
         let key = "0|com.conduit.test|1|null|10000";
         let tag = tag_for(key);
-        let notifier = Notifier::start(&scratch("live"))?;
+        let (action_tx, _) = broadcast::channel(4);
+        let notifier = Notifier::start(&scratch("live"), action_tx)?;
         // A real 96 px square, the size the phone sends, so the logo slot is exercised by
         // something the shell will actually decode rather than a path to nothing.
         crate::image::ensure_mta();
@@ -922,6 +1100,8 @@ mod tests {
             body: "If this reads First title, data binding renders.".into(),
             app_icon: icon,
             avatar: Vec::new(),
+            actions: Vec::new(),
+            suppress_popup: false,
         });
         std::thread::sleep(std::time::Duration::from_millis(1500));
         assert!(in_history(&tag)?, "Show did not reach Action Center");
@@ -946,6 +1126,69 @@ mod tests {
         notifier.post(Cmd::Hide { key: key.into() });
         std::thread::sleep(std::time::Duration::from_millis(1500));
         assert!(!in_history(&tag)?, "Hide left the toast behind");
+        Ok(())
+    }
+
+    /// Answers the architecture question for mirrored notification actions without registering a
+    /// COM activator: while the resident daemon is alive, does a foreground toast action invoke the
+    /// ToastNotification::Activated event and carry the text input? If this passes on the target
+    /// Windows build, Conduit can keep activation inside its already-resident toast thread rather
+    /// than adding another local-server process.
+    #[test]
+    #[ignore = "shows an interactive toast; enter text and select Send"]
+    fn a_live_toast_activation_returns_action_and_user_input() -> Result<()> {
+        crate::image::ensure_mta();
+        register_aumid()?;
+        let notifier = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(AUMID))?;
+        let xml = XmlDocument::new()?;
+        xml.LoadXml(&HSTRING::from(
+            r#"<toast>
+                 <visual><binding template="ToastGeneric">
+                   <text>Conduit action self-test</text>
+                   <text>Type a reply, then select Send.</text>
+                 </binding></visual>
+                 <actions>
+                   <input id="reply" type="text" placeHolderContent="Reply text"/>
+                   <action content="Send" arguments="action=7" activationType="foreground" hint-inputId="reply"/>
+                 </actions>
+               </toast>"#,
+        ))?;
+        let toast = ToastNotification::CreateToastNotification(&xml)?;
+        toast.SetTag(&HSTRING::from("activation-test"))?;
+        toast.SetGroup(&HSTRING::from(GROUP))?;
+
+        let (tx, rx) = std::sync::mpsc::channel::<(String, String)>();
+        let handler = TypedEventHandler::<ToastNotification, windows::core::IInspectable>::new(
+            move |_sender, args| {
+                let Some(args) = &*args else { return Ok(()) };
+                let args: ToastActivatedEventArgs = args.cast()?;
+                let arguments = args.Arguments()?.to_string();
+                let input = args.UserInput()?;
+                let reply = if input.HasKey(&HSTRING::from("reply"))? {
+                    input
+                        .Lookup(&HSTRING::from("reply"))?
+                        .cast::<IPropertyValue>()?
+                        .GetString()?
+                        .to_string()
+                } else {
+                    String::new()
+                };
+                let _ = tx.send((arguments, reply));
+                Ok(())
+            },
+        );
+        let token = toast.Activated(&handler)?;
+        notifier.Show(&toast)?;
+        println!("toast is up — enter any text and select Send within 60 seconds");
+
+        let (arguments, reply) = rx
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .context("the running process never received the toast activation")?;
+        toast.RemoveActivated(token)?;
+        hide("activation-test")?;
+        println!("arguments={arguments:?} reply={reply:?}");
+        assert_eq!(arguments, "action=7");
+        assert!(!reply.is_empty(), "Windows returned no inline-reply text");
         Ok(())
     }
 

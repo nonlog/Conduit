@@ -160,6 +160,7 @@ message NotifNew {
   repeated NotifActionDesc actions = 11;
   string app_name                  = 12; // resolved label, because a toast showing
                                          // "com.tencent.mm" is useless to a human
+  bool   suppress_popup            = 13; // structural replacement/update; do not alert twice
 }
 
 message NotifUpdate {
@@ -178,4 +179,8 @@ message NotifAction {
   string key          = 1;
   uint32 action_index = 2;
   string reply_text   = 3;  // set when the action has a RemoteInput
+  // Echoed from the mirrored descriptor so Android can refuse a stale Windows toast whose
+  // notification key still exists but whose action list changed after an update.
+  string action_label = 4;
+  string result_key   = 5;
 }

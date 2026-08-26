@@ -10,6 +10,7 @@ import com.conduit.sync.proto.FileChunk
 import com.conduit.sync.proto.FileOffer
 import com.conduit.sync.proto.FileResult
 import com.conduit.sync.proto.Kind
+import com.conduit.sync.proto.NotifAction
 import com.conduit.sync.proto.PairRequest
 import java.net.InetSocketAddress
 import java.net.InetAddress
@@ -134,6 +135,9 @@ class Link(
 
         /** A real bulk payload completed; used only for passive Relay quality learning. */
         fun onBulkTransfer(bytes: Long, elapsedMs: Long) {}
+
+        /** A Windows toast action, already authenticated by the live Noise peer. */
+        fun onNotificationAction(action: NotifAction) {}
 
         /**
          * The peer's stable id, on every completed handshake. The service persists it
@@ -470,6 +474,7 @@ class Link(
                 .takeIf { it.isNotBlank() }
                 ?.let { events.onPeerName(it) }
             Kind.CLIP_TEXT -> events.onText(ClipText.parseFrom(envelope.payload).text)
+            Kind.NOTIF_ACTION -> events.onNotificationAction(NotifAction.parseFrom(envelope.payload))
             // Reassembly state lives on this thread and nowhere else, so it needs no
             // lock and cannot outlive the session that is filling it.
             Kind.CLIP_IMAGE_HEADER -> {

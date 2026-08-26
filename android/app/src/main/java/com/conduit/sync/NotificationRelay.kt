@@ -2,14 +2,19 @@ package com.conduit.sync
 
 import android.app.Notification
 import android.app.NotificationManager
+import android.app.RemoteInput
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.Drawable
+import android.os.Bundle
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
 import com.conduit.sync.proto.Kind
+import com.conduit.sync.proto.NotifAction
+import com.conduit.sync.proto.NotifActionDesc
 import com.conduit.sync.proto.NotifNew
 import com.conduit.sync.proto.NotifRemove
 import com.conduit.sync.proto.NotifUpdate
@@ -21,6 +26,9 @@ private const val TAG = "conduit.notif"
 /** A toast shows two short lines; anything past this is padding nobody reads. */
 internal const val NOTIF_MAX_TITLE = 200
 internal const val NOTIF_MAX_TEXT = 2_000
+private const val NOTIF_MAX_ACTIONS = 5
+private const val NOTIF_MAX_ACTION_LABEL = 80
+private const val NOTIF_MAX_REPLY = 2_000
 
 /**
  * Keys we have already posted, so a repost becomes an update rather than a second toast.
@@ -72,9 +80,33 @@ private const val HIDDEN_TITLE = "Notification hidden by Conduit"
  */
 class NotificationRelay : NotificationListenerService() {
 
-    /** Access-ordered so eviction drops the least recently touched key, not the oldest. */
-    private val posted = object : LinkedHashMap<String, Boolean>(32, 0.75f, true) {
-        override fun removeEldestEntry(eldest: Map.Entry<String, Boolean>) = size > REMEMBERED_KEYS
+    companion object {
+        @Volatile private var live: NotificationRelay? = null
+
+        /**
+         * Called only after the user activates a mirrored Windows toast. Resolve the current
+         * notification at that moment instead of retaining Android PendingIntents in another
+         * cache. If the listener or notification disappeared meanwhile, the action is dropped.
+         */
+        fun perform(action: NotifAction) {
+            val listener = live
+            if (listener == null) {
+                Log.w(TAG, "notification action dropped; listener is not connected")
+                return
+            }
+            listener.performNow(action)
+        }
+    }
+
+    /**
+     * Access-ordered so eviction drops the least recently touched key, not the oldest. Keeping the
+     * tiny bounded action descriptor list alongside the key lets us notice an action-list change
+     * without a binder query or a second cache. Ordinary title/body reposts still use lightweight
+     * NOTIF_UPDATE; only action changes rebuild the Windows toast XML.
+     */
+    private val posted = object : LinkedHashMap<String, List<NotifActionDesc>>(32, 0.75f, true) {
+        override fun removeEldestEntry(eldest: Map.Entry<String, List<NotifActionDesc>>) =
+            size > REMEMBERED_KEYS
     }
 
     /**
@@ -95,12 +127,14 @@ class NotificationRelay : NotificationListenerService() {
         // or the service has run, so it loads the settings it reads rather than assuming
         // someone else already did. Idempotent.
         Settings.load(this)
+        live = this
         // Logged because "notifications do not work" is almost always this never firing.
         Log.i(TAG, "listener connected")
     }
 
     override fun onListenerDisconnected() {
         Log.w(TAG, "listener disconnected")
+        if (live === this) live = null
         posted.clear()
         iconSent.clear()
     }
@@ -125,10 +159,14 @@ class NotificationRelay : NotificationListenerService() {
         // toast.
         val outTitle = if (hide) HIDDEN_TITLE else title
         val outBody = if (hide) "" else body
+        val actionDescs = if (hide) emptyList() else actions(notification)
 
         // The same key posting again is an update — a chat thread gaining a message, a
-        // download changing percentage — and must not pop a second toast.
-        if (posted.put(sbn.key, true) != null) {
+        // download changing percentage — and must not pop a second toast. Actions are structural
+        // toast XML rather than NotificationData, so a changed list deliberately falls through to
+        // NOTIF_NEW with the same tag, replacing the existing toast with current buttons.
+        val previousActions = posted.put(sbn.key, actionDescs)
+        if (previousActions != null && previousActions == actionDescs) {
             val update = NotifUpdate.newBuilder()
                 .setKey(sbn.key).setTitle(outTitle).setText(outBody).build()
             link.send(Kind.NOTIF_UPDATE, update.toByteArray(), "notif update")
@@ -144,9 +182,11 @@ class NotificationRelay : NotificationListenerService() {
             .setTitle(outTitle)
             .setText(outBody)
             .setTimestampMs(sbn.postTime)
+            .setSuppressPopup(previousActions != null)
         // A contact photo is content too, so hiding covers it. The app icon is not — it
         // says no more than the attribution line already does.
         if (!hide) face(notification)?.let { new.largeIconPng = ByteString.copyFrom(it) }
+        new.addAllActions(actionDescs)
         // Marked sent even when the rasterise fails: the same package will fail the same
         // way, and retrying it on every notification buys nothing but the work.
         if (iconSent.put(sbn.packageName, true) == null) {
@@ -164,6 +204,78 @@ class NotificationRelay : NotificationListenerService() {
         val remove = NotifRemove.newBuilder()
             .setKey(sbn.key).setTag(sbn.tag.orEmpty()).setPackage(sbn.packageName).build()
         link.send(Kind.NOTIF_REMOVE, remove.toByteArray(), "notif remove")
+    }
+
+    override fun onDestroy() {
+        if (live === this) live = null
+        super.onDestroy()
+    }
+
+    /**
+     * Describes only what Windows can safely render: bounded labels, original Android action index,
+     * and at most one free-form remote-input key per action. PendingIntents never leave Android.
+     */
+    private fun actions(notification: Notification): List<NotifActionDesc> =
+        notification.actions.orEmpty()
+            .mapIndexedNotNull { index, action ->
+                val label = action.title?.toString()?.trim().orEmpty().take(NOTIF_MAX_ACTION_LABEL)
+                if (label.isEmpty() || action.actionIntent == null) return@mapIndexedNotNull null
+                val remote = action.remoteInputs?.firstOrNull { it.allowFreeFormInput }
+                NotifActionDesc.newBuilder()
+                    .setLabel(label)
+                    .setIndex(index)
+                    .setHasRemoteInput(remote != null)
+                    .setResultKey(remote?.resultKey.orEmpty())
+                    .build()
+            }
+            .take(NOTIF_MAX_ACTIONS)
+
+    /**
+     * Executes against the current StatusBarNotification. The echoed label/result key rejects a
+     * stale Windows toast if the posting app reused the same key but changed its action list.
+     * This binder query happens only on an actual user click, never while idle.
+     */
+    private fun performNow(request: NotifAction) {
+        val sbn = runCatching { activeNotifications?.firstOrNull { it.key == request.key } }
+            .onFailure { Log.w(TAG, "could not resolve notification action", it) }
+            .getOrNull()
+        if (sbn == null) {
+            Log.i(TAG, "notification action dropped; ${request.key.take(48)} is no longer active")
+            return
+        }
+        val action = sbn.notification.actions?.getOrNull(request.actionIndex)
+        if (action == null) {
+            Log.w(TAG, "notification action ${request.actionIndex} no longer exists")
+            return
+        }
+        val currentLabel = action.title?.toString()?.trim().orEmpty().take(NOTIF_MAX_ACTION_LABEL)
+        if (currentLabel != request.actionLabel) {
+            Log.w(TAG, "notification action changed since it was mirrored; refusing stale click")
+            return
+        }
+
+        val remote = action.remoteInputs?.firstOrNull { it.allowFreeFormInput }
+        if (remote?.resultKey.orEmpty() != request.resultKey) {
+            Log.w(TAG, "notification reply target changed since it was mirrored; refusing stale click")
+            return
+        }
+
+        runCatching {
+            if (remote != null) {
+                val fillIn = Intent()
+                val results = Bundle().apply {
+                    putCharSequence(remote.resultKey, request.replyText.take(NOTIF_MAX_REPLY))
+                }
+                RemoteInput.addResultsToIntent(arrayOf(remote), fillIn, results)
+                action.actionIntent.send(this, 0, fillIn)
+            } else {
+                action.actionIntent.send()
+            }
+        }.onSuccess {
+            Log.i(TAG, "notification action executed: ${request.actionLabel.take(40)}")
+        }.onFailure {
+            Log.w(TAG, "notification action failed", it)
+        }
     }
 
     /**

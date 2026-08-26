@@ -19,6 +19,7 @@ import android.os.SystemClock
 import android.os.Build
 import android.util.Log
 import android.widget.Toast
+import com.conduit.sync.proto.NotifAction
 import java.net.InetSocketAddress
 import java.util.ArrayDeque
 
@@ -311,6 +312,12 @@ class SyncService : Service() {
                     if (endpoint != null && relayAttemptConnected) {
                         relayQuality.goodput(relayNetworkClass, endpoint, bytes, elapsedMs)
                     }
+                }
+
+                override fun onNotificationAction(action: NotifAction) {
+                    // NotificationListenerService owns the PendingIntent capabilities. Resolve
+                    // them there on the main thread only when a real Windows click arrives.
+                    main.post { NotificationRelay.perform(action) }
                 }
 
                 override fun onPeer(deviceId: String) = rememberPeer(deviceId)

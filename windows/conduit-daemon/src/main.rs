@@ -241,9 +241,13 @@ async fn main() -> Result<()> {
     // One listener thread for the process, started before the socket so a clip copied
     // during the first handshake is already in the ring.
     let bridge = Arc::new(clip::Bridge::start()?);
+    // One ephemeral action bus from the already-resident toast thread back into the currently
+    // active Noise session. It has no backlog semantics: with no live session receiver, a toast
+    // click is dropped rather than replayed against a future/stale Android notification.
+    let (toast_action_tx, _) = broadcast::channel::<pb::NotifAction>(16);
     // Likewise one toast thread. A failure here is not fatal: clipboard sync is still
     // worth having on a machine where the notification platform will not cooperate.
-    let toasts = match toast::Notifier::start(&dir) {
+    let toasts = match toast::Notifier::start(&dir, toast_action_tx.clone()) {
         Ok(notifier) => Some(Arc::new(notifier)),
         Err(e) => {
             warn!(error = %e, "toasts unavailable, mirroring notifications is disabled");
@@ -323,6 +327,7 @@ async fn main() -> Result<()> {
         let outbound = outbound.clone();
         let relay_endpoint = relay_endpoint.clone();
         let desktop_status = desktop_status.clone();
+        let toast_action_tx = toast_action_tx.clone();
         active = Some(tokio::spawn(async move {
             let _guard = SessionGuard {
                 metrics: metrics.clone(),
@@ -339,6 +344,7 @@ async fn main() -> Result<()> {
                 via,
                 relay_endpoint.as_deref(),
                 &desktop_status,
+                &toast_action_tx,
             )
             .await
             {
@@ -398,6 +404,7 @@ async fn serve(
     path: &'static str,
     relay_endpoint: Option<&str>,
     desktop_status: &status::StatusFile,
+    toast_action_tx: &broadcast::Sender<pb::NotifAction>,
 ) -> Result<()> {
     stream.set_nodelay(true)?;
     set_keepalive(&stream)?;
@@ -433,6 +440,9 @@ async fn serve(
     // Subscribed after the handshake so the session does not replay clips copied
     // while it was still connecting.
     let mut clips = bridge.subscribe();
+    // Same semantics for user-initiated toast actions: only the live authenticated session may
+    // consume them, and broadcast deliberately has no durable queue across reconnects.
+    let mut toast_actions = toast_action_tx.subscribe();
     // At most one image in flight, and it dies with the session: a peer that vanishes
     // mid-transfer cannot leave a partial buffer behind for the next one to inherit.
     let mut incoming: Option<image::Assembly> = None;
@@ -528,6 +538,25 @@ async fn serve(
                         let message = format!("opening {}: {e:#}", path.display());
                         let _ = request.completion.send(Err(message));
                         warn!(path = %path.display(), error = %e, "local file was not sent");
+                    }
+                }
+                continue;
+            }
+            action = toast_actions.recv() => {
+                match action {
+                    Ok(action) => {
+                        session
+                            .send(&mut stream, pb::Kind::NotifAction, &action.encode_to_vec())
+                            .await?;
+                        metrics.frames_out.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        // User clicks are rare. If something ever floods this bounded channel,
+                        // dropping old actions is safer than executing stale capabilities later.
+                        warn!(skipped = n, "toast action ring lagged");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        warn!("toast action channel closed");
                     }
                 }
                 continue;
@@ -645,6 +674,8 @@ async fn serve(
                         body: notif.text,
                         app_icon: notif.app_icon_png,
                         avatar: notif.large_icon_png,
+                        actions: notif.actions,
+                        suppress_popup: notif.suppress_popup,
                     });
                 }
             }
