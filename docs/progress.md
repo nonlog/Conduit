@@ -217,6 +217,20 @@ cover both explicit-role peers and a deployed-format legacy phone reconnect.
   Android Downloads, and the resident daemon logged Android publication confirmation. The test file
   was then removed.
 
+### Persistent Windows Relay/proxy configuration — 2026-08-26
+
+- The daemon now reads `%LOCALAPPDATA%\Conduit\config.txt` once at process start. Supported keys are
+  `relays=` and `relay_proxy=`; there is no file watcher or reload thread. Existing
+  `CONDUIT_RELAYS`, `CONDUIT_RELAY`, and `CONDUIT_RELAY_PROXY` variables remain explicit development/
+  compatibility overrides rather than the normal user path.
+- `conduit-daemon config show`, `config relay-proxy <value|off>`, and `config relays <list|off>`
+  provide a user-facing path without requiring registry/environment editing. Changes intentionally
+  apply on daemon restart so configuration adds zero steady-state background work.
+- LOG was migrated from its user `CONDUIT_RELAY_PROXY` variable into `config.txt`, then that user
+  environment variable was removed. A daemon started with no process proxy variable logged
+  `proxy="socks5://127.0.0.1:7891"`, connected to TYO with peer `127.0.0.1:7891`, and the phone
+  remained `Linked to LOG`. Current config also records `relays=tyo.414222.xyz:41113`.
+
 ### Phone → PC file incident resolved — 2026-08-25
 
 The earlier backlog entry described a roughly 259,737-byte receive as “logged completed but

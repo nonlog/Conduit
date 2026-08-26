@@ -51,9 +51,11 @@
   - HKCU file context menu uses a tiny on-demand `conduit-send.exe` GUI helper.
   - The helper starts no transport; it invokes the existing hidden `send <path>` CLI, which reuses
     the resident daemon's named pipe and waits for Android's publication ACK.
-- [ ] **Relay/proxy settings UX.**
-  - Replace machine-only environment-variable setup with an explicit user-facing configuration path.
-  - Do not proxy LAN traffic.
+- [x] **Relay/proxy settings UX foundation.**
+  - `%LOCALAPPDATA%\Conduit\config.txt` is the normal persistent source; `conduit-daemon config`
+    provides explicit show/set commands, while environment variables remain optional overrides.
+  - LAN traffic is never proxied. The future thin control window should edit this same file rather
+    than inventing a second settings store.
 
 ### Android / notification extensions
 

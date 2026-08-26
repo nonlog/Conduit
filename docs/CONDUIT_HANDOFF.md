@@ -66,9 +66,9 @@ same authoritative state as the architecture/progress/backlog records.
 ## Repository state at handoff
 
 ```text
-latest functional commit: 6e5c6fe Confirm remote file publication
+latest functional commit: 2c95ade Persist Windows relay configuration
 origin/master:             1c7e18c Send files from the share sheet, and stop toasting what the phone silenced
-recent feature commits:    1d702ed battery-first multi-relay; e60df15 transfer-progress throttling
+recent feature commits:    eb31c73 Explorer send; edb0650 autostart; 7d5db21 Android system bars
 ```
 
 Local `master` includes the tested persistence fix, screenshot implementation, compatible relay
@@ -77,16 +77,19 @@ parked-socket keepalive, and Windows Relay SOCKS5 support. None of these local c
 pushed. The compatible TYO relay and installed endpoints were built from this local line. A future
 Git push is still outward-facing: obtain explicit approval unless requested in the same context.
 
-At the latest functional checkpoint `6e5c6fe`, PC→phone CLI success means Android actually published
-the Downloads row. A real 1 MiB device test observed last-chunk send first, then `FILE_RESULT`, then
-CLI success about 9 ms later. The Windows user environment contains:
+At the current checkpoint, PC→phone CLI success means Android actually published the Downloads row.
+A real 1 MiB device test observed last-chunk send first, then `FILE_RESULT`, then CLI success about
+9 ms later. Relay/proxy configuration has moved out of the user environment into:
 
 ```text
-CONDUIT_RELAY_PROXY=socks5://127.0.0.1:7891
+%LOCALAPPDATA%\Conduit\config.txt
+relays=tyo.414222.xyz:41113
+relay_proxy=socks5://127.0.0.1:7891
 ```
 
-Clash Party/Mihomo was running locally with SOCKS5 on port `7891`. Treat that as a machine-runtime
-dependency for accelerated Relay traffic, not as a repository secret or a requirement for LAN use.
+The old user `CONDUIT_RELAY_PROXY` variable was removed after a no-env restart proved the config-file
+path still used Mihomo. Clash Party/Mihomo on port `7891` remains a machine-runtime dependency for
+accelerated Relay traffic, not a repository secret or a requirement for LAN use.
 
 Commits created by the coding agent must use:
 

@@ -166,6 +166,21 @@ this feature. The phone changes candidates only during a reconnect/network event
 occurred; completed real payloads update `relay-quality.txt`. Production currently still has only
 TYO deployed, so enabling a real multi-node inventory waits for explicit server-deployment approval.
 
+Normal Windows Relay configuration now lives in `%LOCALAPPDATA%\Conduit\config.txt` and is read
+once at daemon startup. Use the CLI rather than editing the file by hand:
+
+```powershell
+conduit-daemon.exe config show
+conduit-daemon.exe config relay-proxy socks5://127.0.0.1:7891
+conduit-daemon.exe config relay-proxy off
+conduit-daemon.exe config relays 'wa.example:41113;tyo.example:41113'
+```
+
+Restart the daemon after a change. `CONDUIT_RELAY_PROXY`, `CONDUIT_RELAYS`, and the legacy singular
+`CONDUIT_RELAY` override file values when explicitly set, which keeps test/development workflows
+possible without adding a runtime config watcher. The thin control surface should edit this same
+file/command path later.
+
 ### Whole workspace formatting/checks
 
 Use these before a Rust commit when the relevant source changed:
