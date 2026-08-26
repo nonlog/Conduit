@@ -10,10 +10,10 @@ Conduit has functioning implementation paths beyond the original pre-M0 descript
 has **not** earned M0/M2 completion.  The central endurance requirement remains open: a
 48-hour run must show no net thread, handle/FD, or session-lifecycle growth.
 
-The latest protocol implementation commit on local `master` is `86a2b86`:
+The latest functional implementation commit on local `master` is `7dd206d`:
 
 ```text
-Make relay role migration backward compatible
+Mirror notification actions to Windows
 ```
 
 Local `master` remains ahead of `origin/master`; do not treat the source commits as published.
@@ -26,7 +26,7 @@ compatible relay, and the installed Android/Windows endpoints now send explicit 
 | Area | Last recorded result | What it establishes | Limitation |
 | --- | --- | --- | --- |
 | Android JVM suite | **25 passed, 0 failed** | Noise transcript, frame limits, bounded/searchable history model, file/image validation including capture flags, throttled transfer-progress model, notification payload budget, wire behaviours, explicit initiator relay preamble, fake-IP relay fallback, passive multi-relay candidate/cooldown persistence, and file-publication result encoding. | No actual system-server hook, notification listener, Quick Settings host, or device radio lifecycle. |
-| Windows daemon | **48 passed, 2 ignored, 0 failed** on the last full normal run | Rust transport, clipboard/image/file/toast helpers, desktop→phone outbound-file validation, file-finalisation cleanup failures, screenshot semantics, resource-bound assertions, explicit responder relay preamble, multi-relay config parsing/parking, cancel/resume receive safety across an intervening Noise send, SOCKS5 relay domain routing, autostart/Explorer helpers, and event-driven control-surface status snapshots. | Ignored tests show real toasts and require interactive validation. |
+| Windows daemon | **49 passed, 3 ignored, 0 failed** on the last full normal run | Rust transport, clipboard/image/file/toast helpers, desktop→phone outbound-file validation, file-finalisation cleanup failures, screenshot semantics, resource-bound assertions, explicit responder relay preamble, multi-relay config parsing/parking, cancel/resume receive safety across an intervening Noise send, SOCKS5 relay domain routing, autostart/Explorer helpers, event-driven control-surface status snapshots, and notification-action XML/activation parsing. | The three ignored tests exercise real Windows toasts and require interactive validation; the new action callback test was also run interactively on the target Windows machine. |
 | Compatible relay migration | **9 passed, 0 failed** | Explicit-role splice, legacy 47-byte role inference without consuming Noise, both mixed upgrade orders, stale same-role replacement for new and legacy phones, dead-waiter recovery, and rendezvous isolation. | Production rollout is complete; long-duration M2 flap evidence and eventual legacy-path retirement remain. |
 | Noise interoperability | JVM transcript test + Rust `snow` fixture | The hand-written Android Noise XX agrees byte-for-byte with a reference implementation. | Does not replace live-network testing. |
 
@@ -89,6 +89,7 @@ cover both explicit-role peers and a deployed-format legacy phone reconnect.
 | Bidirectional text clipboard | Implemented and exercised. | Needs long-duration lifecycle proof. |
 | Bidirectional image clipboard | Implemented and previously verified. | Continue testing diverse `content://` providers and large-but-valid images. |
 | Android notification → Windows native toast | Working; new, update, and removal paths are implemented. | Real platform checks remain useful after toast code changes. |
+| Windows notification action / inline reply | **Implemented and real-device verified.** The Windows resident toast thread receives foreground action activation and free-form `UserInput`, sends one `NOTIF_ACTION` through the live Noise session, and Android resolves/executes the current notification's `PendingIntent`/`RemoteInput`. A temporary fixture notification returned `REPLY=Conduit reply E2E`; its ordinary `Mark read` action returned `MARK`. | No durable action queue exists by design; clicks while disconnected are dropped. Multiple free-form reply actions on one Android notification are reduced to one Windows reply box; ordinary buttons remain available. |
 | Notification filtering | Device-shade inspection confirmed normal Play Store notification mirroring while media playback and Pano Scrobbler silent notifications were dropped. | Test other OEM/ranking edge cases when encountered. |
 | Notification privacy setting | User-owned hide switch persists and defaults off. | Android listener redaction still needs the post-install AppOp. |
 | Notification app icons / avatars | App icon and large-icon cache paths are implemented. | A genuine Nagram XF contact-avatar notification still needs end-to-end proof. |

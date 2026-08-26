@@ -71,8 +71,14 @@
     light glyphs. This is app-window system-bar appearance, not notification small-icon artwork.
 - [ ] **Non-root clipboard fallback.**
   - Planned M3 AccessibilityService path for devices without KernelSU/LSPosed.
-- [ ] **Windows notification actions / inline reply.**
-  - Keep notification mirror semantics and lifecycle safety first.
+- [x] **Windows notification actions / inline reply.**
+  - Android mirrors only bounded action descriptors; PendingIntents never leave the phone.
+  - Windows uses the already-resident toast thread's `ToastNotification::Activated` callback; no
+    COM local server, helper process, polling loop, or extra resident UI was added.
+  - A click is sent only through the currently live Noise session. Android resolves the current
+    `StatusBarNotification` on demand and refuses stale index/label/RemoteInput targets.
+  - Real device E2E verified both a free-form reply (`REPLY=Conduit reply E2E`) and a normal
+    `Mark read` PendingIntent (`MARK`). Action-list changes silently rebuild the same Windows tag.
 - [ ] **MessagingStyle conversation history.**
   - Revisit only if title/body/avatar rendering proves insufficient.
 

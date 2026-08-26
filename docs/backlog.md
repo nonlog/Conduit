@@ -30,25 +30,23 @@ The extractor and Windows cache path exist.  Capture a genuine incoming Nagram X
 with a large contact icon and verify that the Windows toast shows the contact/avatar rather
 than only the app icon.  If it fails, preserve payload/log evidence before changing extraction.
 
-### 3. Correct Android light-surface status-bar icon contrast
+### 3. Verify Android light-surface status-bar icon contrast
 
-The system notification's monochrome `ic_stat_link` visual size was already corrected.  This
-remaining issue is different: the Android app’s own light surface has incorrect white
-status-bar icons.  Fix only the app-window system-bar appearance; do not regress the
-foreground-service notification artwork.
+The implementation now explicitly selects dark day-theme and light night-theme status/navigation
+glyphs. The remaining work is an unlocked visual check of the Conduit Activity; do not use lockscreen
+SystemUI appearance as evidence and do not regress the foreground-service notification artwork.
 
-### 4. Add Windows daemon autostart at sign-in
+### 4. Windows daemon autostart at sign-in — complete
 
-Keep the daemon headless and non-resident in UI terms.  Design the smallest Windows-native
-sign-in mechanism that starts one daemon process, reports failure honestly, and avoids creating
-multiple listeners/relay parkers on repeated login or manual launch.
+HKCU Run starts the daemon hidden in the interactive user session. Binding port 41112 happens before
+long-lived workers and doubles as a zero-extra-resource single-instance gate; duplicate startup was
+live-tested and exits immediately.
 
-### 5. Add a thin Fluent Windows control surface
+### 5. Thin Windows control surface — functional, visual polish remains
 
-The intended shape is a separate, non-resident tray/settings process, not a UI framework linked
-into `conduit-daemon`.  It should eventually surface pairing identity, status, diagnostics, and
-configuration without becoming another transport owner.  Reference Sefirah only for visual
-language; preserve the clean implementation and non-GPL licensing options.
+`conduit-control.exe` is now a separate non-resident GUI-subsystem process reading event-written
+status/config state on demand. It owns no transport, tray, watcher, or timer and exits fully with the
+window. Remaining work is Fluent visual refinement without turning it into another resident stack.
 
 ### 6. Re-run device-specific persistence/permission checks after platform changes
 
@@ -62,9 +60,8 @@ language; preserve the clean implementation and non-GPL licensing options.
 
 | Item | Condition to revisit |
 | --- | --- |
-| Windows right-click file send / full GUI | After core transport, screenshot, and endurance work are proven. |
+| Full desktop GUI beyond the thin control surface | Only if the lightweight surface proves insufficient. |
 | Non-root clipboard fallback | M3, via an AccessibilityService path that can work without KernelSU/LSPosed. |
-| Notification actions and inline reply | After the core notification mirror is stable and lifecycle evidence exists. |
 | `MessagingStyle` history | Only if ordinary title/body plus avatar evidence proves insufficient. |
 | General file browser/mount | Out of scope unless product scope is explicitly changed. |
 | Telephony, SMS, screen mirroring, remote control/input, media control | Permanently out of scope. |
@@ -76,7 +73,8 @@ this documentation pass.  Keep them current rather than opening a second paralle
 planning documents. Existing source already covers text/image clipboard, native notification
 toasts, notification filtering/privacy control, bidirectional explicit file transfer, Direct Share
 desktop naming, searchable Android clipboard history, a Quick Settings link toggle, camera-photo
-toast activation, and screenshot → native toast → Snipping Tool.
+toast activation, screenshot → native toast → Snipping Tool, Explorer send-to-phone integration,
+Windows sign-in autostart, the on-demand control surface, and notification actions/inline reply.
 The screenshot path was verified on the target CPH2573 with clipboard non-interference and a
 duplicate scanner callback check; consult [progress.md](progress.md) for the evidence level and
 caveats rather than treating feature presence as blanket milestone completion.

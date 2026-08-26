@@ -27,9 +27,10 @@
 3. The compatible relay migration is **deployed**. TYO runs the compatible server and the installed
    Android/Windows endpoints use explicit roles; keep legacy inference for older clients until M2
    evidence and deliberate retirement.
-4. Windows Relay traffic is currently configured to use local Mihomo/Clash Party through
-   `CONDUIT_RELAY_PROXY=socks5://127.0.0.1:7891`. LAN listener/direct LAN sessions do **not** use
-   this proxy. Preserve the hostname `tyo.414222.xyz` through SOCKS so Mihomo can apply domain rules.
+4. Windows Relay traffic is currently configured through `%LOCALAPPDATA%\Conduit\config.txt` to
+   use local Mihomo/Clash Party at `socks5://127.0.0.1:7891`. LAN listener/direct LAN sessions do
+   **not** use this proxy. Preserve the hostname `tyo.414222.xyz` through SOCKS so Mihomo can apply
+   domain rules. Environment variables remain optional development overrides, not the normal store.
 5. The latest Windows relay-park fix enables TCP keepalive **before** the parked socket waits in
    `peek()`. Do not remove this: a phone reboot exposed a zombie Windows responder waiter whose
    remote TYO side was already dead while Windows still showed the socket as `Established`.
@@ -49,6 +50,11 @@
    on-demand `target\debug\conduit-send.exe` helper beside the daemon; the helper is non-resident and
    reuses the daemon's named-pipe send/remote-ACK path. Reinstall the verb after packaging/moving the
    binaries.
+10. Windows notification actions and inline reply are implemented. The resident toast thread owns
+    foreground activation; there is no COM activator process. Android retains every PendingIntent,
+    resolves the current notification only after a real click, and rejects stale action metadata.
+    A real fixture E2E passed both reply text and a normal `Mark read` action through the encrypted
+    session. Do not add a durable action queue across reconnects.
 
 ## Documentation created in this pass
 
@@ -66,14 +72,14 @@ same authoritative state as the architecture/progress/backlog records.
 ## Repository state at handoff
 
 ```text
-latest functional commit: 26427af Add on-demand Windows control surface
+latest functional commit: 7dd206d Mirror notification actions to Windows
 origin/master:             1c7e18c Send files from the share sheet, and stop toasting what the phone silenced
-recent feature commits:    d0ef970 event status; eb31c73 Explorer send; edb0650 autostart
+recent feature commits:    26427af control surface; be2d317 event status; eb31c73 Explorer send
 ```
 
 Local `master` includes the tested persistence fix, screenshot implementation, compatible relay
 migration, M0/M2 sampling, bidirectional file-transfer UX, long-transfer heartbeat fixes, Windows
-parked-socket keepalive, and Windows Relay SOCKS5 support. None of these local commits has been
+parked-socket keepalive, Windows Relay SOCKS5 support, and notification actions/inline reply. None of these local commits has been
 pushed. The compatible TYO relay and installed endpoints were built from this local line. A future
 Git push is still outward-facing: obtain explicit approval unless requested in the same context.
 
@@ -111,8 +117,8 @@ history is independently verified.
 - **Windows:** Rust `conduit-daemon`, single LAN listener, one active session task,
   `SessionGuard::Drop` lifecycle accounting, native clipboard bridge, a dedicated COM/MTA toast
   thread, bidirectional disk-streamed file paths, local named-pipe `send <path>` control seam, and
-  mDNS advert. Relay parking optionally dials through `CONDUIT_RELAY_PROXY`; the current Windows
-  runtime points this at local Mihomo SOCKS5. Parked Relay sockets enable TCP keepalive before
+  mDNS advert. Relay parking optionally dials through the configured Relay proxy; the current
+  `%LOCALAPPDATA%\Conduit\config.txt` points this at local Mihomo SOCKS5. Parked Relay sockets enable TCP keepalive before
   blocking for a partner so a dead remote waiter cannot strand the parker forever.
 - **Control-surface seam:** `%LOCALAPPDATA%\Conduit\status.txt` is an event-written snapshot, not a
   polled status service. `conduit-daemon status` currently reports daemon/link/phone/path/Relay state
@@ -137,6 +143,9 @@ See `docs/architecture.md` for full data flow and trust boundaries.
 - Bidirectional text clipboard sync with normalised echo suppression.
 - Bidirectional image clipboard sync.
 - Android notifications as genuine native Windows toasts, including update/removal.
+- Mirrored Android notification actions, including one free-form inline reply plus ordinary
+  buttons. Windows keeps only bounded action descriptors; Android executes the current notification's
+  PendingIntent after stale-metadata checks.
 - Android-side suppression of Conduit’s own, ongoing, group-summary, media, and silent
   notifications.
 - User-owned notification content-hide switch, persisted in app-private storage.
@@ -174,7 +183,9 @@ See `docs/architecture.md` for full data flow and trust boundaries.
 ## Latest evidence
 
 - Android JVM tests: **25 passed, 0 failed**.
-- Windows daemon normal test run: **48 passed, 2 ignored, 0 failed**.
+- Windows daemon normal test run: **49 passed, 3 ignored, 0 failed**. The added ignored test is an
+  interactive native-toast activation check; it was run manually and returned both action arguments
+  and Windows `UserInput` on the target machine.
 - Compatible relay migration: **9 passed, 0 failed**, including legacy↔legacy, both mixed
   upgrade orders, explicit stale-role replacement, and legacy stale-phone replacement.
 - Production rollout: old↔old and old-phone↔new-desktop connected through the compatible relay;
@@ -204,7 +215,8 @@ See `docs/architecture.md` for full data flow and trust boundaries.
   zombie `ESTABLISHED`; every phone retry then waited alone. The repaired daemon enables keepalive
   before parking, reconnects successfully, and leaves a fresh responder waiter at TYO.
 - Windows Clash Party has TUN disabled, so native Conduit relay sockets were bypassing the local
-  proxy. `CONDUIT_RELAY_PROXY=socks5://127.0.0.1:7891` is now supported and persisted for this user.
+  proxy. Relay-only SOCKS5 support is now persisted in `config.txt` as
+  `relay_proxy=socks5://127.0.0.1:7891`; `CONDUIT_RELAY_PROXY` remains only an optional override.
   An isolated 4 MiB relay receive improved from 10.6 KiB/s DIRECT to 362.8 KiB/s through SOCKS5;
   a real 4 MiB PC→phone Conduit send completed in about 1.35 s and landed in Android Downloads.
 
@@ -216,6 +228,13 @@ receive removed its pending Android row at 7,471,104 bytes, and a 4 MiB phone→
 on the current progress build. Long-send heartbeat handling now keeps receive/send ciphertext in
 separate Windows scratch buffers and lets Android answer PING between transfer chunks without
 creating a second Noise writer.
+
+Notification-action device evidence used a temporary standalone Android fixture so the verification
+could prove real `PendingIntent`/`RemoteInput` execution rather than merely protobuf transport. A
+Windows reply containing `Conduit reply E2E` produced `REPLY=Conduit reply E2E` in the fixture, and
+the separate `Mark read` button produced `MARK`. The fixture APK was uninstalled afterward. The
+final Conduit APK was rebuilt/reinstalled and the sensitive-notification AppOp re-granted; the phone
+was locked at the end of the pass, so the service was not manually reconnected from the Activity.
 
 ## Android device facts
 
