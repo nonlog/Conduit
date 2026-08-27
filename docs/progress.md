@@ -668,3 +668,12 @@ a milestone complete based solely on source review or a single happy-path run.
 - Final pre-release automated verification: Android **27 passed / 0 failed**; Windows **53 passed /
   0 failed / 3 ignored**; `cargo check`, release all-bin build, and `git diff --check` passed.
 - No unlocked-phone foreground screenshot was captured during this checkpoint.
+## 2026-08-27 v0.1.0 published and installed from `www`
+
+- Pushed Conduit release commit `e55b17c` and tag `v0.1.0`; GitHub Release includes the Windows x64
+  Scoop package and current debug-signed Android APK.
+- Added `bucket/conduit.json` to `nonlog/scoop-www` in `b752b5d`, then installed `www/conduit 0.1.0`.
+- Verified Scoop `current`, HKCU Run, Start Menu AUMID shortcut, and Explorer verb all reference
+  `D:\Programs\Scoop\apps\conduit\current`. Removed the obsolete manual program directory only after
+  those checks; `%LOCALAPPDATA%\Conduit` user data remains intact.
+- Final installed daemon is responsive and linked to OnePlus 12; observed route after install was US.

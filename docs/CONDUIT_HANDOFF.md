@@ -479,3 +479,18 @@ Follow `docs/development.md` for Scoop-first tool installation and safe Android 
   **27 passed / 0 failed**; Windows `cargo test` is **53 passed / 0 failed / 3 ignored**, and
   `cargo check` plus release all-bin build succeeded.
 - No unlocked-phone foreground screenshot was captured during this checkpoint.
+## 2026-08-27 v0.1.0 release / Scoop deployment
+
+- Functional release commit: `e55b17c` (`Prepare Conduit 0.1.0 desktop release`), pushed to
+  `nonlog/Conduit`; annotated tag / GitHub Release: `v0.1.0`.
+- Release assets: `Conduit-0.1.0-windows-x64.zip` and the current debug-signed Android APK.
+- `nonlog/scoop-www` commit `b752b5d` adds `bucket/conduit.json`; the Windows ZIP SHA-256 is
+  `189d2e2bfc48c9896e4adf28f5a1cf4a35356b6cda42935afbf783b529acc5e8`.
+- The target Windows machine is now installed through Scoop as `www/conduit 0.1.0` at
+  `D:\Programs\Scoop\apps\conduit\current`. The previous manual install under
+  `%LOCALAPPDATA%\Programs\Conduit` was removed after all live references migrated.
+- HKCU Run, the AUMID Start Menu shortcut, and Explorer `Send with Conduit` all point at the Scoop
+  `current` path. `%LOCALAPPDATA%\Conduit` was deliberately retained for identity/history/config.
+- Final installed daemon was detached from the AgentDock job via WMI only for this remote validation;
+  it remained responsive and linked to `OnePlus 12` over `us.414222.xyz:41113`. The phone still
+  persisted desktop name `LOG`.
