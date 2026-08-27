@@ -18,10 +18,15 @@ data class RelayEndpoint(
 /**
  * User/runtime relay inventory. It is intentionally a tiny app-private text file rather than a
  * service or discovery protocol: reading it happens only when SyncService starts and costs no idle
- * work. The production default remains TYO until the other compatible relay services are deployed.
+ * work. The production default is the deployed US / TYO / WA fleet; Android still chooses only one
+ * candidate at a time and learns only from real connection/transfer events.
  */
 object RelayCatalog {
-    val default = RelayEndpoint("tyo", "tyo.414222.xyz", 41113, "138.3.214.175")
+    val defaults = listOf(
+        RelayEndpoint("us", "us.414222.xyz", 41113, "23.19.228.125"),
+        RelayEndpoint("tyo", "tyo.414222.xyz", 41113, "138.3.214.175"),
+        RelayEndpoint("wa", "wa.414222.xyz", 41113, "104.36.86.42"),
+    )
 
     fun load(dir: File): List<RelayEndpoint> {
         val file = File(dir, RELAYS_FILE)
@@ -31,7 +36,7 @@ object RelayCatalog {
                 .distinctBy(RelayEndpoint::id)
         }.onFailure { Log.w(RELAY_TAG, "could not read relay inventory", it) }
             .getOrDefault(emptyList())
-        return parsed.ifEmpty { listOf(default) }
+        return parsed.ifEmpty { defaults }
     }
 
     internal fun parse(line: String): RelayEndpoint? {
@@ -55,6 +60,7 @@ internal data class RelayQuality(
     var cooldownUntilMs: Long = 0,
     var lastSuccessMs: Long = 0,
     var goodputBps: Double = 0.0,
+    var sessionUpMs: Double = 0.0,
 )
 
 /**
@@ -85,18 +91,28 @@ class RelayQualityStore(private val dir: File) {
                 { -record(networkClass, it.value.id).lastSuccessMs },
                 { -record(networkClass, it.value.id).goodputBps },
                 { record(networkClass, it.value.id).unstableSessions },
+                { record(networkClass, it.value.id).sessionUpMs.takeIf { ms -> ms > 0.0 } ?: Double.MAX_VALUE },
                 { it.index },
             ),
         ).map { it.value }
     }
 
     @Synchronized
-    fun connected(networkClass: String, endpoint: RelayEndpoint, nowMs: Long) {
+    fun connected(
+        networkClass: String,
+        endpoint: RelayEndpoint,
+        nowMs: Long,
+        observedSessionUpMs: Long = 0L,
+    ) {
         record(networkClass, endpoint.id).apply {
             successes++
             failureStreak = 0
             cooldownUntilMs = 0
             lastSuccessMs = nowMs
+            if (observedSessionUpMs > 0L) {
+                val observed = observedSessionUpMs.toDouble()
+                sessionUpMs = if (sessionUpMs <= 0.0) observed else sessionUpMs * 0.75 + observed * 0.25
+            }
         }
         save()
     }
@@ -144,7 +160,7 @@ class RelayQualityStore(private val dir: File) {
         runCatching {
             File(dir, QUALITY_FILE).takeIf(File::isFile)?.forEachLine { line ->
                 val f = line.split('\t')
-                if (f.size != 10) return@forEachLine
+                if (f.size !in 10..11) return@forEachLine
                 quality[key(f[0], f[1])] = RelayQuality(
                     successes = f[2].toIntOrNull() ?: return@forEachLine,
                     dialFailures = f[3].toIntOrNull() ?: return@forEachLine,
@@ -153,6 +169,7 @@ class RelayQualityStore(private val dir: File) {
                     cooldownUntilMs = f[6].toLongOrNull() ?: return@forEachLine,
                     lastSuccessMs = f[7].toLongOrNull() ?: return@forEachLine,
                     goodputBps = f[8].toDoubleOrNull() ?: return@forEachLine,
+                    sessionUpMs = if (f.size == 11) f[9].toDoubleOrNull() ?: return@forEachLine else 0.0,
                 )
             }
         }.onFailure { Log.w(RELAY_TAG, "could not read relay quality", it) }
@@ -172,7 +189,8 @@ class RelayQualityStore(private val dir: File) {
                     q.cooldownUntilMs,
                     q.lastSuccessMs,
                     q.goodputBps,
-                    "v1",
+                    q.sessionUpMs,
+                    "v2",
                 ).joinToString("\t")
             }
             File(dir, QUALITY_FILE).writeText(if (body.isEmpty()) "" else "$body\n")

@@ -36,8 +36,10 @@ const MAX_FILE: u64 = 512 * 1024 * 1024;
 /// Canonicalising here means a later UI/Explorer integration can hand the daemon a relative path
 /// without making the long-running process depend on whatever its current directory happens to be.
 pub fn validate_outbound(path: &Path) -> Result<PathBuf> {
-    let path = std::fs::canonicalize(path).with_context(|| format!("opening {}", path.display()))?;
-    let metadata = std::fs::metadata(&path).with_context(|| format!("reading {}", path.display()))?;
+    let path =
+        std::fs::canonicalize(path).with_context(|| format!("opening {}", path.display()))?;
+    let metadata =
+        std::fs::metadata(&path).with_context(|| format!("reading {}", path.display()))?;
     if !metadata.is_file() {
         bail!("{} is not a regular file", path.display());
     }
@@ -166,8 +168,8 @@ fn mime_for(path: &Path) -> &'static str {
 /// the null device. Prefixed rather than rejected, so a legitimately-named `aux.png` from
 /// a phone still lands as `_aux.png` instead of vanishing.
 const RESERVED: [&str; 22] = [
-    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7",
-    "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
 ];
 
 /// Where received files land. `CONDUIT_DOWNLOADS` overrides it.
@@ -186,7 +188,9 @@ pub fn downloads() -> Result<PathBuf> {
     unsafe {
         let raw = SHGetKnownFolderPath(&FOLDERID_Downloads, KF_FLAG_DEFAULT, None)
             .context("asking the shell for the Downloads folder")?;
-        let path = raw.to_string().context("Downloads folder path is not UTF-16")?;
+        let path = raw
+            .to_string()
+            .context("Downloads folder path is not UTF-16")?;
         CoTaskMemFree(Some(raw.0 as *const _));
         Ok(PathBuf::from(path))
     }
@@ -220,7 +224,11 @@ fn sanitise(name: &str) -> String {
         Some((stem, ext)) if !stem.is_empty() => (stem, format!(".{ext}")),
         _ => (cleaned, String::new()),
     };
-    let mut stem = if stem.is_empty() { "file".to_string() } else { stem.to_string() };
+    let mut stem = if stem.is_empty() {
+        "file".to_string()
+    } else {
+        stem.to_string()
+    };
     if RESERVED.contains(&stem.to_ascii_lowercase().as_str()) {
         stem.insert(0, '_');
     }
@@ -361,7 +369,11 @@ impl Incoming {
             return Ok(None);
         }
         if self.written != self.total {
-            bail!("file ended at {} B, offer said {}", self.written, self.total);
+            bail!(
+                "file ended at {} B, offer said {}",
+                self.written,
+                self.total
+            );
         }
         // Flushed and closed before the rename: a handle still open is a rename that fails
         // on Windows.
@@ -418,11 +430,13 @@ fn publish(scratch: &Path, dir: &Path, name: &str) -> Result<PathBuf> {
 }
 
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut acc, b| {
-        use std::fmt::Write as _;
-        let _ = write!(acc, "{b:02x}");
-        acc
-    })
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut acc, b| {
+            use std::fmt::Write as _;
+            let _ = write!(acc, "{b:02x}");
+            acc
+        })
 }
 
 #[cfg(test)]
@@ -463,13 +477,20 @@ mod tests {
         // A newline in a filename is a log-injection trick and not a legal path character.
         assert_eq!(sanitise("a\nb.txt"), "a_b.txt");
         // Ordinary names survive untouched, including non-ASCII ones.
-        assert_eq!(sanitise("Screenshot 2026-08-25.png"), "Screenshot 2026-08-25.png");
+        assert_eq!(
+            sanitise("Screenshot 2026-08-25.png"),
+            "Screenshot 2026-08-25.png"
+        );
         assert_eq!(sanitise("照片.jpg"), "照片.jpg");
         assert_eq!(sanitise("archive.tar.gz"), "archive.tar.gz");
         assert_eq!(sanitise(".gitignore"), ".gitignore");
         // Long enough to blow the component limit, extension kept.
         let long = sanitise(&format!("{}.txt", "n".repeat(400)));
-        assert!(long.chars().count() <= 124, "{} chars", long.chars().count());
+        assert!(
+            long.chars().count() <= 124,
+            "{} chars",
+            long.chars().count()
+        );
         assert!(long.ends_with(".txt"));
     }
 
@@ -515,7 +536,9 @@ mod tests {
         let mut rx = Incoming::begin(&offer(r"..\report.txt", 10), &dir)?;
         assert_eq!(rx.push(&chunk(0, b"abcd"))?, None);
         assert_eq!(rx.push(&chunk(1, b"efgh"))?, None);
-        let path = rx.push(&chunk(2, b"ij"))?.expect("the last chunk did not finish it");
+        let path = rx
+            .push(&chunk(2, b"ij"))?
+            .expect("the last chunk did not finish it");
 
         assert_eq!(path.file_name().unwrap(), "report.txt");
         assert_eq!(std::fs::read(&path)?, b"abcdefghij");
@@ -548,7 +571,10 @@ mod tests {
         rx.dir = dir.join("missing-parent");
         assert!(rx.push(&chunk(0, b"abcd")).is_err());
         drop(rx);
-        assert!(!part.exists(), "finalisation error leaked the completed .part file");
+        assert!(
+            !part.exists(),
+            "finalisation error leaked the completed .part file"
+        );
         Ok(())
     }
 
@@ -558,7 +584,11 @@ mod tests {
         {
             let mut rx = Incoming::begin(&offer("half.bin", 10), &dir)?;
             rx.push(&chunk(0, b"abcd"))?;
-            assert_eq!(std::fs::read_dir(&dir)?.count(), 1, "nothing was being written");
+            assert_eq!(
+                std::fs::read_dir(&dir)?.count(),
+                1,
+                "nothing was being written"
+            );
         } // dropped here, as it would be when a session ends
         assert_eq!(
             std::fs::read_dir(&dir)?.count(),
@@ -585,7 +615,11 @@ mod tests {
         fat.chunk_size = CHUNK + 1;
         assert!(Incoming::begin(&fat, &dir).is_err());
 
-        assert_eq!(std::fs::read_dir(&dir)?.count(), 0, "a refused offer created a file");
+        assert_eq!(
+            std::fs::read_dir(&dir)?.count(),
+            0,
+            "a refused offer created a file"
+        );
         Ok(())
     }
 
@@ -630,10 +664,16 @@ mod tests {
         assert_eq!(outbound.offer.chunk_count, 1);
         assert_eq!(outbound.offer.transfer_id.len(), 16);
 
-        assert!(Outbound::open(&dir).await.is_err(), "a directory became a file offer");
+        assert!(
+            Outbound::open(&dir).await.is_err(),
+            "a directory became a file offer"
+        );
         let empty = dir.join("empty.bin");
         std::fs::write(&empty, [])?;
-        assert!(Outbound::open(&empty).await.is_err(), "an empty file became a file offer");
+        assert!(
+            Outbound::open(&empty).await.is_err(),
+            "an empty file became a file offer"
+        );
         Ok(())
     }
 }

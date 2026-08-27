@@ -161,7 +161,7 @@ class NotificationRelay : NotificationListenerService() {
 
         // Redaction is applied here rather than by dropping the notification, so the desktop
         // still says *that* something arrived and from which app — the app name travels
-        // separately and becomes the toast's attribution line. Applied after the emptiness
+        // separately and becomes the toast's source-app line. Applied after the emptiness
         // check above, so hiding cannot turn a notification worth nothing into one worth a
         // toast.
         val outTitle = if (hide) HIDDEN_TITLE else title
@@ -196,7 +196,7 @@ class NotificationRelay : NotificationListenerService() {
             .addAllMessages(messageDescs)
             .setSuppressPopup(previousActions != null)
         // A contact photo is content too, so hiding covers it. The app icon is not — it
-        // says no more than the attribution line already does.
+        // says no more than the source-app line already does.
         if (!hide) face(notification, messageRecords)?.let { new.largeIconPng = ByteString.copyFrom(it) }
         new.addAllActions(actionDescs)
         // Marked sent even when the rasterise fails: the same package will fail the same

@@ -5,9 +5,12 @@
 //! `send` CLI without a console, waits for the phone's publication result, then exits.
 
 use anyhow::{Context, Result};
+use std::ptr::null;
+use windows_sys::Win32::UI::Shell::{SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_IDLIST};
 
 const VERB_KEY: &str = r"Software\Classes\*\shell\Conduit.SendToPhone";
 const COMMAND_KEY: &str = r"Software\Classes\*\shell\Conduit.SendToPhone\command";
+const VERB_LABEL: &str = "Send with Conduit";
 
 pub fn install() -> Result<String> {
     let exe = std::env::current_exe().context("finding the Conduit executable")?;
@@ -19,12 +22,18 @@ pub fn install() -> Result<String> {
         );
     }
     let command = command_for(&helper.to_string_lossy());
+    let icon = exe.with_file_name("conduit-icon.ico");
+    let icon_spec = if icon.is_file() {
+        format!("\"{}\",0", icon.to_string_lossy())
+    } else {
+        format!("\"{}\",0", exe.to_string_lossy())
+    };
 
     let verb = windows_registry::CURRENT_USER
         .create(VERB_KEY)
         .context("creating the Conduit Explorer verb")?;
-    verb.set_string("", "Send to phone with Conduit")?;
-    verb.set_string("Icon", exe.to_string_lossy())?;
+    verb.set_string("", VERB_LABEL)?;
+    verb.set_string("Icon", &icon_spec)?;
     // The transport currently serialises explicit file sends; do not imply multi-select support
     // in Explorer until the shell command can report a batch result coherently.
     verb.set_string("MultiSelectModel", "Single")?;
@@ -32,6 +41,7 @@ pub fn install() -> Result<String> {
     windows_registry::CURRENT_USER
         .create(COMMAND_KEY)?
         .set_string("", &command)?;
+    unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED as i32, SHCNF_IDLIST, null(), null()) };
     Ok(command)
 }
 
@@ -70,5 +80,10 @@ mod tests {
         assert!(command.starts_with(r#""C:\Apps\Conduit's tools\conduit-send.exe""#));
         assert!(command.ends_with("\"%1\""));
         assert!(!command.contains("powershell"));
+    }
+
+    #[test]
+    fn explorer_verb_uses_the_short_product_label() {
+        assert_eq!(VERB_LABEL, "Send with Conduit");
     }
 }

@@ -1,0 +1,198 @@
+[CmdletBinding()]
+param(
+    [string]$SourceDir = (Join-Path $PSScriptRoot '..\..\..\target\release'),
+    [string]$InstallDir,
+    [switch]$NoStart
+)
+
+$ErrorActionPreference = 'Stop'
+
+$source = (Resolve-Path $SourceDir).Path
+$localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+$appData = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)
+if ([string]::IsNullOrWhiteSpace($localAppData) -or [string]::IsNullOrWhiteSpace($appData)) {
+    throw 'Windows Known Folder lookup for AppData failed'
+}
+$installDir = if ([string]::IsNullOrWhiteSpace($InstallDir)) {
+    Join-Path $localAppData 'Programs\Conduit'
+} else {
+    [IO.Path]::GetFullPath($InstallDir)
+}
+$programs = Join-Path $appData 'Microsoft\Windows\Start Menu\Programs'
+$shortcut = Join-Path $programs 'Conduit.lnk'
+$runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+$aumidKey = 'HKCU:\Software\Classes\AppUserModelId\Conduit.Desktop'
+$explorerVerbKey = 'Registry::HKEY_CURRENT_USER\Software\Classes\*\shell\Conduit.SendToPhone'
+
+$controlSource = @('Conduit.exe', 'conduit-control.exe') |
+    ForEach-Object { Join-Path $source $_ } |
+    Where-Object { Test-Path $_ } |
+    Select-Object -First 1
+if (-not $controlSource) { throw "Missing Conduit.exe/conduit-control.exe in $source" }
+$required = @('conduit-daemon.exe', 'conduit-send.exe')
+foreach ($name in $required) {
+    if (-not (Test-Path (Join-Path $source $name))) {
+        throw "Missing $name in $source"
+    }
+}
+
+$assetDir = Join-Path $PSScriptRoot '..\assets'
+foreach ($name in @('conduit-icon.ico', 'conduit-icon.png')) {
+    if (-not (Test-Path (Join-Path $assetDir $name))) {
+        throw "Missing icon asset $name"
+    }
+}
+
+# Preserve the user's current Start-at-sign-in choice. Installation updates the executable path
+# only when the option was already enabled; it never silently opts the user in.
+$hadAutostart = $null -ne (Get-ItemProperty -Path $runKey -Name Conduit -ErrorAction SilentlyContinue).Conduit
+$hadExplorerIntegration = Test-Path -LiteralPath $explorerVerbKey
+
+Get-Process conduit-daemon -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process Conduit -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force -Path $installDir, $programs | Out-Null
+foreach ($name in $required) {
+    $from = (Resolve-Path (Join-Path $source $name)).Path
+    $to = Join-Path $installDir $name
+    if (-not [string]::Equals($from, $to, [StringComparison]::OrdinalIgnoreCase)) {
+        Copy-Item -Force $from $to
+    }
+}
+if (-not [string]::Equals((Resolve-Path $controlSource).Path, (Join-Path $installDir 'Conduit.exe'), [StringComparison]::OrdinalIgnoreCase)) {
+    Copy-Item -Force $controlSource (Join-Path $installDir 'Conduit.exe')
+}
+Remove-Item (Join-Path $installDir 'conduit-control.exe') -Force -ErrorAction SilentlyContinue
+foreach ($name in @('conduit-icon.ico', 'conduit-icon.png')) {
+    $from = (Resolve-Path (Join-Path $assetDir $name)).Path
+    $to = Join-Path $installDir $name
+    if (-not [string]::Equals($from, $to, [StringComparison]::OrdinalIgnoreCase)) {
+        Copy-Item -Force $from $to
+    }
+}
+
+$shortcutSource = @'
+using System;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
+using System.Text;
+
+[ComImport]
+[Guid("00021401-0000-0000-C000-000000000046")]
+internal class ShellLinkClass { }
+
+[ComImport]
+[Guid("000214F9-0000-0000-C000-000000000046")]
+[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+internal interface IShellLinkW {
+    void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder file, int cch, IntPtr findData, uint flags);
+    void GetIDList(out IntPtr pidl);
+    void SetIDList(IntPtr pidl);
+    void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder name, int cch);
+    void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string name);
+    void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder dir, int cch);
+    void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string dir);
+    void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder args, int cch);
+    void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string args);
+    void GetHotkey(out short hotkey);
+    void SetHotkey(short hotkey);
+    void GetShowCmd(out int showCmd);
+    void SetShowCmd(int showCmd);
+    void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder iconPath, int cch, out int iconIndex);
+    void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string iconPath, int iconIndex);
+    void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string path, uint reserved);
+    void Resolve(IntPtr hwnd, uint flags);
+    void SetPath([MarshalAs(UnmanagedType.LPWStr)] string file);
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+internal struct PROPERTYKEY {
+    public Guid fmtid;
+    public uint pid;
+    public PROPERTYKEY(Guid fmtid, uint pid) { this.fmtid = fmtid; this.pid = pid; }
+}
+
+[StructLayout(LayoutKind.Explicit)]
+internal struct PROPVARIANT {
+    [FieldOffset(0)] public ushort vt;
+    [FieldOffset(8)] public IntPtr pointerValue;
+}
+
+[ComImport]
+[Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99")]
+[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+internal interface IPropertyStore {
+    [PreserveSig] int GetCount(out uint count);
+    [PreserveSig] int GetAt(uint index, out PROPERTYKEY key);
+    [PreserveSig] int GetValue(ref PROPERTYKEY key, out PROPVARIANT value);
+    [PreserveSig] int SetValue(ref PROPERTYKEY key, ref PROPVARIANT value);
+    [PreserveSig] int Commit();
+}
+
+public static class ConduitShortcut {
+    [DllImport("shell32.dll")]
+    private static extern void SHChangeNotify(uint eventId, uint flags, IntPtr item1, IntPtr item2);
+
+    public static void Write(string shortcutPath, string exePath, string workingDir, string iconPath, string aumid) {
+        var link = (IShellLinkW)new ShellLinkClass();
+        link.SetPath(exePath);
+        link.SetWorkingDirectory(workingDir);
+        link.SetDescription("Conduit");
+        link.SetIconLocation(iconPath, 0);
+        link.SetShowCmd(1); // SW_SHOWNORMAL
+
+        var store = (IPropertyStore)link;
+        var key = new PROPERTYKEY(new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), 5); // PKEY_AppUserModel_ID
+        var value = new PROPVARIANT { vt = 31, pointerValue = Marshal.StringToCoTaskMemUni(aumid) }; // VT_LPWSTR
+        try {
+            Marshal.ThrowExceptionForHR(store.SetValue(ref key, ref value));
+            Marshal.ThrowExceptionForHR(store.Commit());
+        } finally {
+            Marshal.FreeCoTaskMem(value.pointerValue);
+        }
+
+        ((IPersistFile)link).Save(shortcutPath, true);
+        SHChangeNotify(0x08000000, 0, IntPtr.Zero, IntPtr.Zero); // SHCNE_ASSOCCHANGED
+    }
+}
+'@
+
+if (-not ('ConduitShortcut' -as [type])) {
+    Add-Type -TypeDefinition $shortcutSource -Language CSharp
+}
+
+$controlExe = Join-Path $installDir 'Conduit.exe'
+$daemonExe = Join-Path $installDir 'conduit-daemon.exe'
+$iconIco = Join-Path $installDir 'conduit-icon.ico'
+$iconPng = Join-Path $installDir 'conduit-icon.png'
+[ConduitShortcut]::Write($shortcut, $controlExe, $installDir, $iconIco, 'Conduit.Desktop')
+
+New-Item -Force -Path $aumidKey | Out-Null
+Set-ItemProperty -Path $aumidKey -Name DisplayName -Value 'Conduit'
+Set-ItemProperty -Path $aumidKey -Name IconUri -Value $iconPng
+Set-ItemProperty -Path $aumidKey -Name IconBackgroundColor -Value 'FF2F6FE0'
+Set-ItemProperty -Path $aumidKey -Name ShowInActionCenter -Type DWord -Value 1
+
+if ($hadAutostart) {
+    New-Item -Force -Path $runKey | Out-Null
+    Set-ItemProperty -Path $runKey -Name Conduit -Value ('"{0}"' -f $daemonExe)
+}
+
+if ($hadExplorerIntegration) {
+    $registration = Start-Process -FilePath $daemonExe -ArgumentList @('explorer', 'install') -Wait -PassThru -WindowStyle Hidden
+    if ($registration.ExitCode -ne 0) {
+        throw "Could not refresh Conduit Explorer integration (exit $($registration.ExitCode))"
+    }
+}
+
+if (-not $NoStart) {
+    Start-Process -FilePath $daemonExe -WorkingDirectory $installDir
+}
+
+[pscustomobject]@{
+    InstallDir = $installDir
+    Shortcut = $shortcut
+    AppUserModelId = 'Conduit.Desktop'
+    AutostartPreserved = $hadAutostart
+    ExplorerIntegrationPreserved = $hadExplorerIntegration
+    DaemonStarted = -not $NoStart
+}

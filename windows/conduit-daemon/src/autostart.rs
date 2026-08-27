@@ -2,9 +2,8 @@
 //!
 //! This deliberately uses HKCU\...\Run rather than a Windows Service. Clipboard and toast work
 //! belong to the interactive user session, and a service would add privilege/session plumbing for
-//! no benefit. The Run entry starts this console-subsystem binary through one short-lived hidden
-//! PowerShell process so sign-in never flashes a terminal window; PowerShell exits immediately
-//! after creating the daemon and is not part of Conduit's steady-state cost.
+//! no benefit. The daemon itself is a Windows-GUI-subsystem executable, so the Run entry can launch
+//! it directly without PowerShell, cmd.exe, or any console flash.
 
 use anyhow::{Context, Result};
 
@@ -47,12 +46,7 @@ fn command() -> Result<String> {
 }
 
 fn command_for(exe: &str) -> String {
-    // PowerShell single-quoted literals escape a literal quote by doubling it. Windows paths may
-    // legally contain apostrophes, so do not assume an installation directory never will.
-    let exe = exe.replace('\'', "''");
-    format!(
-        "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Command \"Start-Process -FilePath '{exe}' -WindowStyle Hidden\""
-    )
+    format!("\"{exe}\"")
 }
 
 #[cfg(test)]
@@ -60,13 +54,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn startup_command_quotes_spaces_and_apostrophes_without_a_resident_shell() {
+    fn startup_command_is_a_direct_quoted_gui_subsystem_executable() {
         let command = command_for(r"C:\Users\O'Brien\My Apps\conduit-daemon.exe");
-        assert!(command.contains("-WindowStyle Hidden"));
-        assert!(command.contains(r"'C:\Users\O''Brien\My Apps\conduit-daemon.exe'"));
-        assert!(command.contains("Start-Process"));
-        // No `-Wait`: PowerShell launches the hidden daemon and exits instead of becoming a
-        // second long-running companion process.
-        assert!(!command.contains("-Wait"));
+        assert_eq!(command, r#""C:\Users\O'Brien\My Apps\conduit-daemon.exe""#);
+        assert!(!command.to_ascii_lowercase().contains("powershell"));
+        assert!(!command.to_ascii_lowercase().contains("cmd.exe"));
     }
 }

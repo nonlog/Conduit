@@ -7,12 +7,14 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -27,12 +29,11 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -54,7 +55,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 private const val TAG = "conduit.ui"
@@ -126,9 +128,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             ConduitTheme {
                 ConduitApp(
-                    fingerprint = LinkStatus.fingerprint,
                     peerName = LinkStatus.peerName,
-                    peerFingerprint = LinkStatus.peer,
                     path = LinkStatus.path,
                     state = LinkStatus.state,
                     history = History.entries,
@@ -205,9 +205,7 @@ private fun ConduitTheme(content: @Composable () -> Unit) {
 
 @Composable
 private fun ConduitApp(
-    fingerprint: String,
     peerName: String?,
-    peerFingerprint: String?,
     path: String?,
     state: LinkState,
     history: List<HistoryEntry>,
@@ -220,6 +218,7 @@ private fun ConduitApp(
     onClearHistory: () -> Unit,
 ) {
     var page by rememberSaveable { mutableStateOf("home") }
+    BackHandler(enabled = page == "history") { page = "home" }
     if (page == "history") {
         HistoryScreen(
             history = history,
@@ -228,11 +227,10 @@ private fun ConduitApp(
         )
     } else {
         HomeScreen(
-            fingerprint = fingerprint,
             peerName = peerName,
-            peerFingerprint = peerFingerprint,
             path = path,
             state = state,
+            historyCount = history.size,
             toDesktop = toDesktop,
             toPhone = toPhone,
             hideNotifications = hideNotifications,
@@ -247,11 +245,10 @@ private fun ConduitApp(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun HomeScreen(
-    fingerprint: String,
     peerName: String?,
-    peerFingerprint: String?,
     path: String?,
     state: LinkState,
+    historyCount: Int,
     toDesktop: FileTransfer?,
     toPhone: FileTransfer?,
     hideNotifications: Boolean,
@@ -262,95 +259,105 @@ private fun HomeScreen(
 ) {
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Conduit") },
-                actions = {
-                    TextButton(onClick = onOpenHistory) { Text("History") }
-                },
-            )
+            TopAppBar(title = { Text("Conduit", fontWeight = FontWeight.SemiBold) })
         },
     ) { insets ->
         LazyColumn(
             modifier = Modifier.padding(insets),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(24.dp),
         ) {
-            item { StatusCard(state, peerName, peerFingerprint, path, onConnect, onDisconnect) }
-            toDesktop?.let { transfer ->
-                item("transfer-to-desktop") { TransferCard(transfer, peerName) }
+            item {
+                ConnectionPanel(
+                    state = state,
+                    peerName = peerName,
+                    path = path,
+                    onConnect = onConnect,
+                    onDisconnect = onDisconnect,
+                )
             }
-            toPhone?.let { transfer ->
-                item("transfer-to-phone") { TransferCard(transfer, peerName) }
+            if (toDesktop != null || toPhone != null) {
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        SectionTitle("Transfers")
+                        toDesktop?.let { TransferCard(it, peerName) }
+                        toPhone?.let { TransferCard(it, peerName) }
+                    }
+                }
             }
-            item { IdentityCard(fingerprint) }
-            item { SettingsCard(hideNotifications, onHideNotifications) }
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SectionTitle("Settings")
+                    SettingsGroup(
+                        historyCount = historyCount,
+                        hideNotifications = hideNotifications,
+                        onHideNotifications = onHideNotifications,
+                        onOpenHistory = onOpenHistory,
+                    )
+                }
+            }
         }
     }
 }
 
 @Composable
-private fun StatusCard(
+private fun SectionTitle(title: String) {
+    Text(
+        title,
+        style = MaterialTheme.typography.titleMedium,
+        fontWeight = FontWeight.SemiBold,
+    )
+}
+
+@Composable
+private fun ConnectionPanel(
     state: LinkState,
     peerName: String?,
-    peerFingerprint: String?,
     path: String?,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
+    val linked = state == LinkState.Connected
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = if (state == LinkState.Connected) {
-                MaterialTheme.colorScheme.secondaryContainer
-            } else {
-                MaterialTheme.colorScheme.surfaceVariant
-            },
-        ),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
     ) {
-        Column(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+                .padding(horizontal = 16.dp, vertical = 14.dp)
+                .heightIn(min = 56.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Dot(state)
-                Spacer(Modifier.size(8.dp))
-                // The label carries the state; the dot only repeats it, so colour is
-                // never the only signal.
-                Text(state.label, style = MaterialTheme.typography.titleMedium)
-                Spacer(Modifier.weight(1f))
-                path?.let {
-                    Text(
-                        it,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            // The desktop's name, which is the only line on this card a human recognises at
-            // a glance. Shown even while disconnected, because it is remembered — "Not
-            // linked / LOG" says considerably more than "Not linked" alone.
-            peerName?.let {
-                Text(it, style = MaterialTheme.typography.titleLarge)
-            }
-            peerFingerprint?.let {
+            Dot(state)
+            Spacer(Modifier.size(12.dp))
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
                 Text(
-                    it,
-                    style = MaterialTheme.typography.bodySmall,
-                    fontFamily = FontFamily.Monospace,
+                    text = peerName ?: "No computer",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = path?.takeIf(String::isNotBlank)?.let { "${state.label} · $it" } ?: state.label,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (state == LinkState.Connected) {
-                    // Outlined, because disconnecting is not the action to draw the eye.
-                    OutlinedButton(onClick = onDisconnect, modifier = Modifier.heightIn(min = 48.dp)) {
-                        Text("Disconnect")
-                    }
-                } else {
-                    Button(onClick = onConnect, modifier = Modifier.heightIn(min = 48.dp)) {
-                        Text(if (state == LinkState.Retrying) "Connect now" else "Connect")
-                    }
+            Spacer(Modifier.size(12.dp))
+            if (linked) {
+                TextButton(onClick = onDisconnect, modifier = Modifier.heightIn(min = 44.dp)) {
+                    Text("Disconnect")
+                }
+            } else {
+                Button(onClick = onConnect, modifier = Modifier.heightIn(min = 44.dp)) {
+                    Text("Connect")
                 }
             }
         }
@@ -371,40 +378,51 @@ private fun Dot(state: LinkState) {
 @Composable
 private fun TransferCard(transfer: FileTransfer, peerName: String?) {
     val peer = peerName ?: "desktop"
-    val title = when (transfer.direction) {
-        FileTransferDirection.ToDesktop -> "Sending to $peer"
-        FileTransferDirection.ToPhone -> "Receiving from $peer"
+    val direction = when (transfer.direction) {
+        FileTransferDirection.ToDesktop -> "To $peer"
+        FileTransferDirection.ToPhone -> "From $peer"
     }
-    Card(modifier = Modifier.fillMaxWidth()) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+        ),
+    ) {
         Column(
             modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Text(title, style = MaterialTheme.typography.titleSmall)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    direction,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    "${transfer.percent}%",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                )
+            }
             Text(
                 transfer.name,
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.titleMedium,
                 maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
             LinearProgressIndicator(
                 progress = { transfer.fraction },
                 modifier = Modifier.fillMaxWidth(),
             )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Text(
-                    "${formatBytes(transfer.transferred)} / ${formatBytes(transfer.total)}",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    "${transfer.percent}%",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
+            Text(
+                "${formatBytes(transfer.transferred)} of ${formatBytes(transfer.total)}",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+            )
         }
     }
 }
@@ -423,11 +441,15 @@ private fun HistoryScreen(
             TopAppBar(
                 title = { Text("Clipboard history") },
                 navigationIcon = {
-                    TextButton(onClick = onBack) { Text("Back") }
+                    TextButton(onClick = onBack, modifier = Modifier.heightIn(min = 48.dp)) {
+                        Text("Back")
+                    }
                 },
                 actions = {
                     if (history.isNotEmpty()) {
-                        TextButton(onClick = onClear) { Text("Clear") }
+                        TextButton(onClick = onClear, modifier = Modifier.heightIn(min = 48.dp)) {
+                            Text("Clear")
+                        }
                     }
                 },
             )
@@ -435,8 +457,8 @@ private fun HistoryScreen(
     ) { insets ->
         LazyColumn(
             modifier = Modifier.padding(insets),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             item {
                 OutlinedTextField(
@@ -445,13 +467,22 @@ private fun HistoryScreen(
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     label = { Text("Search") },
-                    placeholder = { Text("Text or direction") },
                 )
             }
-            if (filtered.isEmpty()) {
+            if (history.isEmpty()) {
                 item {
                     Text(
-                        if (history.isEmpty()) "Nothing synced yet." else "No matching clipboard entries.",
+                        "No clipboard history",
+                        modifier = Modifier.padding(vertical = 12.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else if (filtered.isEmpty()) {
+                item {
+                    Text(
+                        "No matches",
+                        modifier = Modifier.padding(vertical = 12.dp),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -475,31 +506,32 @@ internal fun filterHistory(entries: List<HistoryEntry>, query: String): List<His
 @Composable
 private fun ClipRow(entry: HistoryEntry) {
     val clipboard = LocalClipboardManager.current
-    val arrow = if (entry.direction == Direction.Sent) "↑" else "↓"
+    val directionLabel = if (entry.direction == Direction.Sent) "Sent" else "Received"
     Card(
         modifier = Modifier.fillMaxWidth(),
-        // Tapping puts it back on the clipboard. Only the stored preview, which for a long
-        // clip is a prefix — the full text was deliberately never kept, so the history
-        // cannot grow without bound.
         onClick = { if (!entry.image) clipboard.setText(AnnotatedString(entry.preview)) },
     ) {
         Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    // The arrow is a glyph, so the direction has to be said out loud for
-                    // anything that is not reading it with eyes.
-                    .semantics { contentDescription = entry.direction.name },
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Text(
-                    "$arrow ${entry.direction.name}",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                )
+                Surface(
+                    modifier = Modifier.semantics { contentDescription = entry.direction.name },
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                ) {
+                    Text(
+                        directionLabel,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                }
                 Text(
                     entry.ago().toString(),
                     style = MaterialTheme.typography.labelSmall,
@@ -509,68 +541,73 @@ private fun ClipRow(entry: HistoryEntry) {
             Text(
                 entry.preview,
                 style = MaterialTheme.typography.bodyMedium,
-                maxLines = 3,
+                maxLines = 4,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
-    HorizontalDivider(color = Color.Transparent)
 }
 
 @Composable
-private fun SettingsCard(hideNotifications: Boolean, onHideNotifications: (Boolean) -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+private fun SettingsGroup(
+    historyCount: Int,
+    hideNotifications: Boolean,
+    onHideNotifications: (Boolean) -> Unit,
+    onOpenHistory: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            onClick = onOpenHistory,
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
         ) {
-            Text("Settings", style = MaterialTheme.typography.titleSmall)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
                     .heightIn(min = 48.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(Modifier.weight(1f)) {
-                    Text("Hide notification content", style = MaterialTheme.typography.bodyLarge)
-                    Text(
-                        // Says which redaction this is, because Android has one of its own
-                        // that looks the same on the desktop and is fixed somewhere else.
-                        "Mirror only the app name, never the message. Off by default — " +
-                            "Android's own \"Sensitive notification content\" is a separate " +
-                            "restriction this switch cannot lift.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Spacer(Modifier.size(12.dp))
-                Switch(checked = hideNotifications, onCheckedChange = onHideNotifications)
+                Text(
+                    "Clipboard history",
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(
+                    if (historyCount == 0) "Empty" else historyCount.toString(),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
-    }
-}
 
-@Composable
-private fun IdentityCard(fingerprint: String) {
-    val clipboard = LocalClipboardManager.current
-    // Tapping copies, which is how you get the fingerprint into the desktop's pairing
-    // field. It is also the only way to originate a clip from inside this app while it
-    // holds focus, which makes it the one trigger that tests the outbound path without
-    // the LSPosed hook.
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        onClick = { clipboard.setText(AnnotatedString(fingerprint)) },
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
         ) {
-            Text("This phone", style = MaterialTheme.typography.titleSmall)
-            // Compared by eye against the desktop during pairing, so monospace.
-            Text(
-                fingerprint,
-                style = MaterialTheme.typography.bodyMedium,
-                fontFamily = FontFamily.Monospace,
-            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .heightIn(min = 48.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "Hide notification content",
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Medium,
+                )
+                Spacer(Modifier.size(12.dp))
+                Switch(
+                    checked = hideNotifications,
+                    onCheckedChange = onHideNotifications,
+                    modifier = Modifier.semantics {
+                        contentDescription = "Hide notification content on Windows"
+                    },
+                )
+            }
         }
     }
 }

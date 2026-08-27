@@ -161,7 +161,8 @@ impl Bridge {
             *last = Seen::Image(png.len());
         }
         let dib = image::png_to_dib(png)?;
-        let png_format = png_format().ok_or_else(|| anyhow!("could not register the PNG format"))?;
+        let png_format =
+            png_format().ok_or_else(|| anyhow!("could not register the PNG format"))?;
 
         // One open session for both formats. Two `set_clipboard` calls would each empty
         // the clipboard first, so the second would delete the first — and an app that
@@ -175,7 +176,7 @@ impl Bridge {
                 formats::RawData(png_format)
                     .write_clipboard(&png)
                     .map_err(|e| anyhow!("writing PNG to the clipboard failed: {e}"))?;
-                formats::Bitmap
+                formats::RawData(formats::CF_DIB)
                     .write_clipboard(&dib)
                     .map_err(|e| anyhow!("writing CF_DIB to the clipboard failed: {e}"))
             })();
@@ -188,7 +189,12 @@ impl Bridge {
 impl Drop for Bridge {
     fn drop(&mut self) {
         // Order matters: the posted close message is what lets the join return.
-        drop(self.shutdown.get_mut().expect("clipboard mutex poisoned").take());
+        drop(
+            self.shutdown
+                .get_mut()
+                .expect("clipboard mutex poisoned")
+                .take(),
+        );
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -205,27 +211,59 @@ fn png_format() -> Option<u32> {
 
 /// Reads whatever the clipboard now holds, or `None` if it is nothing we carry.
 ///
-/// PNG is preferred over `CF_DIB` because it needs no conversion and, unlike a DIB,
-/// still has an alpha channel. `CF_DIB` is the fallback for the many apps that only
-/// offer that — Paint, Office, most of Win32.
+/// PNG is preferred because it needs no conversion and preserves alpha. Windows 11's
+/// Snipping Tool commonly publishes DIB/DIBV5 rather than `CF_BITMAP`, so both HGLOBAL
+/// DIB formats are tried before the legacy bitmap-handle fallback.
 fn read_clipboard() -> Option<Clip> {
-    if let Some(format) = png_format() {
-        let mut png = Vec::new();
-        if formats::RawData(format).read_clipboard(&mut png).is_ok() && !png.is_empty() {
-            debug!(bytes = png.len(), "clipboard carried a PNG");
-            return Some(Clip::Image(Arc::new(png)));
+    // `Getter::read_clipboard` is intentionally low-level in clipboard-win: unlike
+    // `get_clipboard_string`, it does not call OpenClipboard for us. The old image path
+    // called the getters directly, so text sync worked while every image read failed.
+    // A clipboard-update event can also arrive while the producer is still finishing its
+    // write, hence a few bounded OpenClipboard attempts here. This is event-driven work,
+    // never an idle timer/poll.
+    let mut image_clip = None;
+    if let Err(e) = clipboard_win::with_clipboard_attempts(8, || {
+        if image_clip.is_some() {
+            return;
         }
-    }
-    let mut dib = Vec::new();
-    if formats::Bitmap.read_clipboard(&mut dib).is_ok() && !dib.is_empty() {
-        debug!(bytes = dib.len(), "clipboard carried a DIB");
-        return match image::dib_to_png(&dib) {
-            Ok(png) => Some(Clip::Image(Arc::new(png))),
-            Err(e) => {
-                warn!(error = %e, "could not transcode the clipboard DIB");
-                None
+        if let Some(format) = png_format() {
+            let mut png = Vec::new();
+            if formats::RawData(format).read_clipboard(&mut png).is_ok() && !png.is_empty() {
+                debug!(bytes = png.len(), "clipboard carried a PNG");
+                image_clip = Some(Clip::Image(Arc::new(png)));
+                return;
             }
-        };
+        }
+        for (format, name) in [(formats::CF_DIBV5, "DIBV5"), (formats::CF_DIB, "DIB")] {
+            let mut dib = Vec::new();
+            if formats::RawData(format).read_clipboard(&mut dib).is_ok() && !dib.is_empty() {
+                debug!(bytes = dib.len(), format = name, "clipboard carried a DIB");
+                match image::dib_to_png(&dib) {
+                    Ok(png) => {
+                        image_clip = Some(Clip::Image(Arc::new(png)));
+                        return;
+                    }
+                    Err(e) => {
+                        warn!(error = %e, format = name, "could not transcode the clipboard DIB")
+                    }
+                }
+            }
+        }
+        // Some older apps expose only CF_BITMAP. clipboard-win serialises that HBITMAP
+        // as a complete BMP file (including the 14-byte BITMAPFILEHEADER).
+        let mut bitmap = Vec::new();
+        if formats::Bitmap.read_clipboard(&mut bitmap).is_ok() && !bitmap.is_empty() {
+            debug!(bytes = bitmap.len(), "clipboard carried a CF_BITMAP");
+            match image::to_png(&bitmap) {
+                Ok(png) => image_clip = Some(Clip::Image(Arc::new(png.into_owned()))),
+                Err(e) => warn!(error = %e, "could not transcode clipboard CF_BITMAP"),
+            }
+        }
+    }) {
+        debug!(error = %e, "clipboard was busy after an image update");
+    }
+    if image_clip.is_some() {
+        return image_clip;
     }
     // No text either is the normal case for a copied file or a custom format.
     let raw = clipboard_win::get_clipboard_string().ok()?;
@@ -291,7 +329,11 @@ mod tests {
         // The idempotence that keeps `last` comparable in both directions: text that
         // has been through a write and back must normalise to what we stored.
         assert_eq!(to_lf(&to_crlf("a\nb")), "a\nb");
-        assert_eq!(to_crlf("a\r\nb"), "a\r\nb", "must not double up existing CRLF");
+        assert_eq!(
+            to_crlf("a\r\nb"),
+            "a\r\nb",
+            "must not double up existing CRLF"
+        );
     }
 
     #[test]

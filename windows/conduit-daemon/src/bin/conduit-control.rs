@@ -9,7 +9,7 @@
 use std::fs;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::ptr::{null, null_mut};
 use std::sync::OnceLock;
@@ -35,26 +35,28 @@ const ID_SAVE: usize = 102;
 const ID_FOLDER: usize = 103;
 const ID_AUTOSTART: usize = 104;
 const ID_EXPLORER: usize = 105;
+const ID_TRAY: usize = 106;
 const ID_TITLE: usize = 201;
-const ID_SUBTITLE: usize = 202;
 const ID_CONNECTION_CAPTION: usize = 203;
 const ID_CONNECTION_STATE: usize = 204;
 const ID_CONNECTION_DETAIL: usize = 205;
 const ID_ROUTING_CAPTION: usize = 206;
 const ID_RELAY_LABEL: usize = 207;
 const ID_PROXY_LABEL: usize = 208;
+const ID_INTEGRATIONS_CAPTION: usize = 210;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const STATIC_NO_PREFIX: u32 = 0x0080;
+const DEFAULT_RELAYS: &str = "us.414222.xyz:41113;tyo.414222.xyz:41113;wa.414222.xyz:41113";
 
 #[derive(Clone, Copy)]
 struct Theme {
     dark: bool,
     bg: COLORREF,
     card: COLORREF,
+    border: COLORREF,
     edit: COLORREF,
     text: COLORREF,
     muted: COLORREF,
-    accent: COLORREF,
 }
 
 struct Ui {
@@ -65,6 +67,7 @@ struct Ui {
     proxy: isize,
     autostart: isize,
     explorer: isize,
+    tray: isize,
     config_dir: PathBuf,
     daemon: PathBuf,
     dpi: u32,
@@ -72,7 +75,9 @@ struct Ui {
     bg_brush: isize,
     card_brush: isize,
     edit_brush: isize,
-    accent_brush: isize,
+    border_pen: isize,
+    app_mark_connection: isize,
+    app_mark_title: isize,
 }
 
 static UI: OnceLock<Ui> = OnceLock::new();
@@ -92,26 +97,25 @@ fn app_theme() -> Theme {
         .and_then(|key| key.get_u32("AppsUseLightTheme").ok())
         .unwrap_or(1)
         != 0;
-    let accent = unsafe { GetSysColor(COLOR_HIGHLIGHT) };
     if light {
         Theme {
             dark: false,
             bg: rgb(243, 243, 243),
             card: rgb(255, 255, 255),
+            border: rgb(220, 224, 230),
             edit: rgb(255, 255, 255),
-            text: rgb(31, 31, 31),
+            text: rgb(27, 27, 27),
             muted: rgb(96, 96, 96),
-            accent,
         }
     } else {
         Theme {
             dark: true,
             bg: rgb(32, 32, 32),
             card: rgb(44, 44, 44),
+            border: rgb(60, 60, 60),
             edit: rgb(50, 50, 50),
             text: rgb(245, 245, 245),
-            muted: rgb(184, 184, 184),
-            accent,
+            muted: rgb(180, 180, 180),
         }
     }
 }
@@ -145,8 +149,45 @@ unsafe fn set_font(hwnd: HWND, font: HFONT) {
 }
 
 unsafe fn set_native_theme(hwnd: HWND, dark: bool) {
-    let name = wide(if dark { "DarkMode_Explorer" } else { "Explorer" });
+    let name = wide(if dark {
+        "DarkMode_Explorer"
+    } else {
+        "Explorer"
+    });
     SetWindowTheme(hwnd, name.as_ptr(), null());
+}
+
+const APP_ICON_ICO: &[u8] = include_bytes!("../../assets/conduit-icon.ico");
+
+fn ensure_app_icon_file() -> Option<PathBuf> {
+    let dir = config_dir();
+    if fs::create_dir_all(&dir).is_err() {
+        return None;
+    }
+    let path = dir.join("conduit-icon.ico");
+    let current_matches = fs::read(&path)
+        .map(|current| current.as_slice() == APP_ICON_ICO)
+        .unwrap_or(false);
+    if !current_matches && fs::write(&path, APP_ICON_ICO).is_err() {
+        return None;
+    }
+    Some(path)
+}
+
+unsafe fn load_app_icon(path: &Path, size: i32) -> HICON {
+    let wide_path: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    LoadImageW(
+        null_mut(),
+        wide_path.as_ptr(),
+        IMAGE_ICON,
+        size,
+        size,
+        LR_LOADFROMFILE,
+    ) as HICON
 }
 
 /// Activates Common Controls v6 without requiring `mt.exe` or a Visual Studio installation.
@@ -185,7 +226,16 @@ unsafe fn activate_common_controls() -> Option<(HANDLE, usize, PathBuf)> {
 }
 
 fn config_dir() -> PathBuf {
-    PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default()).join("Conduit")
+    if let Some(local) = std::env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty()) {
+        return PathBuf::from(local).join("Conduit");
+    }
+    windows_registry::CURRENT_USER
+        .open(r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders")
+        .ok()
+        .and_then(|key| key.get_string("Local AppData").ok())
+        .map(PathBuf::from)
+        .unwrap_or_default()
+        .join("Conduit")
 }
 
 fn sibling(name: &str) -> PathBuf {
@@ -248,8 +298,8 @@ unsafe fn refresh() {
     let path = value(&status, "path");
     let relay = value(&status, "relay");
     let state_label = match state.as_str() {
-        "linked" | "connected" if !peer.is_empty() => format!("Linked to {peer}"),
-        "linked" | "connected" => "Linked".to_owned(),
+        "linked" | "connected" if !peer.is_empty() => peer.clone(),
+        "linked" | "connected" => "Phone".to_owned(),
         "retrying" => "Reconnecting".to_owned(),
         "discovering" => "Looking for phone".to_owned(),
         _ => "Not linked".to_owned(),
@@ -261,12 +311,31 @@ unsafe fn refresh() {
     } else {
         format!("{path} · {relay}")
     };
+    let detail = if daemon == "Stopped" {
+        "Desktop daemon stopped".to_owned()
+    } else {
+        match state.as_str() {
+            "linked" | "connected" if route != "—" => format!("Linked\r\n{route}"),
+            "linked" | "connected" => "Linked".to_owned(),
+            "retrying" if route != "—" => format!("Reconnecting\r\n{route}"),
+            "discovering" => "Looking for phone".to_owned(),
+            _ => "Not linked".to_owned(),
+        }
+    };
     set_text(ui.status_state, &state_label);
-    set_text(
-        ui.status_detail,
-        &format!("Desktop daemon  {daemon}\r\nRoute  {route}"),
-    );
-    set_text(ui.relays, &value(&config, "relays"));
+    set_text(ui.status_detail, &detail);
+    let relay_source = config
+        .iter()
+        .find(|(key, _)| key == "relays")
+        .map(|(_, value)| value.as_str())
+        .unwrap_or(DEFAULT_RELAYS);
+    let relay_text = relay_source
+        .split([',', ';'])
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join("\r\n");
+    set_text(ui.relays, &relay_text);
     set_text(ui.proxy, &value(&config, "relay_proxy"));
 
     SendMessageW(
@@ -292,16 +361,33 @@ unsafe fn refresh() {
         },
         0,
     );
+    let tray_value = value(&config, "tray_icon");
+    let tray_enabled = !matches!(
+        tray_value.to_ascii_lowercase().as_str(),
+        "false" | "0" | "no" | "off"
+    );
+    SendMessageW(
+        ui.tray as HWND,
+        BM_SETCHECK,
+        if tray_enabled { 1 } else { 0 },
+        0,
+    );
 }
 
 unsafe fn save_config() {
     let Some(ui) = UI.get() else { return };
-    let relays = get_text(ui.relays).replace(['\r', '\n'], "");
+    let relays = get_text(ui.relays)
+        .split([',', ';', '\r', '\n'])
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join(";");
     let proxy = get_text(ui.proxy).replace(['\r', '\n'], "");
+    let tray = SendMessageW(ui.tray as HWND, BM_GETCHECK, 0, 0) == 1;
     if fs::create_dir_all(&ui.config_dir).is_err()
         || fs::write(
             ui.config_dir.join("config.txt"),
-            format!("relays={relays}\nrelay_proxy={proxy}\n"),
+            format!("relays={relays}\nrelay_proxy={proxy}\ntray_icon={tray}\n"),
         )
         .is_err()
     {
@@ -309,7 +395,7 @@ unsafe fn save_config() {
         return;
     }
     message(
-        "Settings saved. Restart the desktop daemon to apply Relay changes.",
+        "Settings saved. Restart the desktop daemon to apply Relay or tray changes.",
         MB_ICONINFORMATION,
     );
 }
@@ -327,11 +413,34 @@ fn run_daemon_command(args: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
+fn ensure_daemon_running() {
+    // Port 41112 is already the daemon's zero-extra-resource single-instance gate. Probe it once
+    // when the user opens the GUI; if free, release it immediately and launch the hidden sibling.
+    let Ok(probe) = std::net::TcpListener::bind(("0.0.0.0", 41112)) else {
+        return;
+    };
+    drop(probe);
+    let daemon = sibling("conduit-daemon.exe");
+    if daemon.is_file() {
+        let _ = Command::new(daemon)
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn();
+    }
+}
+
 unsafe fn toggle(kind: usize) {
     let Some(ui) = UI.get() else { return };
-    let hwnd = if kind == ID_AUTOSTART { ui.autostart } else { ui.explorer };
+    let hwnd = if kind == ID_AUTOSTART {
+        ui.autostart
+    } else {
+        ui.explorer
+    };
     let checked = SendMessageW(hwnd as HWND, BM_GETCHECK, 0, 0) == 1;
-    let target = if kind == ID_AUTOSTART { "autostart" } else { "explorer" };
+    let target = if kind == ID_AUTOSTART {
+        "autostart"
+    } else {
+        "explorer"
+    };
     if !run_daemon_command(&[target, if checked { "install" } else { "remove" }]) {
         message("Could not update the Windows integration.", MB_ICONERROR);
         refresh();
@@ -341,14 +450,16 @@ unsafe fn toggle(kind: usize) {
 unsafe fn message(text: &str, icon: MESSAGEBOX_STYLE) {
     let title = wide("Conduit");
     let text = wide(text);
-    let parent = UI
-        .get()
-        .map(|ui| ui.window as HWND)
-        .unwrap_or(null_mut());
+    let parent = UI.get().map(|ui| ui.window as HWND).unwrap_or(null_mut());
     MessageBoxW(parent, text.as_ptr(), title.as_ptr(), MB_OK | icon);
 }
 
-unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+unsafe extern "system" fn wnd_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     match msg {
         WM_PAINT => {
             let Some(ui) = UI.get() else {
@@ -360,37 +471,62 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             GetClientRect(hwnd, &mut client);
             FillRect(hdc, &client, ui.bg_brush as HBRUSH);
 
-            let old_pen = SelectObject(hdc, GetStockObject(NULL_PEN));
+            let old_pen = SelectObject(hdc, ui.border_pen as HGDIOBJ);
             let old_brush = SelectObject(hdc, ui.card_brush as HGDIOBJ);
-            let radius = dip(12, ui.dpi);
+            let radius = dip(10, ui.dpi);
             RoundRect(
                 hdc,
                 dip(24, ui.dpi),
-                dip(90, ui.dpi),
-                dip(616, ui.dpi),
-                dip(216, ui.dpi),
+                dip(78, ui.dpi),
+                dip(246, ui.dpi),
+                dip(496, ui.dpi),
                 radius,
                 radius,
             );
             RoundRect(
                 hdc,
-                dip(24, ui.dpi),
-                dip(232, ui.dpi),
-                dip(616, ui.dpi),
-                dip(464, ui.dpi),
-                radius,
-                radius,
-            );
-            SelectObject(hdc, ui.accent_brush as HGDIOBJ);
-            RoundRect(
-                hdc,
-                dip(36, ui.dpi),
+                dip(270, ui.dpi),
                 dip(108, ui.dpi),
-                dip(40, ui.dpi),
-                dip(198, ui.dpi),
-                dip(4, ui.dpi),
-                dip(4, ui.dpi),
+                dip(736, ui.dpi),
+                dip(318, ui.dpi),
+                radius,
+                radius,
             );
+            RoundRect(
+                hdc,
+                dip(270, ui.dpi),
+                dip(360, ui.dpi),
+                dip(736, ui.dpi),
+                dip(452, ui.dpi),
+                radius,
+                radius,
+            );
+            if ui.app_mark_connection != 0 {
+                DrawIconEx(
+                    hdc,
+                    dip(40, ui.dpi),
+                    dip(116, ui.dpi),
+                    ui.app_mark_connection as HICON,
+                    dip(44, ui.dpi),
+                    dip(44, ui.dpi),
+                    0,
+                    null_mut(),
+                    DI_NORMAL,
+                );
+            }
+            if ui.app_mark_title != 0 {
+                DrawIconEx(
+                    hdc,
+                    dip(28, ui.dpi),
+                    dip(20, ui.dpi),
+                    ui.app_mark_title as HICON,
+                    dip(34, ui.dpi),
+                    dip(34, ui.dpi),
+                    0,
+                    null_mut(),
+                    DI_NORMAL,
+                );
+            }
             SelectObject(hdc, old_brush);
             SelectObject(hdc, old_pen);
             EndPaint(hwnd, &paint);
@@ -406,15 +542,15 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             SetTextColor(
                 hdc,
                 match id {
-                    ID_SUBTITLE | ID_CONNECTION_CAPTION | ID_CONNECTION_DETAIL | ID_ROUTING_CAPTION => {
-                        ui.theme.muted
-                    }
-                    ID_CONNECTION_STATE => ui.theme.accent,
+                    ID_CONNECTION_CAPTION
+                    | ID_CONNECTION_DETAIL
+                    | ID_RELAY_LABEL
+                    | ID_PROXY_LABEL => ui.theme.muted,
                     _ => ui.theme.text,
                 },
             );
             match id {
-                ID_TITLE | ID_SUBTITLE => ui.bg_brush as LRESULT,
+                ID_TITLE | ID_ROUTING_CAPTION | ID_INTEGRATIONS_CAPTION => ui.bg_brush as LRESULT,
                 _ => ui.card_brush as LRESULT,
             }
         }
@@ -430,9 +566,14 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             let Some(ui) = UI.get() else {
                 return DefWindowProcW(hwnd, msg, wparam, lparam);
             };
+            let id = GetDlgCtrlID(lparam as HWND) as usize;
             SetBkMode(wparam as HDC, TRANSPARENT as i32);
             SetTextColor(wparam as HDC, ui.theme.text);
-            ui.card_brush as LRESULT
+            if id == ID_SAVE {
+                ui.bg_brush as LRESULT
+            } else {
+                ui.card_brush as LRESULT
+            }
         }
         WM_COMMAND => {
             let id = wparam & 0xffff;
@@ -489,13 +630,22 @@ unsafe fn child(
 
 fn main() {
     unsafe {
+        let _ = windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(
+            &windows::core::HSTRING::from("Conduit.Desktop"),
+        );
+        ensure_daemon_running();
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let common_controls = activate_common_controls();
         let theme = app_theme();
         let bg_brush = CreateSolidBrush(theme.bg);
         let card_brush = CreateSolidBrush(theme.card);
         let edit_brush = CreateSolidBrush(theme.edit);
-        let accent_brush = CreateSolidBrush(theme.accent);
+        let border_pen = CreatePen(PS_SOLID as i32, 1, theme.border);
+        let icon_file = ensure_app_icon_file();
+        let app_icon_class = icon_file
+            .as_deref()
+            .map(|path| load_app_icon(path, 32))
+            .unwrap_or(null_mut());
 
         let instance = GetModuleHandleW(null());
         let class_name = wide("ConduitControlWindow");
@@ -503,6 +653,7 @@ fn main() {
         wc.lpfnWndProc = Some(wnd_proc);
         wc.hInstance = instance;
         wc.lpszClassName = class_name.as_ptr();
+        wc.hIcon = app_icon_class;
         wc.hCursor = LoadCursorW(null_mut(), IDC_ARROW);
         wc.hbrBackground = bg_brush;
         if RegisterClassW(&wc) == 0 {
@@ -518,27 +669,66 @@ fn main() {
             style,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            640,
-            548,
+            760,
+            560,
             null_mut(),
             null_mut(),
             instance,
             null(),
         );
         if window.is_null() {
+            if !app_icon_class.is_null() {
+                DestroyIcon(app_icon_class);
+            }
             return;
         }
 
-        // Ask the real window which monitor DPI it landed on. `GetDpiForSystem` deliberately
-        // returns a virtualized value for per-monitor-aware callers on some Windows builds, which
-        // caused the first Fluent prototype to size the parent at 96 DPI while scaling its child
-        // controls for 120 DPI. Deriving everything from the actual HWND keeps one coordinate space.
+        // Load each icon at the exact physical pixel size used on this monitor. The former code
+        // loaded one 48px icon and stretched it to 44 DIP/34 DIP after DPI scaling, which is why
+        // the mark looked soft at 125%+ even though the ICO contained multiple frames.
         let dpi = GetDpiForWindow(window).max(96);
+        let app_icon_small = icon_file
+            .as_deref()
+            .map(|path| load_app_icon(path, dip(16, dpi)))
+            .unwrap_or(null_mut());
+        let app_icon_big = icon_file
+            .as_deref()
+            .map(|path| load_app_icon(path, dip(32, dpi)))
+            .unwrap_or(null_mut());
+        let app_mark_connection = icon_file
+            .as_deref()
+            .map(|path| load_app_icon(path, dip(44, dpi)))
+            .unwrap_or(null_mut());
+        let app_mark_title = icon_file
+            .as_deref()
+            .map(|path| load_app_icon(path, dip(34, dpi)))
+            .unwrap_or(null_mut());
+
+        if !app_icon_big.is_null() {
+            SendMessageW(
+                window,
+                WM_SETICON,
+                ICON_BIG as usize,
+                app_icon_big as LPARAM,
+            );
+        }
+        if !app_icon_small.is_null() {
+            SendMessageW(
+                window,
+                WM_SETICON,
+                ICON_SMALL as usize,
+                app_icon_small as LPARAM,
+            );
+        }
+
+        // Derive every coordinate from the actual HWND DPI so parent and children stay in the same
+        // coordinate space at 125%+ scaling. The UI remains fixed-size and on-demand; no layout
+        // watcher or resize loop is introduced.
         let mut bounds = RECT {
             left: 0,
             top: 0,
-            right: dip(640, dpi),
-            bottom: dip(548, dpi),
+            right: dip(760, dpi),
+            bottom: dip(560, dpi),
         };
         AdjustWindowRectExForDpi(&mut bounds, style, 0, 0, dpi);
         SetWindowPos(
@@ -553,8 +743,9 @@ fn main() {
 
         let body_font = font(dpi, 14, FW_NORMAL as i32);
         let caption_font = font(dpi, 12, FW_SEMIBOLD as i32);
-        let title_font = font(dpi, 26, FW_SEMIBOLD as i32);
-        let state_font = font(dpi, 20, FW_SEMIBOLD as i32);
+        let title_font = font(dpi, 28, FW_SEMIBOLD as i32);
+        let state_font = font(dpi, 24, FW_SEMIBOLD as i32);
+        let peer_font = font(dpi, 18, FW_SEMIBOLD as i32);
 
         let dark = if theme.dark { 1i32 } else { 0i32 };
         DwmSetWindowAttribute(
@@ -588,101 +779,83 @@ fn main() {
             set_font(hwnd, font_handle);
             hwnd
         };
-        label("Conduit", ID_TITLE, 28, 18, 420, 40, title_font);
+
+        label("Conduit", ID_TITLE, 76, 18, 300, 40, title_font);
+
+        // Left pane: connection state only. No explanatory copy or transport implementation detail.
         label(
-            "Phone companion · low-overhead sync",
-            ID_SUBTITLE,
-            30,
-            60,
-            480,
-            22,
-            body_font,
-        );
-        label(
-            "CONNECTION",
+            "Connection",
             ID_CONNECTION_CAPTION,
-            52,
-            104,
-            200,
+            44,
+            96,
+            150,
             20,
             caption_font,
         );
         let status_state = label(
             "Not linked",
             ID_CONNECTION_STATE,
-            52,
-            128,
-            520,
-            34,
-            state_font,
+            96,
+            116,
+            126,
+            58,
+            peer_font,
         );
         let status_detail = label(
-            "Desktop daemon  —\r\nRoute  —",
+            "Not linked",
             ID_CONNECTION_DETAIL,
-            52,
-            166,
-            520,
-            42,
+            44,
+            184,
+            174,
+            48,
             body_font,
         );
-        label(
-            "ROUTING & INTEGRATIONS",
-            ID_ROUTING_CAPTION,
-            44,
-            246,
-            260,
-            20,
-            caption_font,
-        );
-        label(
-            "Relay endpoints",
-            ID_RELAY_LABEL,
-            44,
-            276,
-            180,
-            22,
-            body_font,
-        );
+
+        // Right pane: settings are grouped like Windows Settings cards, with short labels only.
+        label("Relay", ID_ROUTING_CAPTION, 290, 78, 220, 26, state_font);
+        label("Endpoints", ID_RELAY_LABEL, 290, 126, 160, 22, body_font);
         let relays = child(
             "EDIT",
             "",
-            WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL as u32,
-            dip(44, dpi),
-            dip(300, dpi),
-            dip(552, dpi),
-            dip(34, dpi),
+            WS_BORDER | WS_TABSTOP | ES_MULTILINE as u32 | ES_AUTOVSCROLL as u32,
+            dip(290, dpi),
+            dip(150, dpi),
+            dip(426, dpi),
+            dip(62, dpi),
             window,
             0,
             instance,
         );
-        label(
-            "Relay SOCKS5 proxy · blank = direct",
-            ID_PROXY_LABEL,
-            44,
-            346,
-            340,
-            22,
-            body_font,
-        );
+        label("SOCKS5 proxy", ID_PROXY_LABEL, 290, 224, 180, 22, body_font);
         let proxy = child(
             "EDIT",
             "",
             WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL as u32,
-            dip(44, dpi),
-            dip(370, dpi),
-            dip(552, dpi),
+            dip(290, dpi),
+            dip(248, dpi),
+            dip(426, dpi),
             dip(34, dpi),
             window,
             0,
             instance,
         );
+
+        label(
+            "Windows",
+            ID_INTEGRATIONS_CAPTION,
+            290,
+            330,
+            220,
+            26,
+            state_font,
+        );
         let autostart = child(
             "BUTTON",
-            "Start Conduit when I sign in",
+            "Start at sign-in",
             BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-            dip(44, dpi),
-            dip(420, dpi),
-            dip(250, dpi),
+            dip(290, dpi),
+            dip(382, dpi),
+            dip(190, dpi),
             dip(24, dpi),
             window,
             ID_AUTOSTART,
@@ -690,23 +863,37 @@ fn main() {
         );
         let explorer = child(
             "BUTTON",
-            "Show Send to phone in Explorer",
+            "Send to phone in Explorer",
             BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-            dip(318, dpi),
-            dip(420, dpi),
-            dip(270, dpi),
+            dip(500, dpi),
+            dip(382, dpi),
+            dip(206, dpi),
             dip(24, dpi),
             window,
             ID_EXPLORER,
             instance,
         );
+        let tray = child(
+            "BUTTON",
+            "Show tray icon",
+            BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
+            dip(290, dpi),
+            dip(420, dpi),
+            dip(190, dpi),
+            dip(24, dpi),
+            window,
+            ID_TRAY,
+            instance,
+        );
+
+        // Actions stay explicit and on-demand. Ampersands provide native access keys.
         let folder = child(
             "BUTTON",
-            "Open diagnostics",
+            "&Diagnostics",
             BS_PUSHBUTTON as u32 | WS_TABSTOP,
-            dip(24, dpi),
-            dip(490, dpi),
-            dip(142, dpi),
+            dip(44, dpi),
+            dip(404, dpi),
+            dip(158, dpi),
             dip(36, dpi),
             window,
             ID_FOLDER,
@@ -714,11 +901,11 @@ fn main() {
         );
         let refresh_button = child(
             "BUTTON",
-            "Refresh",
+            "&Refresh",
             BS_PUSHBUTTON as u32 | WS_TABSTOP,
-            dip(348, dpi),
-            dip(490, dpi),
-            dip(112, dpi),
+            dip(44, dpi),
+            dip(448, dpi),
+            dip(158, dpi),
             dip(36, dpi),
             window,
             ID_REFRESH,
@@ -726,11 +913,11 @@ fn main() {
         );
         let save = child(
             "BUTTON",
-            "Save settings",
+            "&Save",
             BS_DEFPUSHBUTTON as u32 | WS_TABSTOP,
-            dip(472, dpi),
-            dip(490, dpi),
-            dip(144, dpi),
+            dip(612, dpi),
+            dip(486, dpi),
+            dip(124, dpi),
             dip(36, dpi),
             window,
             ID_SAVE,
@@ -742,6 +929,7 @@ fn main() {
             proxy,
             autostart,
             explorer,
+            tray,
             refresh_button,
             save,
             folder,
@@ -758,6 +946,7 @@ fn main() {
             proxy: proxy as isize,
             autostart: autostart as isize,
             explorer: explorer as isize,
+            tray: tray as isize,
             config_dir: config_dir(),
             daemon: sibling("conduit-daemon.exe"),
             dpi,
@@ -765,7 +954,9 @@ fn main() {
             bg_brush: bg_brush as isize,
             card_brush: card_brush as isize,
             edit_brush: edit_brush as isize,
-            accent_brush: accent_brush as isize,
+            border_pen: border_pen as isize,
+            app_mark_connection: app_mark_connection as isize,
+            app_mark_title: app_mark_title as isize,
         })
         .ok();
 
@@ -774,10 +965,15 @@ fn main() {
         ShowWindow(window, SW_SHOW);
         UpdateWindow(window);
 
+        // Give a normal top-level Win32 window dialog-style keyboard traversal without turning it
+        // into a dialog resource or adding another framework. This handles Tab/Shift+Tab and native
+        // access/default-button behavior while keeping the process entirely on-demand.
         let mut message: MSG = std::mem::zeroed();
         while GetMessageW(&mut message, null_mut(), 0, 0) > 0 {
-            TranslateMessage(&message);
-            DispatchMessageW(&message);
+            if IsDialogMessageW(window, &message) == 0 {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
         }
 
         if let Some((handle, cookie, path)) = common_controls {
@@ -785,15 +981,27 @@ fn main() {
             ReleaseActCtx(handle);
             let _ = fs::remove_file(path);
         }
+        for icon in [
+            app_icon_class,
+            app_icon_small,
+            app_icon_big,
+            app_mark_connection,
+            app_mark_title,
+        ] {
+            if !icon.is_null() {
+                DestroyIcon(icon);
+            }
+        }
         for object in [
             body_font as HGDIOBJ,
             caption_font as HGDIOBJ,
             title_font as HGDIOBJ,
             state_font as HGDIOBJ,
+            peer_font as HGDIOBJ,
             bg_brush as HGDIOBJ,
             card_brush as HGDIOBJ,
             edit_brush as HGDIOBJ,
-            accent_brush as HGDIOBJ,
+            border_pen as HGDIOBJ,
         ] {
             DeleteObject(object);
         }

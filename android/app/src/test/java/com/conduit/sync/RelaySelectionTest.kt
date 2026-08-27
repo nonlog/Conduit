@@ -12,6 +12,11 @@ class RelaySelectionTest {
 
     @Test
     fun relayCatalogParserIsStrictAndKeepsFallbackOptional() {
+        assertEquals(listOf("us", "tyo", "wa"), RelayCatalog.defaults.map(RelayEndpoint::id))
+        assertEquals(
+            listOf("us.414222.xyz", "tyo.414222.xyz", "wa.414222.xyz"),
+            RelayCatalog.defaults.map(RelayEndpoint::host),
+        )
         assertEquals(
             RelayEndpoint("wa", "wa.example", 41113, "192.0.2.2"),
             RelayCatalog.parse("wa|wa.example|41113|192.0.2.2"),
@@ -64,5 +69,18 @@ class RelaySelectionTest {
         assertEquals(0.0, store.snapshot("cellular", wa).goodputBps, 0.0)
         assertEquals(wa, store.candidates("wifi", listOf(tyo, wa), now + 1).first())
         assertEquals(tyo, store.candidates("cellular", listOf(tyo, wa), now + 1).first())
+    }
+    @Test
+    fun realSessionUpTimeBreaksOtherwiseEqualRelayTiesAndPersists() {
+        val dir = Files.createTempDirectory("conduit-relay-session-up").toFile()
+        val store = RelayQualityStore(dir)
+        val now = 3_000_000L
+
+        store.connected("cellular", tyo, now, observedSessionUpMs = 900)
+        store.connected("cellular", wa, now, observedSessionUpMs = 300)
+
+        assertEquals(wa, store.candidates("cellular", listOf(tyo, wa), now + 1).first())
+        val reloaded = RelayQualityStore(dir)
+        assertEquals(300.0, reloaded.snapshot("cellular", wa).sessionUpMs, 0.01)
     }
 }

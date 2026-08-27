@@ -81,7 +81,10 @@ async fn connect_socks5(proxy: &str, endpoint: &str) -> Result<tokio::net::TcpSt
     let proxy = proxy.strip_prefix("socks5://").unwrap_or(proxy);
     let (host, port) = split_host_port(endpoint)?;
     if host.len() > u8::MAX as usize {
-        bail!("SOCKS5 relay hostname is {} bytes, maximum is 255", host.len());
+        bail!(
+            "SOCKS5 relay hostname is {} bytes, maximum is 255",
+            host.len()
+        );
     }
 
     let mut stream = tokio::net::TcpStream::connect(proxy)
@@ -138,7 +141,9 @@ fn split_host_port(endpoint: &str) -> Result<(&str, u16)> {
     if host.is_empty() || host.contains(':') {
         bail!("SOCKS5 relay endpoint must be a hostname or IPv4 address plus port");
     }
-    let port = port.parse::<u16>().with_context(|| format!("bad relay port {port:?}"))?;
+    let port = port
+        .parse::<u16>()
+        .with_context(|| format!("bad relay port {port:?}"))?;
     Ok((host, port))
 }
 
@@ -332,7 +337,9 @@ impl Session {
         }
         self.plain_out.clear();
         env.encode(&mut self.plain_out)?;
-        let n = self.noise.write_message(&self.plain_out, &mut self.cipher_out)?;
+        let n = self
+            .noise
+            .write_message(&self.plain_out, &mut self.cipher_out)?;
         write_framed(w, &self.cipher_out[..n]).await?;
         self.last_sent = Instant::now();
         Ok(id)
@@ -352,14 +359,18 @@ impl Session {
             self.rx.want = parse_len(self.rx.hdr)?;
         }
         while self.rx.body_got < self.rx.want {
-            let n = r.read(&mut self.cipher_in[self.rx.body_got..self.rx.want]).await?;
+            let n = r
+                .read(&mut self.cipher_in[self.rx.body_got..self.rx.want])
+                .await?;
             if n == 0 {
                 bail!("peer closed mid-frame");
             }
             self.rx.body_got += n;
         }
         let len = std::mem::take(&mut self.rx).want;
-        let m = self.noise.read_message(&self.cipher_in[..len], &mut self.plain_in)?;
+        let m = self
+            .noise
+            .read_message(&self.cipher_in[..len], &mut self.plain_in)?;
         Ok(pb::Envelope::decode(&self.plain_in[..m])?)
     }
 }
@@ -372,7 +383,10 @@ mod tests {
     fn length_prefix_bounds_allocation() {
         assert!(parse_len([0, 0, 0, 0]).is_err(), "zero-length frame");
         assert_eq!(parse_len([0, 0, 0, 1]).unwrap(), 1);
-        assert_eq!(parse_len((MAX_FRAME as u32).to_be_bytes()).unwrap(), MAX_FRAME);
+        assert_eq!(
+            parse_len((MAX_FRAME as u32).to_be_bytes()).unwrap(),
+            MAX_FRAME
+        );
         assert!(parse_len([0, 1, 0, 0]).is_err(), "65536 must be refused");
         assert!(parse_len([255, 255, 255, 255]).is_err());
     }
@@ -381,7 +395,10 @@ mod tests {
     fn device_id_is_stable_and_url_safe() {
         let id = device_id(&[7u8; 32]);
         assert_eq!(id, device_id(&[7u8; 32]));
-        assert!(!id.contains('+') && !id.contains('/') && !id.contains('='), "{id}");
+        assert!(
+            !id.contains('+') && !id.contains('/') && !id.contains('='),
+            "{id}"
+        );
         assert_eq!(fingerprint(&[7u8; 32]).split(':').count(), 8);
     }
 
@@ -400,14 +417,19 @@ mod tests {
 
     #[test]
     fn socks_relay_endpoint_keeps_the_hostname_for_proxy_rules() {
-        assert_eq!(split_host_port("tyo.414222.xyz:41113").unwrap(), ("tyo.414222.xyz", 41113));
+        assert_eq!(
+            split_host_port("tyo.414222.xyz:41113").unwrap(),
+            ("tyo.414222.xyz", 41113)
+        );
         assert!(split_host_port("tyo.414222.xyz").is_err());
         assert!(split_host_port("[::1]:41113").is_err());
     }
 
     #[tokio::test]
     async fn socks5_connect_uses_domain_addressing() {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
         let proxy = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
@@ -418,7 +440,11 @@ mod tests {
 
             let mut head = [0u8; 5];
             stream.read_exact(&mut head).await.unwrap();
-            assert_eq!(&head[..4], &[5, 1, 0, 3], "CONNECT must carry a domain name");
+            assert_eq!(
+                &head[..4],
+                &[5, 1, 0, 3],
+                "CONNECT must carry a domain name"
+            );
             let mut host = vec![0u8; head[4] as usize];
             stream.read_exact(&mut host).await.unwrap();
             assert_eq!(host, b"tyo.414222.xyz");
@@ -445,31 +471,45 @@ mod tests {
     async fn xx_handshake_then_clip_both_directions() {
         let (mut a, mut b) = tokio::io::duplex(1 << 16);
         let params: snow::params::NoiseParams = NOISE_XX.parse().unwrap();
-        let ka = snow::Builder::new(params.clone()).generate_keypair().unwrap();
+        let ka = snow::Builder::new(params.clone())
+            .generate_keypair()
+            .unwrap();
         let kb = snow::Builder::new(params).generate_keypair().unwrap();
         let (ka_pub, kb_pub) = (ka.public.clone(), kb.public.clone());
 
         let init = tokio::spawn(async move {
             let mut s = Session::handshake(&mut a, &ka.private, true).await.unwrap();
-            assert_eq!(s.peer_static, kb_pub, "initiator must learn responder's key");
+            assert_eq!(
+                s.peer_static, kb_pub,
+                "initiator must learn responder's key"
+            );
             let clip = pb::ClipText {
                 text: "héllo → 世界".into(),
                 timestamp_ms: 42,
                 mime: "text/plain".into(),
             };
-            s.send(&mut a, pb::Kind::ClipText, &clip.encode_to_vec()).await.unwrap();
+            s.send(&mut a, pb::Kind::ClipText, &clip.encode_to_vec())
+                .await
+                .unwrap();
             let echo = s.recv(&mut a).await.unwrap();
             assert_eq!(echo.kind(), pb::Kind::ClipText);
             pb::ClipText::decode(&echo.payload[..]).unwrap().text
         });
 
-        let mut s = Session::handshake(&mut b, &kb.private, false).await.unwrap();
-        assert_eq!(s.peer_static, ka_pub, "responder must learn initiator's key");
+        let mut s = Session::handshake(&mut b, &kb.private, false)
+            .await
+            .unwrap();
+        assert_eq!(
+            s.peer_static, ka_pub,
+            "responder must learn initiator's key"
+        );
         let env = s.recv(&mut b).await.unwrap();
         assert_eq!(env.message_id, 1, "ids start at 1 and are per-session");
         let got = pb::ClipText::decode(&env.payload[..]).unwrap();
         assert_eq!(got.text, "héllo → 世界");
-        s.send(&mut b, pb::Kind::ClipText, &env.payload).await.unwrap();
+        s.send(&mut b, pb::Kind::ClipText, &env.payload)
+            .await
+            .unwrap();
 
         assert_eq!(init.await.unwrap(), "héllo → 世界");
     }
@@ -484,7 +524,9 @@ mod tests {
     async fn silence_is_measured_from_our_own_last_send() {
         let (mut a, mut b) = tokio::io::duplex(1 << 16);
         let params: snow::params::NoiseParams = NOISE_XX.parse().unwrap();
-        let ka = snow::Builder::new(params.clone()).generate_keypair().unwrap();
+        let ka = snow::Builder::new(params.clone())
+            .generate_keypair()
+            .unwrap();
         let kb = snow::Builder::new(params).generate_keypair().unwrap();
 
         let chatter = tokio::spawn(async move {
@@ -496,7 +538,9 @@ mod tests {
             }
         });
 
-        let mut s = Session::handshake(&mut b, &kb.private, false).await.unwrap();
+        let mut s = Session::handshake(&mut b, &kb.private, false)
+            .await
+            .unwrap();
         s.recv(&mut b).await.unwrap();
         tokio::time::sleep(Duration::from_millis(60)).await;
         s.recv(&mut b).await.unwrap();
@@ -518,10 +562,14 @@ mod tests {
     async fn oversize_envelope_is_refused_before_the_wire() {
         let (mut a, mut b) = tokio::io::duplex(1 << 17);
         let params: snow::params::NoiseParams = NOISE_XX.parse().unwrap();
-        let ka = snow::Builder::new(params.clone()).generate_keypair().unwrap();
+        let ka = snow::Builder::new(params.clone())
+            .generate_keypair()
+            .unwrap();
         let kb = snow::Builder::new(params).generate_keypair().unwrap();
         let resp = tokio::spawn(async move {
-            Session::handshake(&mut b, &kb.private, false).await.unwrap();
+            Session::handshake(&mut b, &kb.private, false)
+                .await
+                .unwrap();
         });
         let mut s = Session::handshake(&mut a, &ka.private, true).await.unwrap();
         resp.await.unwrap();
@@ -543,20 +591,30 @@ mod tests {
     async fn cancelled_recv_resumes() {
         let (mut a, mut b) = tokio::io::duplex(1 << 16);
         let params: snow::params::NoiseParams = NOISE_XX.parse().unwrap();
-        let ka = snow::Builder::new(params.clone()).generate_keypair().unwrap();
+        let ka = snow::Builder::new(params.clone())
+            .generate_keypair()
+            .unwrap();
         let kb = snow::Builder::new(params).generate_keypair().unwrap();
         let sender = tokio::spawn(async move {
             let mut s = Session::handshake(&mut a, &ka.private, true).await.unwrap();
-            let clip = pb::ClipText { text: "resumed".into(), ..Default::default() };
-            s.send(&mut a, pb::Kind::ClipText, &clip.encode_to_vec()).await.unwrap();
+            let clip = pb::ClipText {
+                text: "resumed".into(),
+                ..Default::default()
+            };
+            s.send(&mut a, pb::Kind::ClipText, &clip.encode_to_vec())
+                .await
+                .unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         });
-        let mut s = Session::handshake(&mut b, &kb.private, false).await.unwrap();
+        let mut s = Session::handshake(&mut b, &kb.private, false)
+            .await
+            .unwrap();
 
         // Timeouts so short they land inside the frame read, over and over.
         let mut early = None;
         for _ in 0..50 {
-            if let Ok(r) = tokio::time::timeout(std::time::Duration::from_nanos(1), s.recv(&mut b)).await
+            if let Ok(r) =
+                tokio::time::timeout(std::time::Duration::from_nanos(1), s.recv(&mut b)).await
             {
                 early = Some(r.unwrap());
                 break;
@@ -566,7 +624,10 @@ mod tests {
             Some(e) => e,
             None => s.recv(&mut b).await.unwrap(),
         };
-        assert_eq!(pb::ClipText::decode(&env.payload[..]).unwrap().text, "resumed");
+        assert_eq!(
+            pb::ClipText::decode(&env.payload[..]).unwrap().text,
+            "resumed"
+        );
         sender.await.unwrap();
     }
 
@@ -578,14 +639,18 @@ mod tests {
     async fn cancelled_recv_survives_an_intervening_send() {
         let (mut a, mut b) = tokio::io::duplex(1 << 16);
         let params: snow::params::NoiseParams = NOISE_XX.parse().unwrap();
-        let ka = snow::Builder::new(params.clone()).generate_keypair().unwrap();
+        let ka = snow::Builder::new(params.clone())
+            .generate_keypair()
+            .unwrap();
         let kb = snow::Builder::new(params).generate_keypair().unwrap();
 
         let peer = tokio::spawn(async move {
             let session = Session::handshake(&mut a, &ka.private, true).await.unwrap();
             (session, a)
         });
-        let mut session = Session::handshake(&mut b, &kb.private, false).await.unwrap();
+        let mut session = Session::handshake(&mut b, &kb.private, false)
+            .await
+            .unwrap();
         let (mut peer, _peer_stream) = peer.await.unwrap();
 
         // Produce one real encrypted peer frame, but capture it so the test can expose only a
@@ -601,16 +666,26 @@ mod tests {
         drop(capture_tx);
         let mut framed = Vec::new();
         capture_rx.read_to_end(&mut framed).await.unwrap();
-        assert!(framed.len() > 32, "test frame must have a body worth interrupting");
+        assert!(
+            framed.len() > 32,
+            "test frame must have a body worth interrupting"
+        );
 
         let (mut feed_tx, mut feed_rx) = tokio::io::duplex(1 << 17);
         const PREFIX: usize = 20;
         feed_tx.write_all(&framed[..PREFIX]).await.unwrap();
 
-        let interrupted = tokio::time::timeout(Duration::from_millis(10), session.recv(&mut feed_rx)).await;
-        assert!(interrupted.is_err(), "recv unexpectedly completed from a frame prefix");
+        let interrupted =
+            tokio::time::timeout(Duration::from_millis(10), session.recv(&mut feed_rx)).await;
+        assert!(
+            interrupted.is_err(),
+            "recv unexpectedly completed from a frame prefix"
+        );
         assert_eq!(session.rx.hdr_got, 4);
-        assert!(session.rx.body_got > 0, "the test did not actually cancel mid-body");
+        assert!(
+            session.rx.body_got > 0,
+            "the test did not actually cancel mid-body"
+        );
 
         // This is what serve() does when RELAY_IDLE_PING expires. It must not damage the
         // ciphertext already accumulated by the cancelled receive.
@@ -620,7 +695,10 @@ mod tests {
         feed_tx.write_all(&framed[PREFIX..]).await.unwrap();
         let resumed = session.recv(&mut feed_rx).await.unwrap();
         assert_eq!(resumed.kind(), pb::Kind::ClipText);
-        assert_eq!(pb::ClipText::decode(&resumed.payload[..]).unwrap().text, body.text);
+        assert_eq!(
+            pb::ClipText::decode(&resumed.payload[..]).unwrap().text,
+            body.text
+        );
     }
 
     /// Cross-language pin for the hand-written Kotlin XX in `android/.../Noise.kt`.

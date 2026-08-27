@@ -119,7 +119,7 @@ The implementation reads Android's optional app-private `files/relays.txt` once 
 id|hostname|port|optional-fallback-ipv4
 ```
 
-With no file (or no valid entries), TYO remains the single production default. Windows accepts a
+With no file (or no valid entries), Android defaults to the deployed US / TYO / WA production fleet. Windows accepts a
 comma/semicolon-separated `CONDUIT_RELAYS` and parks one independent responder task per endpoint;
 the older singular `CONDUIT_RELAY` remains a compatibility fallback. An explicitly empty
 `CONDUIT_RELAYS` disables Relay parking.
@@ -140,7 +140,7 @@ remains direct. A parked Windows responder enables kernel TCP keepalive before i
 this prevents a relay/NAT path that died silently from leaving `park()` blocked forever on a local
 socket that still appears `ESTABLISHED`.
 
-The relay remains configured by hostname (`tyo.414222.xyz`). On the tested phone, Bettbox uses
+Relay endpoints remain configured by hostname (`us.414222.xyz`, `tyo.414222.xyz`, `wa.414222.xyz`). On the tested phone, Bettbox uses
 the benchmark range `198.18.0.0/15` as fake-IP DNS. During an underlying Wi-Fi/cellular handover,
 that local fake mapping can accept a connect and fail it before any preamble reaches TYO. Android
 therefore treats **only** a `198.18/15` answer for the relay as synthetic and substitutes the

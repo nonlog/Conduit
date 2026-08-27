@@ -24,12 +24,12 @@
    git log --oneline --decorate -8
    ```
 
-3. The compatible relay migration is **deployed**. TYO runs the compatible server and the installed
+3. The compatible relay migration is **deployed**. US / TYO / WA run the compatible server and the installed
    Android/Windows endpoints use explicit roles; keep legacy inference for older clients until M2
    evidence and deliberate retirement.
 4. Windows Relay traffic is currently configured through `%LOCALAPPDATA%\Conduit\config.txt` to
    use local Mihomo/Clash Party at `socks5://127.0.0.1:7891`. LAN listener/direct LAN sessions do
-   **not** use this proxy. Preserve the hostname `tyo.414222.xyz` through SOCKS so Mihomo can apply
+   **not** use this proxy. Preserve Relay hostnames through SOCKS so Mihomo can apply
    domain rules. Environment variables remain optional development overrides, not the normal store.
 5. The latest Windows relay-park fix enables TCP keepalive **before** the parked socket waits in
    `peek()`. Do not remove this: a phone reboot exposed a zombie Windows responder waiter whose
@@ -39,17 +39,15 @@
 7. Product-level constraint: Conduit exists because Link to Windows used excessive phone CPU and
    caused lag/heat/battery drain. Do not add periodic Android speed tests, Relay probes, polling, or
    timer-driven scoring. Multi-Relay client selection is now implemented as passive quality learning
-   + sticky failover: Windows may park on all configured Relays; Android keeps one session and learns
-   only from real connection/session/content-transfer events. Only TYO is deployed publicly today,
-   so live cross-node production failover still waits for explicit deployment approval.
-8. Windows sign-in autostart is installed for the current user through HKCU Run. The current value
-   points to the development binary under `D:\Workspace\Conduit\target\debug`; reinstall the entry
-   when a stable packaged path exists. The daemon binds 41112 before starting long-lived workers, so
+   + sticky failover: Windows parks on US / TYO / WA; Android keeps one session and learns only from
+   real connection/session/content-transfer events, including real time-to-session-up EWMA. All three
+   production Relay endpoints are deployed and reachable; no periodic probe or speed-test was added.
+8. Windows sign-in autostart is installed for the current user through HKCU Run. The installer
+   preserves the user choice while rewriting the value to the current installed daemon path. The daemon binds 41112 before starting long-lived workers, so
    duplicate manual/login launches fail fast instead of owning a second clipboard/Relay stack.
-9. Explorer **Send to phone with Conduit** is installed for the current user. It points to the
-   on-demand `target\debug\conduit-send.exe` helper beside the daemon; the helper is non-resident and
-   reuses the daemon's named-pipe send/remote-ACK path. Reinstall the verb after packaging/moving the
-   binaries.
+9. Explorer **Send with Conduit** is installed for the current user with the Conduit icon. It points
+   to the on-demand `conduit-send.exe` helper beside the installed daemon; the helper is non-resident
+   and reuses the daemon's named-pipe send/remote-ACK path. The installer refreshes the verb path.
 10. Windows notification actions and inline reply are implemented. The resident toast thread owns
     foreground activation; there is no COM activator process. Android retains every PendingIntent,
     resolves the current notification only after a real click, and rejects stale action metadata.
@@ -126,7 +124,7 @@ A real 1 MiB device test observed last-chunk send first, then `FILE_RESULT`, the
 
 ```text
 %LOCALAPPDATA%\Conduit\config.txt
-relays=tyo.414222.xyz:41113
+relays=us.414222.xyz:41113;tyo.414222.xyz:41113;wa.414222.xyz:41113
 relay_proxy=socks5://127.0.0.1:7891
 ```
 
@@ -223,8 +221,8 @@ See `docs/architecture.md` for full data flow and trust boundaries.
 
 ## Latest evidence
 
-- Android JVM tests: **26 passed, 0 failed**.
-- Windows daemon normal test run: **51 passed, 3 ignored, 0 failed**. The added ignored test is an
+- Android JVM tests: **27 passed, 0 failed**.
+- Windows daemon normal test run: **53 passed, 3 ignored, 0 failed**. The added ignored test is an
   interactive native-toast activation check; it was run manually and returned both action arguments
   and Windows `UserInput` on the target machine.
 - Fluent control-surface verification: the target Windows dark theme at 125% scaling rendered a full
@@ -410,3 +408,74 @@ Follow `docs/development.md` for Scoop-first tool installation and safe Android 
 - The bounded 60-second Android recovery ceiling is **awake-time scheduling**, not an alarm. `Handler.postDelayed` intentionally does not wake a sleeping phone, preserving Conduit's low-radio/low-CPU design.
 - In the final runtime normalization test, a 60-second retry became overdue while the phone slept and therefore did not execute. Waking only to the lockscreen (no unlock/screenshot) let the overdue retry run immediately: TYO spliced at 00:36:33 and Noise was up at 00:36:33.819; status returned to `linked`.
 - Do not "fix" this by adding AlarmManager/WakeLock/background polling. If product requirements ever demand reconnect while the phone is fully asleep, treat the battery cost as an explicit design decision.
+### 2026-08-27 Android + Windows UI redesign checkpoint
+
+- **Design System Artifact**: Persisted `design-system/conduit/MASTER.md` under the repository using `search.py` (`--design-system --variance 2 --motion 2 --density 8 -p Conduit --stack jetpack-compose`), establishing a Swiss/Minimalism low-variance, low-motion, high-density direction tailored for a native utility app.
+- **Android UI Redesign** (`MainActivity.kt`): Reorganized Jetpack Compose + Material 3 interface with a strong Hero Status surface (`StatusHero`) featuring dynamic container colors (`primaryContainer` / `tertiaryContainer` / `surfaceVariant`), status badges, route pills, peer fingerprint, and 48dp minimum touch targets. Active transfers (`TransferCard`) remain conditional on real file activity. Section rhythm is structured with distinct surface containers: `SyncPrivacyGroup` (grouped Clipboard History and Privacy Switch with dividers) and `IdentityGroup` (Outlined Card with monospace identity code block and dedicated Copy action button).
+- **Windows UI Redesign** (`conduit-control.rs`): Native Win32/DWM/Common Controls surface reorganized into distinct Windows 11-style section cards with custom 1px border pens (`theme.border`), dynamic left accent indicator, structured status detail rows, grouped Relay Routing and Windows Integration cards, and native keyboard access keys (`&Refresh`, `&Save settings`, `Open &diagnostics`). Lifecycle remains strictly on-demand: 0 resident background processes, 0 timers, 0 watchers, 0 WebViews, 0 WinUI dependencies.
+- **Source Formatting**: Formatted modified file individually using `rustfmt --edition 2021 windows/conduit-daemon/src/bin/conduit-control.rs` without disturbing unrelated files.
+- **Verification**: `git diff --check` passed cleanly with 0 errors. Android `.\gradlew.bat --no-daemon assembleDebug testDebugUnitTest` completed with **BUILD SUCCESSFUL** (50 actionable tasks). Windows `cargo test -p conduit-daemon` completed with **51 passed, 0 failed, 3 ignored**; `cargo check -p conduit-daemon` completed successfully.
+- **Audit**: Zero timers, zero polling loops, zero scheduled workers, zero background refresh threads, zero extra wake locks, zero AlarmManager loops added.
+- **Runtime deployment**: The redesigned debug APK was installed in-place on the connected `CPH2573` test phone with `adb install -r`, and `com.conduit.sync/.MainActivity` was started so the user can inspect the new UI directly. No phone screenshot or screen capture was taken. The redesigned Windows `target/debug/conduit-control.exe` was also rebuilt and launched as a responsive top-level `Conduit Control` window; independent visual approval is still pending because the desktop-observation connector is blocked by caller-identity validation.
+- **Privacy & Safety Confirmation**: Zero phone screenshots were captured, requested, or opened. Zero git commits or pushes were made.
+
+### 2026-08-27 UI redesign v2 — rejected design superseded
+
+- The preceding Android/Windows UI checkpoint was explicitly rejected after real-device review and is **superseded by this section**. Its large colored Android status hero, workflow/tagline copy, fingerprint/identity surfaces, redundant section explanations, and vertically stacked Windows dashboard-card layout are no longer the target design.
+- `design-system/conduit/MASTER.md` was rewritten around a native system-utility language: Material 3/dynamic color on Android, Windows 11/Fluent principles on desktop, concise labels, progressive disclosure, standard density, and no marketing/value-proposition copy.
+- Android `MainActivity.kt` now uses a compact neutral `ConnectionPanel`: peer name, connection state/route, and one connect/disconnect action. The home screen no longer renders the desktop fingerprint, the phone fingerprint/identity card, pairing/MAC-like identifiers, `Phone companion · quiet idle`, or the photo/screenshot workflow explanation.
+- Android persistent settings are reduced to two compact rows: `Clipboard history` with its count and `Hide notification content` with its switch. Active transfers remain conditional on actual transfer state. Clipboard History no longer shows instructional filler such as `tap to copy`.
+- Clipboard History navigation now installs `BackHandler(enabled = page == "history") { page = "home" }`, so the Android system Back/edge-back path is consumed by the child page before the Activity can exit. The code path is built and installed; direct gesture proof is pending because the test phone was locked/dozing during final automation and it was not unlocked solely for UI testing.
+- Windows `conduit-control.exe` was restructured from the rejected full-width vertical card stack into a fixed 760×560 two-pane utility: connection/status and Diagnostics/Refresh on the left; Relay and Windows integration settings on the right; Save at bottom-right. Labels were shortened to `Connection`, `Relay`, `Windows`, `Endpoints`, `SOCKS5 proxy`, `Start at sign-in`, and `Send to phone in Explorer`.
+- Windows icon identity now matches Android instead of using the rejected ad-hoc chain mark. This was later hardened into the static multi-resolution asset pipeline documented below; do not restore the earlier runtime GDI rasteriser. Relay keeps a connected-node mark and Windows keeps a four-pane mark.
+- The peer-name control was also corrected after real review: it now uses a dedicated 18pt semibold font and a 126×58 DIP text area instead of the previous 24pt/122×38 DIP box. Runtime probe confirms the current `OnePlus 12` peer text is present in full in the control, with enough height for a second line when needed.
+- Windows remains raw on-demand Win32/DWM/Common Controls with Segoe UI Variable, system light/dark theme, system accent, native keyboard access keys, and no WinUI/WebView/tray/timer/watcher/transport ownership.
+- Final Android verification: `.\gradlew.bat --no-daemon assembleDebug testDebugUnitTest` -> **BUILD SUCCESSFUL** (50 actionable tasks; 9 executed, 41 up-to-date). Final APK was installed with `adb install -r` successfully and `com.conduit.sync/.MainActivity` was started without taking a phone screenshot.
+- Final Windows verification: `rustfmt --check --edition 2021` passed; `cargo test -p conduit-daemon` -> **51 passed, 0 failed, 3 ignored**; `cargo check -p conduit-daemon` passed. `git diff --check` passed.
+- Static audit of the UI diffs found no Android timer/poll/thread/scheduled-work/wake mechanism and no Windows timer/poll/thread/watcher implementation. The sole text match for `watcher` was a comment explicitly stating that no watcher or resize loop is introduced.
+- The desktop-observation connector is still blocked by caller-identity validation, so assistant-side visual approval of the Windows window is not claimed. The rebuilt window can be launched directly for user review. No commit or push was made.
+
+### 2026-08-27 Windows clipboard + notification identity repair
+
+- The temporary `AGENTS.md` foreground-UI rule added during UI debugging was removed completely; it was not user-requested and `git diff -- AGENTS.md` is clean.
+- **Windows image clipboard root cause:** `clipboard-win` image `Getter::read_clipboard` APIs require an already-open clipboard. Conduit called the image getters directly while the text helper opened the clipboard internally, so text sync worked while image sync silently returned nothing. The fallback also confused `CF_BITMAP` with `CF_DIB`: `clipboard-win` serialises `CF_BITMAP` as a complete BMP file (with BITMAPFILEHEADER), but Conduit fed those bytes to the DIB-only decoder. Modern Snipping Tool `CF_DIBV5` was not handled explicitly.
+- `clip.rs` now reacts to the existing clipboard-change event with bounded `with_clipboard_attempts`, then reads in order: registered PNG, `CF_DIBV5`, `CF_DIB`, legacy `CF_BITMAP`. DIB/DIBV5 go through `dib_to_png`; CF_BITMAP's complete BMP goes through `to_png`. Remote image writes now advertise a real `CF_DIB` instead of misusing the CF_BITMAP setter. No idle polling/timer was introduced.
+- **Physical-device E2E:** a Windows image clipboard update produced `DIBV5` **518,536 B**, Conduit logged `clip image out` **3,367 B**, OnePlus 12 logged `image in: 3367 B, photo=false screenshot=false` and `clip image in: 3367 B`, and `run-as com.conduit.sync ls -l cache/clip.png` reported a **3,367 B** file. No `could not put the image on the clipboard` failure appeared.
+- The rejected low-resolution runtime GDI Conduit mark is superseded. `windows/conduit-daemon/tools/generate_icon.py` renders Windows assets from the Android launcher's exact source geometry/colors (`#6E5BD6` -> `#2F6FE0`, opposing white sync arrows) with supersampling. It produces a 512×512 RGBA PNG and an ICO with 16/20/24/32/40/48/64/128/256 px entries. `conduit-control.exe` loads those static ICO entries for titlebar/taskbar/in-window branding rather than rasterising a logo at runtime.
+- `toast.rs` persists the same PNG as `%LOCALAPPDATA%\Conduit\conduit-icon.png` and registers `IconUri` plus `IconBackgroundColor=FF2F6FE0` under `HKCU\Software\Classes\AppUserModelId\Conduit.Desktop`; live registry inspection confirmed the values. This replaces the generic Windows glyph used when an unpackaged AUMID has no icon identity.
+- Mirrored source app names (for example `ChatGPT`) no longer use Windows' tiny `placement="attribution"` line. They are now a normal ToastGeneric `hint-style="body"` text row. A dedicated unit test asserts both the body style and absence of the attribution placement.
+- A real Android shell notification was mirrored through the live OnePlus -> TYO/Mihomo -> Windows session after the AUMID update; Android logged `notif out com.android.shell` and the Windows daemon logged `notif in app=Shell`, with no toast failure. The temporary probe notification was then snoozed out of the user's shade.
+- Current Windows verification after these changes: **52 passed, 0 failed, 3 ignored**, `cargo check -p conduit-daemon` passed, all Windows binaries built, and `git diff --check` passed. Final daemon runtime was relaunched via `Win32_Process.Create` so it is not owned by an AgentDock command job; PID 35832, Session 2, parent `WmiPrvSE`, responding, and status returned to `linked` through TYO. No temporary scheduled task remains. No commit or push was made.
+
+### 2026-08-27 Windows application identity + installation hardening
+
+- User review exposed three packaging defects: Action Center still used the generic Win32 glyph, the in-window mark was soft at scaled DPI, and manually running the daemon exposed a console window.
+- `tools/install-windows.ps1` now creates `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Conduit.lnk` with `System.AppUserModel.ID=Conduit.Desktop`, points it at the installed GUI, and assigns the shared Conduit ICO. This follows Microsoft's unpackaged desktop-toast identity model instead of relying on registry `IconUri` alone.
+- The user-facing installed entry is `%LOCALAPPDATA%\Programs\Conduit\Conduit.exe`; `conduit-daemon.exe` and `conduit-send.exe` are internal siblings. The old installed `conduit-control.exe` name is removed. The installer uses Windows Known Folder APIs instead of inherited `APPDATA/LOCALAPPDATA`.
+- Both daemon and GUI set explicit process AUMID `Conduit.Desktop`. `conduit-daemon.exe` is now Windows GUI subsystem (`PE Subsystem=2`), and HKCU Run launches it directly without PowerShell/cmd. Opening `Conduit.exe` performs one on-demand 41112 single-instance probe and starts the hidden sibling only when needed; closing the GUI leaves the daemon running.
+- Icon generation now uses 8x supersampling and includes dedicated ICO frames for native sizes plus common physical sizes for the 34-DIP title and 44-DIP connection marks. The GUI loads separate HICONs at the current monitor DPI instead of stretching one 48px icon.
+- The stale `Conduit.Desktop` notification-settings cache contained only counters/timestamps and no user preference values; that one Conduit-specific entry was backed up, removed, and regenerated after the Start-menu shortcut existed. A controlled notification-center check then found a 20x20 Conduit violet/blue cluster at the notification header position; the closed-panel control image contained zero brand-color pixels. Temporary test artifacts were removed.
+- Final installed runtime: `%LOCALAPPDATA%\Programs\Conduit\Conduit.exe` PID 2600 responding with title `Conduit`; one installed hidden daemon PID 7332 responding. Both subsystem probes returned 2. Windows tests remain **52 passed, 0 failed, 3 ignored**; release all-bin build and `git diff --check` passed. No commit or push.
+
+## 2026-08-27 release-candidate shell / relay checkpoint
+
+- Windows device naming no longer depends on the `COMPUTERNAME` process environment. The daemon
+  reads `ActiveComputerName`; a launch with `COMPUTERNAME` deliberately removed advertised `LOG`,
+  and the installed phone persisted `peer-name.txt = LOG` after the encrypted session handshake.
+- Production Relay inventory is `US / TYO / WA`. Windows parks one responder at each endpoint while
+  Android holds one Relay session. `RelayQualityStore` v2 passively persists real success/failure,
+  unstable-session evidence, completed image/file goodput and session-up EWMA per coarse network
+  class. A forced reconnect produced independent real US/TYO/WA records; no ping, periodic speed
+  test, probe worker or timer-driven scoring was introduced.
+- Explorer integration is `Send with Conduit`; the installed verb points at the installed
+  `conduit-icon.ico` and `conduit-send.exe`. A real Windows 11 context menu showed the product icon.
+- The optional daemon-owned tray menu is deliberately text-only: `Open Conduit` and `Exit Conduit`.
+  `Exit Conduit` was exercised against the live tray window and terminated the daemon; the daemon
+  was then restarted detached and linked normally.
+- Product artwork is based on Microsoft Fluent UI System Icons `Phone Desktop`, with the same
+  phone/desktop geometry on Android and Windows. The tray uses dedicated monochrome 16/20/24 px
+  regular glyphs rather than a shrunken coloured application tile.
+- Final pre-release verification: Android `assembleDebug + testDebugUnitTest` succeeded with
+  **27 passed / 0 failed**; Windows `cargo test` is **53 passed / 0 failed / 3 ignored**, and
+  `cargo check` plus release all-bin build succeeded.
+- No unlocked-phone foreground screenshot was captured during this checkpoint.

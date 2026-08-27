@@ -121,6 +121,7 @@ class SyncService : Service() {
     @Volatile private var relayAttempt: RelayEndpoint? = null
     @Volatile private var relayAttemptConnected = false
     @Volatile private var relayConnectedAtMs = 0L
+    @Volatile private var relayAttemptStartedAtMs = 0L
     @Volatile private var relayNetworkClass = "other"
 
     /**
@@ -228,10 +229,12 @@ class SyncService : Service() {
                             relayAttempt?.let { endpoint ->
                                 relayAttemptConnected = true
                                 relayConnectedAtMs = SystemClock.elapsedRealtime()
+                                val sessionUpMs = (relayConnectedAtMs - relayAttemptStartedAtMs).coerceAtLeast(1L)
                                 relayQuality.connected(
                                     relayNetworkClass,
                                     endpoint,
                                     System.currentTimeMillis(),
+                                    sessionUpMs,
                                 )
                             }
                             cancelRetry()
@@ -576,6 +579,7 @@ class SyncService : Service() {
         relayAttempt = endpoint
         relayAttemptConnected = false
         relayConnectedAtMs = 0L
+        relayAttemptStartedAtMs = SystemClock.elapsedRealtime()
         LinkStatus.path = "Relay · ${endpoint.id.uppercase()}"
         Log.i(TAG, "trying relay ${endpoint.id} at ${endpoint.host}:${endpoint.port}")
         link.connectVia(
@@ -590,6 +594,7 @@ class SyncService : Service() {
         relayAttempt = null
         relayAttemptConnected = false
         relayConnectedAtMs = 0L
+        relayAttemptStartedAtMs = 0L
     }
 
     /**

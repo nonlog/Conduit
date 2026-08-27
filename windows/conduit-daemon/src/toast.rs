@@ -25,22 +25,23 @@ use std::sync::mpsc;
 use std::thread::JoinHandle;
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
-use windows::core::{HSTRING, Interface};
-use windows::Foundation::{IPropertyValue, TypedEventHandler};
+use windows::core::{Interface, HSTRING};
 use windows::ApplicationModel::DataTransfer::SharedStorageAccessManager;
 use windows::Data::Xml::Dom::XmlDocument;
+use windows::Foundation::{IPropertyValue, TypedEventHandler};
 use windows::Storage::StorageFile;
+use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
 use windows::UI::Notifications::{
     NotificationData, ToastActivatedEventArgs, ToastNotification, ToastNotificationManager,
     ToastNotifier,
 };
-use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
 
 use crate::wire::pb;
 
 /// Must match the registry key below. Reverse-DNS-ish because that is the convention
 /// Windows uses for AUMIDs and it keeps us out of anyone else's namespace.
 const AUMID: &str = "Conduit.Desktop";
+const APP_IDENTITY_ICON: &[u8] = include_bytes!("../assets/conduit-icon.png");
 
 /// Every toast shares one group, so a single call clears the lot on shutdown and the
 /// phone's tag alone identifies a notification within it.
@@ -213,10 +214,12 @@ impl Cache {
     /// Stores whatever art arrived and returns the file the toast should show.
     ///
     /// The avatar wins when there is one: for a chat the person who wrote is the point,
-    /// and the app is named in the toast's attribution line either way. The app icon is
+    /// and the app is still named in a readable source-app line either way. The app icon is
     /// what everything without a person attached falls back to.
     fn logo(&self, package: &str, app_icon: &[u8], avatar: &[u8]) -> Result<Option<PathBuf>> {
-        let icon = self.icons.join(format!("{}.png", digest(package.as_bytes())));
+        let icon = self
+            .icons
+            .join(format!("{}.png", digest(package.as_bytes())));
         // An empty `app_icon` on a later notification means "you already have it", not
         // "there is none" — the phone sends it once per package precisely so a day of chat
         // does not carry the same 8 kB PNG over a cellular relay a thousand times.
@@ -267,6 +270,19 @@ impl Cache {
     }
 }
 
+fn ensure_app_identity_icon(root: &Path) -> Result<PathBuf> {
+    std::fs::create_dir_all(root)?;
+    let path = root.join("conduit-icon.png");
+    let matches = std::fs::read(&path)
+        .map(|current| current.as_slice() == APP_IDENTITY_ICON)
+        .unwrap_or(false);
+    if !matches {
+        std::fs::write(&path, APP_IDENTITY_ICON)
+            .with_context(|| format!("writing {}", path.display()))?;
+    }
+    Ok(path)
+}
+
 pub struct Notifier {
     /// `Option` so [`Drop`] can close the channel before joining; the closed channel is
     /// what makes the thread's `recv` return and the join finish.
@@ -278,7 +294,8 @@ impl Notifier {
     /// `cache` is where the phone's icons are written; a toast image can only be named by
     /// URI, so they have to land somewhere the shell can read them.
     pub fn start(cache: &Path, action_tx: broadcast::Sender<pb::NotifAction>) -> Result<Self> {
-        register_aumid().context("registering the toast AppUserModelID")?;
+        let identity_icon = ensure_app_identity_icon(cache)?;
+        register_aumid(&identity_icon).context("registering the toast AppUserModelID")?;
         let cache = Cache::prepare(cache).context("preparing the toast icon cache")?;
 
         let (tx, rx) = mpsc::channel();
@@ -463,10 +480,10 @@ fn show(
                 let args: ToastActivatedEventArgs = args.cast()?;
                 let arguments = args.Arguments()?.to_string();
                 let Some(index) = parse_action_index(&arguments) else {
-                    return Ok(())
+                    return Ok(());
                 };
                 let Some(desc) = actions.iter().find(|action| action.index == index) else {
-                    return Ok(())
+                    return Ok(());
                 };
                 let reply = if desc.has_remote_input {
                     let input = args.UserInput()?;
@@ -528,7 +545,7 @@ fn show_xml(app: &str, logo: Option<&Path>, actions: &[pb::NotifActionDesc]) -> 
                  {image}
                  <text>{{title}}</text>
                  <text>{{body}}</text>
-                 <text placement="attribution">{}</text>
+                 <text hint-style="body">{}</text>
                </binding>
              </visual>
              {actions}
@@ -794,10 +811,14 @@ fn conversation_body(body: &str, messages: &[pb::TextMessage]) -> String {
 
 /// Idempotent. Without this the notifier is created but every `Show` fails, because
 /// Windows cannot resolve the AUMID to anything it is willing to attribute a toast to.
-fn register_aumid() -> Result<()> {
+fn register_aumid(identity_icon: &Path) -> Result<()> {
     let key = windows_registry::CURRENT_USER
         .create(format!(r"Software\Classes\AppUserModelId\{AUMID}"))?;
     key.set_string("DisplayName", "Conduit")?;
+    // Unpackaged Win32 notifications get their Action Center identity from this AUMID
+    // registry entry. Without IconUri, Windows falls back to the generic window glyph.
+    key.set_string("IconUri", identity_icon.to_string_lossy().as_ref())?;
+    key.set_string("IconBackgroundColor", "FF2F6FE0")?;
     // On, so Conduit gets its own entry in Settings -> Notifications and the toasts can
     // be muted there like any other app's rather than only by killing the daemon.
     key.set_u32("ShowInActionCenter", 1)?;
@@ -813,7 +834,11 @@ mod tests {
         let key = "0|com.tencent.mm|1234567|null|10123";
         let tag = tag_for(key);
         assert_eq!(tag.len(), 16, "16 hex chars, far inside the 64-char cap");
-        assert_eq!(tag, tag_for(key), "derived, so update and removal find it again");
+        assert_eq!(
+            tag,
+            tag_for(key),
+            "derived, so update and removal find it again"
+        );
         assert_ne!(tag, tag_for("0|com.tencent.mm|1234568|null|10123"));
         // A key long past the tag limit still produces a legal tag, which is the whole
         // reason the key is not used directly.
@@ -833,7 +858,10 @@ mod tests {
     #[test]
     fn percent_encoding_leaves_nothing_for_the_parser() {
         // Everything a URI or an XML attribute could choke on, encoded.
-        assert_eq!(percent("a+b/c=d&e?f#g\"h'i<j>k", b""), "a%2Bb%2Fc%3Dd%26e%3Ff%23g%22h%27i%3Cj%3Ek");
+        assert_eq!(
+            percent("a+b/c=d&e?f#g\"h'i<j>k", b""),
+            "a%2Bb%2Fc%3Dd%26e%3Ff%23g%22h%27i%3Cj%3Ek"
+        );
         // Unreserved characters are left alone, so a token of them is untouched.
         assert_eq!(percent("Az09-._~", b""), "Az09-._~");
         // Bytes, not chars: non-ASCII becomes the UTF-8 a URI is defined over.
@@ -924,12 +952,18 @@ mod tests {
         );
         // Content-addressed: the same person writing again names the same file, which is
         // what keeps a chat thread from filling the cache.
-        assert_eq!(cache.logo("im.app", b"", b"alice-photo")?.as_ref(), Some(&face));
+        assert_eq!(
+            cache.logo("im.app", b"", b"alice-photo")?.as_ref(),
+            Some(&face)
+        );
         assert_ne!(cache.logo("im.app", b"", b"bob-photo")?.unwrap(), face);
         assert_eq!(count(&dir.join("faces")), 2);
 
         // And with no face on this one, the app icon is still there to fall back to.
-        assert_eq!(std::fs::read(cache.logo("im.app", b"", b"")?.unwrap())?, b"app-icon");
+        assert_eq!(
+            std::fs::read(cache.logo("im.app", b"", b"")?.unwrap())?,
+            b"app-icon"
+        );
         Ok(())
     }
 
@@ -962,7 +996,11 @@ mod tests {
         assert_eq!(images.Length()?, 1, "the toast has no logo element");
         let image = images.GetAt(0)?;
         assert_eq!(
-            image.Attributes()?.GetNamedItem(&HSTRING::from("src"))?.InnerText()?.to_string(),
+            image
+                .Attributes()?
+                .GetNamedItem(&HSTRING::from("src"))?
+                .InnerText()?
+                .to_string(),
             file_url(logo),
             "the parser did not give back the path we escaped"
         );
@@ -978,7 +1016,38 @@ mod tests {
         // No icon yet: still a valid toast, just a bare one.
         let plain = XmlDocument::new()?;
         plain.LoadXml(&HSTRING::from(show_xml("WeChat", None, &[])))?;
-        assert_eq!(plain.GetElementsByTagName(&HSTRING::from("image"))?.Length()?, 0);
+        assert_eq!(
+            plain
+                .GetElementsByTagName(&HSTRING::from("image"))?
+                .Length()?,
+            0
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn source_app_name_uses_readable_body_text_not_tiny_attribution() -> Result<()> {
+        crate::image::ensure_mta();
+        let xml = XmlDocument::new()?;
+        xml.LoadXml(&HSTRING::from(show_xml("ChatGPT", None, &[])))?;
+        let texts = xml.GetElementsByTagName(&HSTRING::from("text"))?;
+        assert_eq!(texts.Length()?, 3);
+        let source = texts.GetAt(2)?;
+        assert_eq!(source.InnerText()?.to_string(), "ChatGPT");
+        let attributes = source.Attributes()?;
+        assert_eq!(
+            attributes
+                .GetNamedItem(&HSTRING::from("hint-style"))?
+                .InnerText()?
+                .to_string(),
+            "body"
+        );
+        assert!(
+            attributes
+                .GetNamedItem(&HSTRING::from("placement"))
+                .is_err(),
+            "source app fell back to Windows' tiny attribution line"
+        );
         Ok(())
     }
 
@@ -1007,9 +1076,17 @@ mod tests {
         ];
         let xml = XmlDocument::new()?;
         xml.LoadXml(&HSTRING::from(show_xml("Chat", None, &actions)))?;
-        assert_eq!(xml.GetElementsByTagName(&HSTRING::from("input"))?.Length()?, 1);
+        assert_eq!(
+            xml.GetElementsByTagName(&HSTRING::from("input"))?
+                .Length()?,
+            1
+        );
         let buttons = xml.GetElementsByTagName(&HSTRING::from("action"))?;
-        assert_eq!(buttons.Length()?, 2, "later RemoteInput action must be omitted");
+        assert_eq!(
+            buttons.Length()?,
+            2,
+            "later RemoteInput action must be omitted"
+        );
         assert!(show_xml("Chat", None, &actions).contains("Reply &amp; send"));
         assert!(show_xml("Chat", None, &actions).contains("Mark &lt;read&gt;"));
         assert_eq!(parse_action_index("action=7"), Some(7));
@@ -1039,7 +1116,8 @@ mod tests {
             "the parser did not give back the URI we escaped"
         );
         assert_eq!(
-            root.GetAttribute(&HSTRING::from("activationType"))?.to_string(),
+            root.GetAttribute(&HSTRING::from("activationType"))?
+                .to_string(),
             "protocol",
             "without this Windows looks for a COM activator we do not have"
         );
@@ -1057,7 +1135,10 @@ mod tests {
         xml.LoadXml(&HSTRING::from(screenshot_xml(token, path)))?;
         let root = xml.DocumentElement()?;
 
-        assert_eq!(root.GetAttribute(&HSTRING::from("launch"))?.to_string(), snip_url(token));
+        assert_eq!(
+            root.GetAttribute(&HSTRING::from("launch"))?.to_string(),
+            snip_url(token)
+        );
         let texts = xml.GetElementsByTagName(&HSTRING::from("text"))?;
         assert_eq!(texts.GetAt(0)?.InnerText()?.to_string(), "New screenshot");
         assert_eq!(texts.GetAt(2)?.InnerText()?.to_string(), "Conduit");
@@ -1220,7 +1301,8 @@ mod tests {
     #[ignore = "shows an interactive toast; enter text and select Send"]
     fn a_live_toast_activation_returns_action_and_user_input() -> Result<()> {
         crate::image::ensure_mta();
-        register_aumid()?;
+        let identity_icon = ensure_app_identity_icon(&scratch("aumid"))?;
+        register_aumid(&identity_icon)?;
         let notifier = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(AUMID))?;
         let xml = XmlDocument::new()?;
         xml.LoadXml(&HSTRING::from(
@@ -1281,7 +1363,8 @@ mod tests {
 
     #[cfg(test)]
     fn from_history(tag: &str) -> Result<Option<ToastNotification>> {
-        let history = ToastNotificationManager::History()?.GetHistoryWithId(&HSTRING::from(AUMID))?;
+        let history =
+            ToastNotificationManager::History()?.GetHistoryWithId(&HSTRING::from(AUMID))?;
         for toast in history {
             if toast.Tag()? == HSTRING::from(tag) {
                 return Ok(Some(toast));

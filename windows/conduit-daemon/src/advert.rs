@@ -56,7 +56,22 @@ impl Drop for Advert {
     }
 }
 
-/// The instance name shown on the phone. Not a security boundary, so a fallback is fine.
+/// The Windows device name shown on the phone. Not a security boundary.
+///
+/// Do not rely on `COMPUTERNAME`: service/AgentDock/WMI launch paths can omit that environment
+/// variable, which previously made a real machine named `LOG` advertise itself as
+/// `conduit-desktop`. ActiveComputerName is the same system identity Windows exposes in Settings.
 pub fn hostname() -> String {
-    std::env::var("COMPUTERNAME").unwrap_or_else(|_| "conduit-desktop".to_string())
+    windows_registry::LOCAL_MACHINE
+        .open(r"SYSTEM\CurrentControlSet\Control\ComputerName\ActiveComputerName")
+        .ok()
+        .and_then(|key| key.get_string("ComputerName").ok())
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .or_else(|| {
+            std::env::var("COMPUTERNAME")
+                .ok()
+                .filter(|name| !name.trim().is_empty())
+        })
+        .unwrap_or_else(|| "conduit-desktop".to_string())
 }

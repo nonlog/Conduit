@@ -4,6 +4,8 @@
 //! honest, sync text clipboard both ways. The shape here is chosen so image sync adds
 //! neither a thread nor a timer per message.
 
+#![windows_subsystem = "windows"]
+
 mod advert;
 mod autostart;
 mod clip;
@@ -14,6 +16,7 @@ mod file;
 mod image;
 mod status;
 mod toast;
+mod tray;
 mod wire;
 
 use anyhow::{bail, Context, Result};
@@ -29,8 +32,9 @@ use tracing::{info, warn};
 use wire::{pb, Session};
 
 const PORT: u16 = 41112;
-/// Default relay while the multi-relay fleet is not deployed everywhere yet.
-const RELAY: &str = "tyo.414222.xyz:41113";
+/// Production Relay fleet. Windows parks one responder at each node; Android still keeps exactly
+/// one active Relay/session and switches only on natural reconnect/failure events.
+const DEFAULT_RELAYS: &str = "us.414222.xyz:41113;tyo.414222.xyz:41113;wa.414222.xyz:41113";
 /// ponytail: flat retry, no escalation. The desktop is on mains power and the relay is
 /// ours, so there is nothing to be polite to; add backoff if it ever rate-limits.
 const RELAY_RETRY: Duration = Duration::from_secs(15);
@@ -131,6 +135,13 @@ impl Drop for SessionGuard {
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<()> {
+    // Keep the headless daemon, control surface, Start-menu shortcut and toast identity under one
+    // Windows application identity. This must happen before any shell/toast interaction.
+    unsafe {
+        let _ = windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(
+            &windows::core::HSTRING::from("Conduit.Desktop"),
+        );
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -151,7 +162,9 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         if command == "autostart" {
-            let action = args.next().context("usage: conduit-daemon autostart <install|remove|status>")?;
+            let action = args
+                .next()
+                .context("usage: conduit-daemon autostart <install|remove|status>")?;
             if args.next().is_some() {
                 bail!("usage: conduit-daemon autostart <install|remove|status>");
             }
@@ -159,7 +172,11 @@ async fn main() -> Result<()> {
                 "install" => println!("Autostart installed: {}", autostart::install()?),
                 "remove" => println!(
                     "Autostart {}",
-                    if autostart::remove()? { "removed" } else { "was not installed" }
+                    if autostart::remove()? {
+                        "removed"
+                    } else {
+                        "was not installed"
+                    }
                 ),
                 "status" => match autostart::status() {
                     Some(value) => println!("Autostart installed: {value}"),
@@ -170,7 +187,9 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         if command == "explorer" {
-            let action = args.next().context("usage: conduit-daemon explorer <install|remove|status>")?;
+            let action = args
+                .next()
+                .context("usage: conduit-daemon explorer <install|remove|status>")?;
             if args.next().is_some() {
                 bail!("usage: conduit-daemon explorer <install|remove|status>");
             }
@@ -178,7 +197,11 @@ async fn main() -> Result<()> {
                 "install" => println!("Explorer integration installed: {}", explorer::install()?),
                 "remove" => println!(
                     "Explorer integration {}",
-                    if explorer::remove()? { "removed" } else { "was not installed" }
+                    if explorer::remove()? {
+                        "removed"
+                    } else {
+                        "was not installed"
+                    }
                 ),
                 "status" => match explorer::status() {
                     Some(value) => println!("Explorer integration installed: {value}"),
@@ -200,21 +223,29 @@ async fn main() -> Result<()> {
                     println!("Config file: {}", dir.join("config.txt").display());
                     println!(
                         "relay_proxy={}",
-                        config.relay_proxy.as_deref().filter(|v| !v.is_empty()).unwrap_or("off")
+                        config
+                            .relay_proxy
+                            .as_deref()
+                            .filter(|v| !v.is_empty())
+                            .unwrap_or("off")
                     );
                     println!(
                         "relays={}",
-                        config.relays.as_deref().unwrap_or(RELAY)
+                        config.relays.as_deref().unwrap_or(DEFAULT_RELAYS)
                     );
                     if std::env::var_os("CONDUIT_RELAY_PROXY").is_some()
                         || std::env::var_os("CONDUIT_RELAYS").is_some()
                         || std::env::var_os("CONDUIT_RELAY").is_some()
                     {
-                        println!("Note: one or more CONDUIT_* environment variables override this file.");
+                        println!(
+                            "Note: one or more CONDUIT_* environment variables override this file."
+                        );
                     }
                 }
                 "relay-proxy" => {
-                    let value = args.next().context("usage: conduit-daemon config relay-proxy <value|off>")?;
+                    let value = args
+                        .next()
+                        .context("usage: conduit-daemon config relay-proxy <value|off>")?;
                     if args.next().is_some() {
                         bail!("usage: conduit-daemon config relay-proxy <value|off>");
                     }
@@ -228,7 +259,9 @@ async fn main() -> Result<()> {
                     println!("Restart the daemon to apply this change.");
                 }
                 "relays" => {
-                    let value = args.next().context("usage: conduit-daemon config relays <list|off>")?;
+                    let value = args
+                        .next()
+                        .context("usage: conduit-daemon config relays <list|off>")?;
                     if args.next().is_some() {
                         bail!("usage: conduit-daemon config relays <list|off>");
                     }
@@ -253,7 +286,10 @@ async fn main() -> Result<()> {
             // side-effect-free, on-demand liveness check; binding only loopback can succeed on
             // Windows even while the wildcard listener exists and would therefore misreport.
             let daemon_running = std::net::TcpListener::bind(("0.0.0.0", PORT)).is_err();
-            println!("daemon={}", if daemon_running { "running" } else { "stopped" });
+            println!(
+                "daemon={}",
+                if daemon_running { "running" } else { "stopped" }
+            );
             if let Some(snapshot) = status::read(&dir) {
                 print!("{snapshot}");
             }
@@ -279,8 +315,29 @@ async fn main() -> Result<()> {
     // entry exits here before it can own any long-lived Conduit resource.
     let listener = TcpListener::bind(("0.0.0.0", PORT))
         .await
-        .with_context(|| format!("binding Conduit listener on port {PORT}; is another daemon running?"))?;
+        .with_context(|| {
+            format!("binding Conduit listener on port {PORT}; is another daemon running?")
+        })?;
     info!(port = PORT, "listening");
+
+    // Optional tray icon. It is one blocked Win32 message loop and is not created at all when the
+    // setting is off. Failures are non-fatal: transport and clipboard sync remain useful without it.
+    let (tray_exit_tx, mut tray_exit_rx) = mpsc::unbounded_channel::<()>();
+    let _tray = if user_config.show_tray_icon() {
+        match tray::Tray::start(&dir, tray_exit_tx.clone()) {
+            Ok(tray) => {
+                info!("tray icon up");
+                Some(tray)
+            }
+            Err(e) => {
+                warn!(error = %e, "tray icon unavailable");
+                None
+            }
+        }
+    } else {
+        info!("tray icon disabled by config");
+        None
+    };
 
     let metrics = Arc::new(Metrics::default());
     // One listener thread for the process, started before the socket so a clip copied
@@ -319,7 +376,7 @@ async fn main() -> Result<()> {
     // Two ways in now, and the difference ends here: a relay stream is spliced to the
     // phone by a process that cannot read it, so from `serve`'s point of view it is an
     // ordinary socket carrying an ordinary Noise session.
-    let relays = user_config.resolved_relays(RELAY);
+    let relays = user_config.resolved_relays(DEFAULT_RELAYS);
     let relay_proxy = user_config.resolved_proxy();
     info!(
         relays = ?relays,
@@ -345,6 +402,10 @@ async fn main() -> Result<()> {
     let mut active: Option<tokio::task::JoinHandle<()>> = None;
     loop {
         let (stream, peer, via, relay_endpoint) = tokio::select! {
+            Some(()) = tray_exit_rx.recv() => {
+                info!("exit requested from tray");
+                break;
+            }
             accepted = listener.accept() => {
                 let (stream, peer) = accepted?;
                 (stream, peer, "lan", None)
@@ -397,6 +458,13 @@ async fn main() -> Result<()> {
             }
         }));
     }
+
+    if let Some(session) = active.take() {
+        session.abort();
+        let _ = session.await;
+    }
+    desktop_status.disconnected();
+    Ok(())
 }
 
 /// Keeps exactly one connection parked at the relay for the life of the process.
@@ -453,7 +521,11 @@ async fn serve(
 ) -> Result<()> {
     stream.set_nodelay(true)?;
     set_keepalive(&stream)?;
-    let idle_ping = if path == "relay" { RELAY_IDLE_PING } else { IDLE_PING };
+    let idle_ping = if path == "relay" {
+        RELAY_IDLE_PING
+    } else {
+        IDLE_PING
+    };
 
     let mut session = Session::handshake(&mut stream, local_priv, false).await?;
     info!(
@@ -463,11 +535,7 @@ async fn serve(
         relay = relay_endpoint.unwrap_or("-"),
         "session up"
     );
-    desktop_status.linked(
-        &wire::device_id(&session.peer_static),
-        path,
-        relay_endpoint,
-    );
+    desktop_status.linked(&wire::device_id(&session.peer_static), path, relay_endpoint);
     // The phone has no other way to learn this machine's name. mDNS carries it, but a
     // relay session never sees an mDNS record — and off-LAN is precisely when a phone
     // showing "the desktop" instead of a name is least useful. Sent unprompted and
@@ -680,7 +748,9 @@ async fn serve(
                                                 toasts.post(toast::Cmd::Photo { path });
                                             }
                                         }
-                                        Ok(Err(e)) => warn!(error = %e, "could not stage the capture"),
+                                        Ok(Err(e)) => {
+                                            warn!(error = %e, "could not stage the capture")
+                                        }
                                         Err(e) => warn!(error = %e, "capture staging task failed"),
                                     }
                                 }
@@ -698,7 +768,9 @@ async fn serve(
                             })
                             .await
                             {
-                                Ok(Err(e)) => warn!(error = %e, "could not set the clipboard image"),
+                                Ok(Err(e)) => {
+                                    warn!(error = %e, "could not set the clipboard image")
+                                }
                                 Err(e) => warn!(error = %e, "clipboard image task failed"),
                                 Ok(Ok(())) => {}
                             }
@@ -719,7 +791,11 @@ async fn serve(
                     toasts.post(toast::Cmd::Show {
                         key: notif.key,
                         package: notif.package.clone(),
-                        app: if notif.app_name.is_empty() { notif.package } else { notif.app_name },
+                        app: if notif.app_name.is_empty() {
+                            notif.package
+                        } else {
+                            notif.app_name
+                        },
                         title: notif.title,
                         body: notif.text,
                         messages: notif.messages,
@@ -880,7 +956,16 @@ fn set_keepalive(stream: &TcpStream) -> Result<()> {
 }
 
 fn config_dir() -> Result<PathBuf> {
-    Ok(PathBuf::from(std::env::var("LOCALAPPDATA").context("LOCALAPPDATA is unset")?).join("Conduit"))
+    if let Some(local) = std::env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(local).join("Conduit"));
+    }
+    let key = windows_registry::CURRENT_USER
+        .open(r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders")
+        .context("opening Windows Shell Folders")?;
+    let local = key
+        .get_string("Local AppData")
+        .context("reading Windows Local AppData known folder")?;
+    Ok(PathBuf::from(local).join("Conduit"))
 }
 
 #[cfg(test)]

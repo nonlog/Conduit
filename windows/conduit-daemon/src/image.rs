@@ -122,7 +122,10 @@ fn recode(bytes: &[u8], encoder: GUID) -> Result<Vec<u8>> {
 pub fn dib_to_png(dib: &[u8]) -> Result<Vec<u8>> {
     // Enough of a `BITMAPINFOHEADER` to find where the pixels start.
     if dib.len() < 40 {
-        return Err(anyhow!("DIB of {} bytes is too short to have a header", dib.len()));
+        return Err(anyhow!(
+            "DIB of {} bytes is too short to have a header",
+            dib.len()
+        ));
     }
     let read = |at: usize| u32::from_le_bytes(dib[at..at + 4].try_into().expect("4 bytes"));
     let info_size = read(0) as usize;
@@ -162,7 +165,10 @@ pub fn dib_to_png(dib: &[u8]) -> Result<Vec<u8>> {
 pub fn png_to_dib(png: &[u8]) -> Result<Vec<u8>> {
     let bmp = recode(png, BitmapEncoder::BmpEncoderId()?).context("re-encoding an image as BMP")?;
     if bmp.len() <= FILE_HEADER || bmp[..2] != *b"BM" {
-        return Err(anyhow!("BMP encoder produced {} bytes with no file header", bmp.len()));
+        return Err(anyhow!(
+            "BMP encoder produced {} bytes with no file header",
+            bmp.len()
+        ));
     }
     Ok(bmp[FILE_HEADER..].to_vec())
 }
@@ -308,7 +314,11 @@ impl Assembly {
             return Err(anyhow!("chunk belongs to a different image"));
         }
         if chunk.index != self.next {
-            return Err(anyhow!("chunk {} arrived, expected {}", chunk.index, self.next));
+            return Err(anyhow!(
+                "chunk {} arrived, expected {}",
+                chunk.index,
+                self.next
+            ));
         }
         if self.bytes.len() + chunk.data.len() > self.total {
             return Err(anyhow!(
@@ -385,7 +395,11 @@ mod tests {
         assert_eq!((width, height.abs()), (2, 2), "geometry changed in transit");
         // No "BM". `SetClipboardData(CF_DIB, ...)` with a file header still attached is
         // the one mistake that produces a plausible-looking blank paste.
-        assert_ne!(&dib[..2], b"BM", "the file header must be trimmed for CF_DIB");
+        assert_ne!(
+            &dib[..2],
+            b"BM",
+            "the file header must be trimmed for CF_DIB"
+        );
     }
 
     #[test]
@@ -410,7 +424,10 @@ mod tests {
         // Borrowed, not re-encoded: a needless decode/encode of every received image
         // would be invisible except as latency on the common path.
         let same = to_png(&png).expect("a PNG should pass through");
-        assert!(matches!(same, std::borrow::Cow::Borrowed(_)), "PNG was re-encoded");
+        assert!(
+            matches!(same, std::borrow::Cow::Borrowed(_)),
+            "PNG was re-encoded"
+        );
         assert_eq!(&*same, &png[..]);
 
         // A JPEG is what the phone actually sends for a camera photo. Whatever comes
@@ -418,7 +435,11 @@ mod tests {
         let jpeg = recode(&png, BitmapEncoder::JpegEncoderId().unwrap()).expect("encode JPEG");
         assert_ne!(&jpeg[..2], b"\x89P", "fixture is not actually a JPEG");
         let converted = to_png(&jpeg).expect("a JPEG should convert");
-        assert_eq!(&converted[..8], b"\x89PNG\r\n\x1a\n", "not converted to PNG");
+        assert_eq!(
+            &converted[..8],
+            b"\x89PNG\r\n\x1a\n",
+            "not converted to PNG"
+        );
     }
 
     fn header(total: usize, chunk: usize, count: u32) -> crate::wire::pb::ClipImageHeader {
@@ -452,9 +473,15 @@ mod tests {
 
         let mut out = None;
         for (index, part) in payload.chunks(CHUNK).enumerate() {
-            out = rx.push(&chunk(index as u32, part.to_vec())).expect("valid chunk");
+            out = rx
+                .push(&chunk(index as u32, part.to_vec()))
+                .expect("valid chunk");
         }
-        assert_eq!(out.as_deref(), Some(&payload[..]), "reassembly changed the bytes");
+        assert_eq!(
+            out.as_deref(),
+            Some(&payload[..]),
+            "reassembly changed the bytes"
+        );
     }
 
     #[test]
@@ -489,19 +516,31 @@ mod tests {
     #[test]
     fn a_peer_cannot_exceed_or_reorder_what_it_declared() {
         let mut rx = Assembly::begin(&header(10, CHUNK, 1)).expect("valid header");
-        assert!(rx.push(&chunk(0, vec![0; 11])).is_err(), "overshoot must be refused");
+        assert!(
+            rx.push(&chunk(0, vec![0; 11])).is_err(),
+            "overshoot must be refused"
+        );
 
         let mut rx = Assembly::begin(&header(10, CHUNK, 1)).expect("valid header");
-        assert!(rx.push(&chunk(1, vec![0; 10])).is_err(), "wrong index must be refused");
+        assert!(
+            rx.push(&chunk(1, vec![0; 10])).is_err(),
+            "wrong index must be refused"
+        );
 
         let mut rx = Assembly::begin(&header(10, CHUNK, 1)).expect("valid header");
         let mut stranger = chunk(0, vec![0; 10]);
         stranger.header_id = vec![9; 16];
-        assert!(rx.push(&stranger).is_err(), "another image's chunk must be refused");
+        assert!(
+            rx.push(&stranger).is_err(),
+            "another image's chunk must be refused"
+        );
 
         // Short of the declared total on the final chunk: the count is satisfied but
         // the image is truncated, so it must not reach the clipboard as a valid PNG.
         let mut rx = Assembly::begin(&header(10, CHUNK, 1)).expect("valid header");
-        assert!(rx.push(&chunk(0, vec![0; 9])).is_err(), "short image must be refused");
+        assert!(
+            rx.push(&chunk(0, vec![0; 9])).is_err(),
+            "short image must be refused"
+        );
     }
 }

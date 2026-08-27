@@ -34,7 +34,9 @@ pub async fn serve(tx: mpsc::Sender<SendRequest>) -> Result<()> {
         let pipe = ServerOptions::new()
             .create(PIPE)
             .context("creating the Conduit local control pipe")?;
-        pipe.connect().await.context("accepting a Conduit control client")?;
+        pipe.connect()
+            .await
+            .context("accepting a Conduit control client")?;
         let tx = tx.clone();
         tokio::spawn(async move {
             if let Err(e) = handle(pipe, tx).await {
@@ -94,7 +96,9 @@ async fn read_path(pipe: &mut NamedPipeServer) -> Result<PathBuf> {
 /// Downloads row, not merely that the resident daemon accepted the local path.
 pub async fn queue(path: &Path) -> Result<PathBuf> {
     let path = file::validate_outbound(path)?;
-    let text = path.to_str().context("the path cannot be represented as UTF-8")?;
+    let text = path
+        .to_str()
+        .context("the path cannot be represented as UTF-8")?;
     let bytes = text.as_bytes();
     if bytes.is_empty() || bytes.len() > MAX_REQUEST {
         bail!("path is too long for the local send request");
@@ -125,9 +129,12 @@ pub async fn queue(path: &Path) -> Result<PathBuf> {
     client.write_u32(bytes.len() as u32).await?;
     client.write_all(bytes).await?;
     let mut reply = Vec::new();
-    tokio::time::timeout(REMOTE_RESULT_TIMEOUT + Duration::from_secs(5), client.read_to_end(&mut reply))
-        .await
-        .context("timed out waiting for the resident Conduit daemon")??;
+    tokio::time::timeout(
+        REMOTE_RESULT_TIMEOUT + Duration::from_secs(5),
+        client.read_to_end(&mut reply),
+    )
+    .await
+    .context("timed out waiting for the resident Conduit daemon")??;
     let reply = String::from_utf8(reply).context("control response is not UTF-8")?;
     if reply == "OK\n" {
         Ok(path)
