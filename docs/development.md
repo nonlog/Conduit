@@ -89,7 +89,7 @@ The recorded versions and the reasons for the Android/Gradle pin are in
 | Android build | Repository wrapper Gradle 8.14.3, AGP 8.13.2, Kotlin 2.4.10 |
 | Rust | MSVC-targeted Rust toolchain compatible with workspace `rust-version = 1.98` |
 | C/C++ toolchain | MSVC + Windows SDK; the established portable choice is Scoop `portable-build-tools` |
-| Optional protocol utility | `protoc`; regular Gradle builds resolve their pinned Maven artifact themselves |
+| Protocol compiler | `protoc`; GitHub Windows CI installs it before the Rust daemon build because `windows/conduit-daemon/build.rs` compiles `proto/conduit.proto` |
 | Android device tooling | Android Platform Tools / `adb` |
 
 ### Install policy on this Windows machine

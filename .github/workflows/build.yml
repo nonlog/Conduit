@@ -77,6 +77,10 @@ jobs:
           rustc --version
           cargo --version
 
+      - name: Install protoc
+        shell: pwsh
+        run: choco install protoc -y --no-progress
+
       - name: Check Rust formatting
         shell: pwsh
         run: cargo fmt --check
