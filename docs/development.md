@@ -4,9 +4,14 @@
 > **Primary targets:** Android API 29–36 and native Windows  
 > **Read first:** [architecture.md](architecture.md) and [decisions.md](decisions.md)
 
-This is the repeatable local workflow. Public-relay changes remain outward-facing operations;
-the compatible role-aware migration was deployed on 2026-08-26, so future relay changes still
-need explicit deployment intent and rollback discipline rather than being implied by a local test.
+GitHub Actions is the build authority. Normal development and release artifacts must be reproducible
+from the repository on clean GitHub-hosted runners; Log is not part of the build graph. Log remains
+the installation and real-integration test machine for Scoop updates, ADB installs, Windows shell/
+notification checks, UI inspection, and end-to-end Android <-> Windows validation.
+
+Public-relay changes remain outward-facing operations; the compatible role-aware migration was
+deployed on 2026-08-26, so future relay changes still need explicit deployment intent and rollback
+discipline rather than being implied by a build or local test.
 
 ## Repository map
 
@@ -24,6 +29,46 @@ artifacts: edit the `.proto`, never generated Java/Rust code.  The Noise transcr
 produced by the Rust `snow` reference test and replayed by the Android JVM test; do not edit
 it by hand.
 
+## GitHub build authority
+
+`.github/workflows/build.yml` runs for pushes to `master`, pull requests targeting `master`, manual
+dispatches, and `v*` tags. It builds three independent artifacts on clean GitHub-hosted runners:
+
+- Android: JDK 17 + Android SDK 36, `testDebugUnitTest`, and `assembleDebug`.
+- Windows: Rust 1.98 daemon/helper tests and release binaries plus .NET 10 / Uno Platform / WinUI 3
+  restore and self-contained publish, packaged as a Scoop-compatible x64 zip.
+- Relay: Rust 1.98 tests and Linux x64 release binary.
+
+Successful runs retain `conduit-android-debug`, `conduit-windows-x64`, and
+`conduit-relay-linux-x64` Actions artifacts for 14 days. A `vX.Y.Z` tag first verifies that Cargo,
+Android, and desktop project versions all match `X.Y.Z`, then publishes versioned GitHub Release
+assets and `SHA256SUMS.txt`.
+
+A change is build-complete only when this GitHub workflow succeeds. Local output under `target/`,
+Gradle build directories, `.tools`, Scoop, or machine-specific SDK caches is never a release input.
+
+### Install a successful GitHub development build on Log
+
+Log installs and tests artifacts but does not rebuild them. With GitHub CLI authenticated and the
+phone reachable over ADB, install the latest successful `master` run with:
+
+```powershell
+Set-Location D:\Workspace\Conduit
+pwsh .\scripts\install-github-build.ps1
+```
+
+Select an exact Actions run when needed:
+
+```powershell
+pwsh .\scripts\install-github-build.ps1 -RunId <run-id>
+```
+
+The script downloads the Windows and Android Actions artifacts, overlays the Windows program files
+into the existing Scoop installation without touching its persisted `data` junction, refreshes the
+normal Windows integration, and installs the APK on the one online ADB device. Tagged stable builds
+continue to use the existing Scoop update path on Log; the `www` bucket remains the installed Scoop
+manifest authority.
+
 ## Toolchain
 
 The recorded versions and the reasons for the Android/Gradle pin are in
@@ -31,7 +76,7 @@ The recorded versions and the reasons for the Android/Gradle pin are in
 
 | Tool | Required state |
 | --- | --- |
-| JDK | Java 21 |
+| JDK | GitHub CI uses Java 17; local reproduction may use a compatible JDK supported by the pinned AGP |
 | Android SDK | Installed and discoverable by Gradle; the working SDK is `D:\Android\Sdk` |
 | Android build | Repository wrapper Gradle 8.14.3, AGP 8.13.2, Kotlin 2.4.10 |
 | Rust | MSVC-targeted Rust toolchain compatible with workspace `rust-version = 1.98` |

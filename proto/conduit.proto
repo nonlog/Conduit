@@ -31,6 +31,7 @@ enum Kind {
   FILE_OFFER         = 30;
   FILE_CHUNK         = 31;
   FILE_RESULT        = 32;
+  SHARED_URL         = 40;
 }
 
 message Envelope {
@@ -130,6 +131,16 @@ message FileResult {
   bool   success     = 2;
   string error       = 3;
   string name        = 4;
+}
+
+// --- shared web pages ---
+// A deliberate Android share-to-desktop action. This is not clipboard state: receiving it must
+// never overwrite either clipboard, and Windows presents it as an open-in-browser notification.
+message SharedUrl {
+  string url           = 1;  // http/https only; receiver validates again before protocol activation
+  string title         = 2;  // best-effort page title from the source app's share intent
+  uint64 timestamp_ms  = 3;
+  string source_device = 4;
 }
 
 // --- notifications ---

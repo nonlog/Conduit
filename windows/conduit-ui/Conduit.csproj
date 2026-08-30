@@ -1,0 +1,37 @@
+<Project Sdk="Uno.Sdk">
+  <PropertyGroup>
+    <TargetFrameworks>net10.0-windows10.0.26100</TargetFrameworks>
+    <OutputType>Exe</OutputType>
+    <UnoSingleProject>true</UnoSingleProject>
+    <ApplicationTitle>Conduit</ApplicationTitle>
+    <ApplicationId>com.conduit.desktop</ApplicationId>
+    <ApplicationDisplayVersion>0.1.0</ApplicationDisplayVersion>
+    <ApplicationVersion>1</ApplicationVersion>
+    <ApplicationPublisher>Conduit</ApplicationPublisher>
+    <ApplicationDefaultLanguage>en-US</ApplicationDefaultLanguage>
+    <DefaultLanguage>en-US</DefaultLanguage>
+    <Description>Conduit desktop companion.</Description>
+    <UnoFeatures>
+      Toolkit;
+      Mvvm;
+      SkiaRenderer;
+    </UnoFeatures>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <PublishTrimmed>false</PublishTrimmed>
+    <PublishSingleFile>false</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.WinUI.Controls.SettingsControls" />
+    <PackageReference Include="Uno.Fonts.Fluent" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="Assets\conduit-icon.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\conduit-icon.ico" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

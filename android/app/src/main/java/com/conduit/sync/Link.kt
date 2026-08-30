@@ -12,6 +12,7 @@ import com.conduit.sync.proto.FileResult
 import com.conduit.sync.proto.Kind
 import com.conduit.sync.proto.NotifAction
 import com.conduit.sync.proto.PairRequest
+import com.conduit.sync.proto.SharedUrl
 import java.net.InetSocketAddress
 import java.net.InetAddress
 import java.net.Socket
@@ -327,6 +328,16 @@ class Link(
             .setTimestampMs(System.currentTimeMillis())
             .build()
         send(Kind.CLIP_TEXT, clip.toByteArray(), "clip")
+    }
+
+    fun sendSharedUrl(url: String, title: String, sourceDevice: String) {
+        val shared = SharedUrl.newBuilder()
+            .setUrl(url)
+            .setTitle(title.take(512))
+            .setTimestampMs(System.currentTimeMillis())
+            .setSourceDevice(sourceDevice.take(64))
+            .build()
+        send(Kind.SHARED_URL, shared.toByteArray(), "shared url")
     }
 
     /**

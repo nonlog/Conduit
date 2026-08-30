@@ -494,3 +494,110 @@ Follow `docs/development.md` for Scoop-first tool installation and safe Android 
 - Final installed daemon was detached from the AgentDock job via WMI only for this remote validation;
   it remained responsive and linked to `OnePlus 12` over `us.414222.xyz:41113`. The phone still
   persisted desktop name `LOG`.
+## 2026-08-27 Sefirah-reference UI refactor — pass 1
+
+- `shrimqy/Sefirah` (Windows) and `shrimqy/Sefirah-Android` are now the UI reference baseline for hierarchy and information architecture, not a source for copied branding or feature scope.
+- Android home was restructured to device-first hierarchy: a large Material 3 device card, active transfers only when present, then one compact settings card. Clipboard-history navigation/back behavior is preserved.
+- Windows control UI was restructured to a Sefirah-like two-pane utility: persistent device/status pane on the left, `Settings` content with Relay and Windows cards on the right. It remains native Win32/DWM/Common Controls and on-demand only.
+- Android `assembleDebug + testDebugUnitTest` passes and the APK was installed on the OnePlus test phone. Windows daemon tests pass 53/0/3 ignored; `cargo check` and release `conduit-control` build pass.
+- No polling, UI timer, watcher, resident control UI, WinUI, or WebView was introduced.
+- No unlocked-phone foreground screenshot was captured during this Sefirah-reference UI refactor.
+
+- The Scoop-installed `Conduit.exe` is temporarily overlaid with this pass-1 development GUI for local visual review; package version remains 0.1.0 and no new Release/bucket update has been published.
+
+## 2026-08-28 share-target, device-name casing, and webpage handoff
+
+- Android Direct Share no longer reuses the adaptive launcher resource. The `Log` shortcut now uses dedicated `drawable/ic_share_target`, whose phone/desktop foreground is sized to match the normal Conduit app mark in the chooser rather than being over-zoomed.
+- The in-app device tile now uses dedicated `ic_phone_desktop` without the launcher's 68% safe-zone inset. Its Compose box is 36 dp inside the existing 56 dp tile, producing a substantially larger visible glyph while retaining normal padding.
+- Windows device naming now prefers TCP/IP `Hostname`, which preserves the casing configured in Windows Settings (`Log`), and falls back to `ActiveComputerName` only when needed. A real encrypted reconnect updated the phone's persisted `peer-name.txt` to `Log`; the daemon also logged mDNS advertising with `host=Log`.
+- Webpage shares are now a distinct `SHARED_URL` wire payload instead of clipboard text. Android accepts only bounded `http`/`https` URLs, carries the source page title/device name, and Windows validates again before showing a native Conduit toast with `Open in New Tab` protocol activation.
+- Chromium's `Send Tab To Self` / `Send to your devices` is a Chrome Sync-internal component, not a public third-party API. Conduit therefore does not alter Chrome profile/sync state; Windows hands the URL to the registered browser. On this machine both HTTP and HTTPS are registered to `ChromeHTML`, so the action opens Chrome.
+- End-to-end test with `https://rmpc.mierak.dev/`: desktop log recorded `shared URL in` followed by `shared URL toast shown`; Windows clipboard sequence remained unchanged. Temporary ADB reverse was removed afterwards and the production daemon returned to Relay automatically.
+- Validation: Android unit suite is 29 passed / 0 failed; Windows is 54 passed / 0 failed / 3 ignored, plus `cargo check` and release daemon build. No unlocked-phone foreground screenshot was captured.
+## 2026-08-28 live settings apply + Shared Links history checkpoint
+
+- Windows Relay/proxy/tray settings now apply to the already-running daemon through the existing local named pipe. Saving from `Conduit.exe` no longer shows the former "Restart the desktop daemon" success modal.
+- Relay configuration is rebuilt in place: old relay parking workers are cancelled and replaced with the new endpoint/proxy set. A live Relay session is ended only when routing settings actually change so the phone can reconnect through the new route; a live LAN session is left alone.
+- The optional tray icon can be disabled or re-enabled in place. No daemon restart, config watcher, polling loop or periodic timer was added.
+- Same-process proof: tray toggle and Relay reorder/restore all completed with daemon PID `25060` unchanged. Daemon logs explicitly recorded `tray icon disabled/enabled without daemon restart` and `relay configuration applied without daemon restart`.
+- Phone -> Windows web shares now also persist a bounded desktop history at `%LOCALAPPDATA%\Conduit\shared-links.tsv`: newest first, maximum 100 entries, de-duplicated by URL, with URL/title/source-device/timestamp. Unsafe/non-web schemes are refused.
+- The on-demand native Windows control adds a `Shared links` list in the device pane with selected-URL detail, `Open`, double-click open, and `Clear`. Opening delegates to the Windows default browser; clearing asks for confirmation. The list is read only when the control surface refreshes/opens, so it adds no resident watcher or timer.
+- Real-device validation: OnePlus 12 shared `https://rmpc.mierak.dev/`; the daemon logged both `shared URL in` and `shared URL toast shown`, and the history file was created with that URL and source device. The synthetic ADB test title was truncated by shell argument quoting, not by the history format.
+- Windows validation: daemon suite **56 passed / 0 failed / 3 ignored**; the control/shared-history module adds **2 passed / 0 failed**; `cargo check`, release all-bin build, rustfmt for changed files, and `git diff --check` pass.
+- The development release binaries were overlaid onto the current Scoop install for validation. Final detached daemon PID is `9172`; the phone automatically recovered to normal Relay via `tyo.414222.xyz:41113`. Temporary ADB reverse was removed.
+- Automated visible-window inspection of the final control layout was unavailable from the current non-interactive execution session; this is an automation-session limitation, not a functional failure. Build/data-path validation is complete.
+- No unlocked-phone foreground screenshot was captured during this task.
+## 2026-08-28 Sefirah-structure UI overhaul
+
+- Replaced the previous subtle Sefirah-inspired pass with a structural overhaul based on the actual Sefirah shells/components.
+- Android now mirrors Sefirah-Android's main information architecture: persistent Home / Devices / Settings destinations, a Sefirah-style 56 dp circular device card with a compact sync toggle, device controls on Home, a dedicated Devices page, and grouped Settings cards. Clipboard History remains a real child destination with Back returning to the current main shell.
+- Windows now mirrors Sefirah desktop's main shell geometry: a persistent left device control centre with a phone-frame silhouette, a right-side top navigation strip, and a rounded layered content surface. Shared Links and Settings are separate top-level pages; Relay and Windows integration live under Settings.
+- The Windows implementation remains native Win32/DWM/Common Controls and on-demand; the Android implementation remains Material 3. No WebView, WinUI runtime, polling UI, timer, watcher, or background navigation process was introduced.
+- Validation: Android `assembleDebug + testDebugUnitTest` succeeded and the APK was installed on the OnePlus test device. Windows `cargo test` passed 56/0/3 ignored plus 2/0 shared-link control tests; `cargo check`, release all-bin build, source rustfmt, and `git diff --check` passed.
+- The Scoop-installed `Conduit.exe` is overlaid with this development UI for direct review. No commit or push was made.
+- No unlocked-phone foreground screenshot was captured during this UI overhaul.
+
+## 2026-08-28 Chrome webpage share preview-image precedence fix
+
+- Root cause of "Chrome share page -> PC receives an image": `ShareActivity` collected both
+  `EXTRA_STREAM`/`ClipData` URIs and `EXTRA_TEXT`, then unconditionally handled any URI before text.
+  Chrome can attach a preview-image URI to a normal webpage share, so the auxiliary preview was
+  transferred as a file and the real page URL never reached the `SHARED_URL` path.
+- `ShareActivity` now classifies a valid bounded `http`/`https` `EXTRA_TEXT` as the webpage payload
+  before auxiliary URIs when the intent looks like a page share (text MIME type or non-empty
+  page title/subject). A real image/file share still keeps URI precedence when there is no page
+  signal, so an image whose caption happens to be a URL is not automatically reclassified.
+- Added JVM regressions for Chrome-like `URL + title + image/png + URI` and text/plain page shares,
+  plus a guard that preserves ordinary image/file sharing.
+- Verification: Android `testDebugUnitTest + assembleDebug` succeeded with **31 passed / 0 failed**.
+  The debug APK was installed in-place on the connected OnePlus. A synthetic Chrome-like
+  `ACTION_SEND image/png` carrying an http URL, title, and auxiliary `EXTRA_STREAM` reached the
+  running Windows daemon as a Shared Link (`https://example.com/conduit-chrome-share-test`) rather
+  than a file/image; the temporary history row was removed afterward. The live link remained on
+  TYO Relay. No phone screenshot was captured or opened.
+- Real Chrome UI reproduction should still be manually spot-checked by the user; the installed
+  build contains this fix and is ready for that check.
+
+## 2026-08-28 desktop notification/history + caption controls checkpoint
+
+- Replaced the decorative Windows `Notifications` placeholder with a real bounded local history. The daemon now writes `data\notifications.tsv` only when `NotifNew` / `NotifUpdate` events arrive; entries retain timestamp, notification key, package, source-app name, title and body, are newest-first, de-duplicated by notification key, sanitised, and capped at 100. No polling loop or periodic timer was added.
+- The WPF left pane now renders notification cards with the cached Android source-app icon, source application name, age, title and body. `Clear all` is a real action that deletes this local history and immediately updates the open UI. App icons reuse the daemon's existing bounded `<data>\icons` cache. While the control window is open, one kernel-backed `FileSystemWatcher` listens only for `notifications.tsv` changes and is disposed on window close, so new cards appear immediately without Refresh and without a polling timer or resident background UI.
+- Mirrored Windows toast identity was corrected at the same seam: the Android application icon now owns `appLogoOverride` when available instead of being replaced by a contact avatar; the source app is a subtle line above the notification title, while the actual notification title uses toast `title` styling.
+- Replaced fragile private-font caption glyphs with normal visible `−`, `□`/`❐`, and `×` controls. UI Automation exercised Maximize -> Restore -> Minimize -> Restore -> Close successfully (`showCmd` 3 -> 1 -> 2 and process exit on Close). A full PC-only PrintWindow capture also shows all three caption controls.
+- WPF is explicitly Per-Monitor-V2 DPI aware. The custom text-box template no longer double-applies its content margin, so the SOCKS5 value is visible, and the current text layout/render settings are tuned for the machine's 125% display scaling.
+- End-to-end live proof: a real Android `com.android.shell` notification traversed the existing OnePlus 12 -> TYO Relay -> Windows path. `notifications.tsv` recorded `Shell / Conduit history E2E / Notification history is now live`, the package icon was persisted in the expected content-addressed icon cache, and the WPF notification card displayed the source icon/name/title/body. The test history row was cleared through the actual UI action afterward and the temporary Android test notifications were snoozed.
+- Verification: full daemon suite **59 passed / 0 failed / 3 ignored** after adding notification-history tests; the later toast identity refinements passed their targeted tests, `cargo check`, release daemon build, `dotnet build`, WPF single-file publish and `git diff --check`. The installed Scoop development binaries were overlaid in place. Final daemon PID `25580` is responsive and linked to `OnePlus 12` via `tyo.414222.xyz:41113`.
+- No unlocked-phone foreground screenshot was captured or opened. Desktop-only captures were used for WPF visual verification.
+
+## 2026-08-28 Explorer file-send false failure + desktop UI hardening
+
+- Fixed the Windows Explorer `Send with Conduit` false-failure path. `conduit-send.exe` no longer inherits Explorer's missing/invalid standard handles; it captures the child command's stdout/stderr and preserves the daemon's real failure reason instead of replacing every error with the generic "make sure the daemon is linked" message.
+- The daemon's `send` command now treats its success text as best-effort output. A GUI-subsystem command can therefore finish successfully after the phone confirms publication even when no stdout handle exists; a post-transfer `println!` failure can no longer turn a completed transfer into a reported failure.
+- Explorer helper retry is limited to pre-request local-control-pipe availability. Session/file/publication failures are not blindly retried, avoiding duplicate transfers. If the helper genuinely fails it uses a Conduit Windows toast, with the WPF control window's inline error banner as fallback; the old Win32 `MessageBox` path and the attempted `TaskDialog` fallback are both absent.
+- Real installed-path proof over the production TYO Relay: launching `D:\Programs\Scoop\apps\conduit\current\conduit-send.exe` against a temporary file exited `0` in about 1.1 s, the exact file appeared in OnePlus 12 `/sdcard/Download`, and both test copies were removed afterward. A missing-file negative test exited `1` in about 0.25 s without leaving a helper process or opening a blocking legacy dialog.
+- Desktop UI received a broader Sefirah-aligned cleanup rather than only the reported controls: native Windows non-client title bar/caption buttons, Segoe UI Variable + ClearType text, stable integer type sizes, compact `Relay · TYO` route text, a real Send-file device action, cleaned left-pane actions, modern inline status/error banners, and an in-window shared-link clear confirmation. All WPF `MessageBox` use was removed. Settings retains visible Relay/SOCKS5 fields; PC-only visual verification showed the proxy value `socks5://127.0.0.1:7891` clearly rendered.
+- Verification: daemon suite **59 passed / 0 failed / 3 ignored**, send-helper regressions **2 passed / 0 failed**, `cargo check`, release daemon/helper builds, WPF Release build/publish, `cargo fmt --check`, and `git diff --check` pass. The development binaries are overlaid into the current Scoop install; the daemon is linked to OnePlus 12 via `tyo.414222.xyz:41113`.
+- No unlocked-phone foreground screenshot was captured or opened; visual checks used only the Windows desktop window.
+
+## 2026-08-28 desktop UI framework replacement — Uno / WinUI 3
+
+- The previous WPF/Win32-lookalike desktop control surface is superseded. `windows/conduit-ui` was rebuilt as a real **Uno Platform + WinUI 3 / Windows App SDK** application, matching Sefirah's desktop technology family instead of imitating its visuals through WPF templates.
+- Current desktop project stack: .NET 10, `Uno.Sdk 6.8.0-dev.21`, `Microsoft.WindowsAppSDK 2.0.1`, Uno Toolkit, CommunityToolkit WinUI SettingsControls `8.2.251219`, Uno Fluent fonts, MVVM. The resident backend remains the Rust `conduit-daemon`; the UI remains on-demand.
+- The shell now follows Sefirah's structure with a 360-DIP persistent device/notification pane, top WinUI `NavigationView`, native Windows caption buttons, WinUI/Mica backdrop, rounded layered content surface, and a secondary Settings `NavigationView` using real `SettingsCard` controls.
+- Notification history now uses native WinUI `ScrollViewer + ItemsRepeater` and WinUI theme resources. There is no WPF scrollbar/template. Notification cards reuse the daemon's cached Android source-app icon and show source app, age, title, and body. While the UI is open, one event-driven `FileSystemWatcher` updates status/history; it is disposed on window close and adds no polling timer.
+- The missing Windows notification attribution icon was traced to a missing Start Menu shortcut. `install-windows.ps1` was rerun for the Scoop install, recreating `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Conduit.lnk` with `System.AppUserModel.ID=Conduit.Desktop`, the installed `Conduit.exe` target, and `conduit-icon.ico`. The registry AUMID identity still points to the installed Conduit PNG.
+- Desktop-only visual proof after the identity repair shows the Windows Notification Center group header as **Conduit with the purple Conduit app icon**. The synthetic verification toast was removed afterward. No phone screenshot was captured or opened.
+- The current Scoop install was overlaid with the new WinUI publish while preserving its persistent `data` junction. The detached daemon restarted successfully and is linked to OnePlus 12 over Relay.
+- Installed-path file-transfer proof after the UI migration: `conduit-send.exe` exited 0 in ~0.8 s; the exact temporary file appeared in OnePlus 12 `/sdcard/Download`; both temporary copies were then removed.
+- Verification: Uno Release restore/publish succeeds with 0 build errors; full daemon suite **59 passed / 0 failed / 3 ignored**, send-helper regressions **2 passed / 0 failed**, `cargo fmt --check`, and `git diff --check` pass. No commit or push was made in this checkpoint.
+
+## 2026-08-29 Sefirah-parity WinUI visual closure
+
+- Continued the Uno/WinUI rewrite by comparing Conduit directly against Sefirah's `Views/MainPage.xaml`, `Views/SettingsPage.xaml`, `Views/Settings/GeneralPage.xaml`, `UserControls/DeviceControlCenter.xaml`, and `UserControls/TitleBar.xaml` rather than styling from screenshots alone.
+- Title-bar sizing now matches Sefirah's 32-DIP bar with a 25x25 app mark and 14-point caption text. The left device panel removes the duplicated connection-state line, keeps the 54x100 phone silhouette, and uses the compact route/status presentation.
+- Settings now uses a compact WinUI `NavigationView` rail at this window size, with native hamburger/General/About items and full-width CommunityToolkit `SettingsCard` content. `General` uses a 28-point heading and Sefirah-like 40-DIP content inset. Relay and SOCKS5 fields are fully readable and no horizontal scrolling is allowed.
+- Shared Links is now a direct-action list: clicking a row opens the URL and the redundant selected-link footer / separate `Open` CTA was removed. This follows the design-system rule that clickable rows should not duplicate navigation with a second button.
+- Desktop-only visual verification covered the top of General, the bottom settings rows, Shared Links, native caption buttons and notification cards. `Received files` exposes `Default` and `Select location`; `Conduit data` resolves to `D:\Programs\Scoop\apps\conduit\current\data`, which remains the Scoop persist junction. Notification history visibly uses the Android source-app icon.
+- The latest self-contained WinUI publish was overlaid onto `D:\Programs\Scoop\apps\conduit\current` without replacing the `data` junction. The daemon stayed resident and linked to OnePlus 12 over WA Relay.
+- Installed-path file-send E2E after the visual closure: `conduit-send.exe` exited `0` in about 1.0 s, the exact temporary file appeared in `/sdcard/Download`, and the test copies were removed afterward.
+- Final regression for this checkpoint: daemon **59 passed / 0 failed / 3 ignored**, send helper **2 passed / 0 failed**, `cargo fmt --check`, `git diff --check`, WinUI Release build and self-contained publish all pass. No commit or push was made.

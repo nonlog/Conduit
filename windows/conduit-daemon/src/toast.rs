@@ -17,7 +17,7 @@
 //! lightest way to get that; the alternative is a Start Menu shortcut carrying the ID
 //! as a shell property, which means COM `IShellLink` plumbing for the same result.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -183,6 +183,13 @@ pub enum Cmd {
     File {
         path: PathBuf,
     },
+    /// A deliberate http/https page share from the phone. The shell handles protocol activation;
+    /// no Chrome internals, profile database or extra resident callback is involved.
+    SharedUrl {
+        url: String,
+        title: String,
+        source: String,
+    },
 }
 
 /// The on-disk icon cache.
@@ -244,7 +251,7 @@ impl Cache {
             Some(path)
         };
 
-        Ok(face.or_else(|| icon.is_file().then_some(icon)))
+        Ok(icon.is_file().then_some(icon).or(face))
     }
 
     /// Makes room for one more face.
@@ -435,6 +442,9 @@ fn pump(
             Cmd::Photo { path } => show_capture(notifier, &path, &mut staged, false),
             Cmd::Screenshot { path } => show_capture(notifier, &path, &mut staged, true),
             Cmd::File { path } => show_file(notifier, &path),
+            Cmd::SharedUrl { url, title, source } => {
+                show_shared_url(notifier, &url, &title, &source)
+            }
         };
         if let Err(e) = result {
             warn!(error = %e, "toast failed");
@@ -543,9 +553,9 @@ fn show_xml(app: &str, logo: Option<&Path>, actions: &[pb::NotifActionDesc]) -> 
              <visual>
                <binding template="ToastGeneric">
                  {image}
-                 <text>{{title}}</text>
+                 <text hint-style="captionSubtle">{}</text>
+                 <text hint-style="title">{{title}}</text>
                  <text>{{body}}</text>
-                 <text hint-style="body">{}</text>
                </binding>
              </visual>
              {actions}
@@ -693,6 +703,57 @@ fn release(token: &str) {
         Ok(()) => debug!("returned a shared-file token"),
         Err(e) => debug!(error = %e, "shared-file token was already gone"),
     }
+}
+
+/// A deliberate web-page share. This intentionally belongs to Conduit, not Chrome's private
+/// Send Tab to Self sync component. Protocol activation hands the http/https URL to the user's
+/// configured browser without another resident callback or polling path.
+fn safe_web_url(url: &str) -> bool {
+    if url.len() > 4096 || url.chars().any(char::is_control) {
+        return false;
+    }
+    let lower = url.to_ascii_lowercase();
+    lower.starts_with("https://") || lower.starts_with("http://")
+}
+
+fn shared_url_xml(url: &str, title: &str, source: &str) -> Result<String> {
+    if !safe_web_url(url) {
+        bail!("shared URL is not a bounded http/https URL");
+    }
+    let url = escape(url);
+    let source = escape(if source.trim().is_empty() {
+        "phone"
+    } else {
+        source.trim()
+    });
+    let title = escape(title.trim());
+    let detail = if title.is_empty() {
+        format!(r#"<text>{url}</text>"#)
+    } else {
+        format!(r#"<text>{title}</text><text>{url}</text>"#)
+    };
+    Ok(format!(
+        r#"<toast launch="{url}" activationType="protocol">
+             <visual><binding template="ToastGeneric">
+               <text>Page shared from {source}</text>
+               {detail}
+             </binding></visual>
+             <actions>
+               <action content="Open in New Tab" arguments="{url}" activationType="protocol"/>
+             </actions>
+           </toast>"#
+    ))
+}
+
+fn show_shared_url(notifier: &ToastNotifier, url: &str, title: &str, source: &str) -> Result<()> {
+    let xml = XmlDocument::new()?;
+    xml.LoadXml(&HSTRING::from(shared_url_xml(url, title, source)?))?;
+    let toast = ToastNotification::CreateToastNotification(&xml)?;
+    toast.SetTag(&HSTRING::from(tag_for(url)))?;
+    toast.SetGroup(&HSTRING::from(GROUP))?;
+    notifier.Show(&toast)?;
+    info!(%url, source, "shared URL toast shown");
+    Ok(())
 }
 
 /// The file toast: what arrived, and a click that opens the folder it landed in.
@@ -939,30 +1000,25 @@ mod tests {
     }
 
     #[test]
-    fn a_face_beats_the_app_icon_and_is_stored_once_per_face() -> Result<()> {
+    fn app_icon_stays_the_source_identity_while_faces_are_cached_as_fallback() -> Result<()> {
         let dir = scratch("faces");
         let cache = Cache::prepare(&dir)?;
-        cache.logo("im.app", b"app-icon", b"")?;
+        let app = cache.logo("im.app", b"app-icon", b"")?.unwrap();
 
-        let face = cache.logo("im.app", b"", b"alice-photo")?.unwrap();
+        let with_face = cache.logo("im.app", b"", b"alice-photo")?.unwrap();
         assert_eq!(
-            std::fs::read(&face)?,
-            b"alice-photo",
-            "the toast would have shown the app icon instead of the contact"
+            with_face, app,
+            "a contact face replaced the source app icon"
         );
-        // Content-addressed: the same person writing again names the same file, which is
-        // what keeps a chat thread from filling the cache.
-        assert_eq!(
-            cache.logo("im.app", b"", b"alice-photo")?.as_ref(),
-            Some(&face)
-        );
-        assert_ne!(cache.logo("im.app", b"", b"bob-photo")?.unwrap(), face);
+        assert_eq!(std::fs::read(&with_face)?, b"app-icon");
+        // Faces remain content-addressed and bounded for the case where an app icon is unavailable.
+        cache.logo("face.only", b"", b"alice-photo")?;
+        cache.logo("face.only", b"", b"alice-photo")?;
+        cache.logo("face.only", b"", b"bob-photo")?;
         assert_eq!(count(&dir.join("faces")), 2);
-
-        // And with no face on this one, the app icon is still there to fall back to.
         assert_eq!(
-            std::fs::read(cache.logo("im.app", b"", b"")?.unwrap())?,
-            b"app-icon"
+            std::fs::read(cache.logo("face.only", b"", b"alice-photo")?.unwrap())?,
+            b"alice-photo"
         );
         Ok(())
     }
@@ -1026,13 +1082,13 @@ mod tests {
     }
 
     #[test]
-    fn source_app_name_uses_readable_body_text_not_tiny_attribution() -> Result<()> {
+    fn source_app_name_is_the_first_readable_line_above_the_notification_title() -> Result<()> {
         crate::image::ensure_mta();
         let xml = XmlDocument::new()?;
         xml.LoadXml(&HSTRING::from(show_xml("ChatGPT", None, &[])))?;
         let texts = xml.GetElementsByTagName(&HSTRING::from("text"))?;
         assert_eq!(texts.Length()?, 3);
-        let source = texts.GetAt(2)?;
+        let source = texts.GetAt(0)?;
         assert_eq!(source.InnerText()?.to_string(), "ChatGPT");
         let attributes = source.Attributes()?;
         assert_eq!(
@@ -1040,7 +1096,7 @@ mod tests {
                 .GetNamedItem(&HSTRING::from("hint-style"))?
                 .InnerText()?
                 .to_string(),
-            "body"
+            "captionSubtle"
         );
         assert!(
             attributes
@@ -1048,6 +1104,7 @@ mod tests {
                 .is_err(),
             "source app fell back to Windows' tiny attribution line"
         );
+        assert_eq!(texts.GetAt(1)?.InnerText()?.to_string(), "{title}");
         Ok(())
     }
 
@@ -1385,5 +1442,24 @@ mod tests {
             .then(|| values.Lookup(&key))
             .transpose()?
             .map(|v| v.to_string()))
+    }
+
+    #[test]
+    fn shared_url_markup_is_bounded_escaped_and_protocol_activated() -> Result<()> {
+        let markup = shared_url_xml(
+            "https://example.com/a?x=1&y=2",
+            "A <page>",
+            "OnePlus & phone",
+        )?;
+        let xml = XmlDocument::new()?;
+        xml.LoadXml(&HSTRING::from(&markup))?;
+        assert!(markup.contains("Page shared from OnePlus &amp; phone"));
+        assert!(markup.contains("A &lt;page&gt;"));
+        assert!(markup.contains("Open in New Tab"));
+        assert!(markup.contains("activationType=\"protocol\""));
+        assert!(!safe_web_url("file:///C:/secret.txt"));
+        assert!(!safe_web_url("javascript:alert(1)"));
+        assert!(safe_web_url("HTTPS://example.com/Path"));
+        Ok(())
     }
 }

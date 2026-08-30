@@ -6,13 +6,20 @@
 //! event-written `status.txt` and `config.txt`; Refresh does the same on demand. Closing the window
 //! ends the process completely.
 
+#[path = "../data_dir.rs"]
+mod data_dir;
+#[path = "../shared_links.rs"]
+mod shared_links;
+
 use std::fs;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::ptr::{null, null_mut};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::Graphics::Dwm::{
     DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_WINDOW_CORNER_PREFERENCE,
@@ -28,6 +35,7 @@ use windows_sys::Win32::UI::HiDpi::{
     AdjustWindowRectExForDpi, GetDpiForWindow, SetProcessDpiAwarenessContext,
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
+use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 const ID_REFRESH: usize = 101;
@@ -36,6 +44,11 @@ const ID_FOLDER: usize = 103;
 const ID_AUTOSTART: usize = 104;
 const ID_EXPLORER: usize = 105;
 const ID_TRAY: usize = 106;
+const ID_LINKS_LIST: usize = 107;
+const ID_LINK_OPEN: usize = 108;
+const ID_LINK_CLEAR: usize = 109;
+const ID_NAV_LINKS: usize = 110;
+const ID_NAV_SETTINGS: usize = 111;
 const ID_TITLE: usize = 201;
 const ID_CONNECTION_CAPTION: usize = 203;
 const ID_CONNECTION_STATE: usize = 204;
@@ -44,6 +57,9 @@ const ID_ROUTING_CAPTION: usize = 206;
 const ID_RELAY_LABEL: usize = 207;
 const ID_PROXY_LABEL: usize = 208;
 const ID_INTEGRATIONS_CAPTION: usize = 210;
+const ID_SETTINGS_CAPTION: usize = 211;
+const ID_LINKS_CAPTION: usize = 212;
+const ID_LINK_DETAIL: usize = 213;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const STATIC_NO_PREFIX: u32 = 0x0080;
 const DEFAULT_RELAYS: &str = "us.414222.xyz:41113;tyo.414222.xyz:41113;wa.414222.xyz:41113";
@@ -52,11 +68,13 @@ const DEFAULT_RELAYS: &str = "us.414222.xyz:41113;tyo.414222.xyz:41113;wa.414222
 struct Theme {
     dark: bool,
     bg: COLORREF,
+    layer: COLORREF,
     card: COLORREF,
     border: COLORREF,
     edit: COLORREF,
     text: COLORREF,
     muted: COLORREF,
+    accent: COLORREF,
 }
 
 struct Ui {
@@ -68,19 +86,26 @@ struct Ui {
     autostart: isize,
     explorer: isize,
     tray: isize,
+    shared_links: isize,
+    shared_link_detail: isize,
+    links: Mutex<Vec<shared_links::Entry>>,
     config_dir: PathBuf,
     daemon: PathBuf,
     dpi: u32,
     theme: Theme,
     bg_brush: isize,
+    layer_brush: isize,
     card_brush: isize,
+    accent_brush: isize,
     edit_brush: isize,
     border_pen: isize,
-    app_mark_connection: isize,
     app_mark_title: isize,
 }
 
 static UI: OnceLock<Ui> = OnceLock::new();
+static PAGE: AtomicUsize = AtomicUsize::new(0);
+const PAGE_LINKS: usize = 0;
+const PAGE_SETTINGS: usize = 1;
 
 fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
@@ -101,21 +126,25 @@ fn app_theme() -> Theme {
         Theme {
             dark: false,
             bg: rgb(243, 243, 243),
+            layer: rgb(249, 249, 249),
             card: rgb(255, 255, 255),
             border: rgb(220, 224, 230),
             edit: rgb(255, 255, 255),
             text: rgb(27, 27, 27),
             muted: rgb(96, 96, 96),
+            accent: unsafe { GetSysColor(COLOR_HIGHLIGHT) },
         }
     } else {
         Theme {
             dark: true,
             bg: rgb(32, 32, 32),
+            layer: rgb(38, 38, 38),
             card: rgb(44, 44, 44),
             border: rgb(60, 60, 60),
             edit: rgb(50, 50, 50),
             text: rgb(245, 245, 245),
             muted: rgb(180, 180, 180),
+            accent: unsafe { GetSysColor(COLOR_HIGHLIGHT) },
         }
     }
 }
@@ -226,16 +255,13 @@ unsafe fn activate_common_controls() -> Option<(HANDLE, usize, PathBuf)> {
 }
 
 fn config_dir() -> PathBuf {
-    if let Some(local) = std::env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty()) {
-        return PathBuf::from(local).join("Conduit");
-    }
-    windows_registry::CURRENT_USER
-        .open(r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders")
-        .ok()
-        .and_then(|key| key.get_string("Local AppData").ok())
-        .map(PathBuf::from)
-        .unwrap_or_default()
-        .join("Conduit")
+    data_dir::resolve().unwrap_or_else(|_| {
+        std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+            .unwrap_or_default()
+            .join("data")
+    })
 }
 
 fn sibling(name: &str) -> PathBuf {
@@ -281,6 +307,117 @@ fn registry_value(key: &str, name: &str) -> bool {
         .ok()
         .and_then(|key| key.get_string(name).ok())
         .is_some()
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn age_label(timestamp_ms: u64) -> String {
+    let seconds = now_ms().saturating_sub(timestamp_ms) / 1000;
+    match seconds {
+        0..=59 => "now".to_owned(),
+        60..=3599 => format!("{}m", seconds / 60),
+        3600..=86_399 => format!("{}h", seconds / 3600),
+        _ => format!("{}d", seconds / 86_400),
+    }
+}
+
+fn short_text(value: &str, max: usize) -> String {
+    let count = value.chars().count();
+    if count <= max {
+        return value.to_owned();
+    }
+    let mut text = value
+        .chars()
+        .take(max.saturating_sub(1))
+        .collect::<String>();
+    text.push('…');
+    text
+}
+
+fn link_row(entry: &shared_links::Entry) -> String {
+    let title = if entry.title.trim().is_empty() {
+        entry.url.as_str()
+    } else {
+        entry.title.trim()
+    };
+    let source = if entry.source.trim().is_empty() {
+        "Phone"
+    } else {
+        entry.source.trim()
+    };
+    format!(
+        "{}  {} · {}",
+        age_label(entry.timestamp_ms),
+        short_text(title, 25),
+        short_text(source, 12)
+    )
+}
+
+unsafe fn show_selected_link_detail() {
+    let Some(ui) = UI.get() else { return };
+    let selected = SendMessageW(ui.shared_links as HWND, LB_GETCURSEL, 0, 0);
+    let text = if selected == LB_ERR as isize {
+        String::new()
+    } else {
+        ui.links
+            .lock()
+            .ok()
+            .and_then(|links| links.get(selected as usize).map(|entry| entry.url.clone()))
+            .unwrap_or_default()
+    };
+    set_text(ui.shared_link_detail, &short_text(&text, 58));
+}
+
+unsafe fn open_selected_link() {
+    let Some(ui) = UI.get() else { return };
+    let selected = SendMessageW(ui.shared_links as HWND, LB_GETCURSEL, 0, 0);
+    if selected == LB_ERR as isize {
+        return;
+    }
+    let url = ui
+        .links
+        .lock()
+        .ok()
+        .and_then(|links| links.get(selected as usize).map(|entry| entry.url.clone()));
+    let Some(url) = url else { return };
+    let operation = wide("open");
+    let url = wide(&url);
+    let result = ShellExecuteW(
+        ui.window as HWND,
+        operation.as_ptr(),
+        url.as_ptr(),
+        null(),
+        null(),
+        SW_SHOWNORMAL,
+    );
+    if result as isize <= 32 {
+        message("Could not open the shared link.", MB_ICONERROR);
+    }
+}
+
+unsafe fn clear_shared_links() {
+    let Some(ui) = UI.get() else { return };
+    let prompt = wide("Clear the shared-link history?");
+    let title = wide("Conduit");
+    if MessageBoxW(
+        ui.window as HWND,
+        prompt.as_ptr(),
+        title.as_ptr(),
+        MB_YESNO | MB_ICONQUESTION,
+    ) != IDYES
+    {
+        return;
+    }
+    if shared_links::clear(&ui.config_dir).is_err() {
+        message("Could not clear shared-link history.", MB_ICONERROR);
+        return;
+    }
+    refresh();
 }
 
 unsafe fn refresh() {
@@ -338,6 +475,25 @@ unsafe fn refresh() {
     set_text(ui.relays, &relay_text);
     set_text(ui.proxy, &value(&config, "relay_proxy"));
 
+    let links = shared_links::read(&ui.config_dir);
+    SendMessageW(ui.shared_links as HWND, LB_RESETCONTENT, 0, 0);
+    for entry in &links {
+        let row = wide(&link_row(entry));
+        SendMessageW(
+            ui.shared_links as HWND,
+            LB_ADDSTRING,
+            0,
+            row.as_ptr() as LPARAM,
+        );
+    }
+    if let Ok(mut shown) = ui.links.lock() {
+        *shown = links;
+    }
+    if SendMessageW(ui.shared_links as HWND, LB_GETCOUNT, 0, 0) > 0 {
+        SendMessageW(ui.shared_links as HWND, LB_SETCURSEL, 0, 0);
+    }
+    show_selected_link_detail();
+
     SendMessageW(
         ui.autostart as HWND,
         BM_SETCHECK,
@@ -394,10 +550,14 @@ unsafe fn save_config() {
         message("Could not save Conduit settings.", MB_ICONERROR);
         return;
     }
-    message(
-        "Settings saved. Restart the desktop daemon to apply Relay or tray changes.",
-        MB_ICONINFORMATION,
-    );
+    if !run_daemon_command(&["reload"]) {
+        message(
+            "Settings were saved, but the running daemon could not apply them.",
+            MB_ICONERROR,
+        );
+        return;
+    }
+    refresh();
 }
 
 fn run_daemon_command(args: &[&str]) -> bool {
@@ -447,6 +607,75 @@ unsafe fn toggle(kind: usize) {
     }
 }
 
+unsafe fn set_page(page: usize) {
+    let Some(ui) = UI.get() else { return };
+    let page = if page == PAGE_SETTINGS {
+        PAGE_SETTINGS
+    } else {
+        PAGE_LINKS
+    };
+    PAGE.store(page, Ordering::Relaxed);
+    let settings = if page == PAGE_SETTINGS {
+        SW_SHOW
+    } else {
+        SW_HIDE
+    };
+    let links = if page == PAGE_LINKS { SW_SHOW } else { SW_HIDE };
+
+    for id in [
+        ID_SETTINGS_CAPTION,
+        ID_ROUTING_CAPTION,
+        ID_RELAY_LABEL,
+        ID_PROXY_LABEL,
+        ID_INTEGRATIONS_CAPTION,
+        ID_SAVE,
+    ] {
+        let child = GetDlgItem(ui.window as HWND, id as i32);
+        if !child.is_null() {
+            ShowWindow(child, settings);
+        }
+    }
+    for child in [ui.relays, ui.proxy, ui.autostart, ui.explorer, ui.tray] {
+        ShowWindow(child as HWND, settings);
+    }
+    for id in [ID_LINKS_CAPTION, ID_LINK_OPEN, ID_LINK_CLEAR] {
+        let child = GetDlgItem(ui.window as HWND, id as i32);
+        if !child.is_null() {
+            ShowWindow(child, links);
+        }
+    }
+    ShowWindow(ui.shared_links as HWND, links);
+    ShowWindow(ui.shared_link_detail as HWND, links);
+
+    let links_nav = GetDlgItem(ui.window as HWND, ID_NAV_LINKS as i32);
+    let settings_nav = GetDlgItem(ui.window as HWND, ID_NAV_SETTINGS as i32);
+    if !links_nav.is_null() {
+        SendMessageW(
+            links_nav,
+            BM_SETSTYLE,
+            if page == PAGE_LINKS {
+                BS_DEFPUSHBUTTON as usize
+            } else {
+                BS_PUSHBUTTON as usize
+            },
+            1,
+        );
+    }
+    if !settings_nav.is_null() {
+        SendMessageW(
+            settings_nav,
+            BM_SETSTYLE,
+            if page == PAGE_SETTINGS {
+                BS_DEFPUSHBUTTON as usize
+            } else {
+                BS_PUSHBUTTON as usize
+            },
+            1,
+        );
+    }
+    InvalidateRect(ui.window as HWND, null(), 1);
+}
+
 unsafe fn message(text: &str, icon: MESSAGEBOX_STYLE) {
     let title = wide("Conduit");
     let text = wide(text);
@@ -474,54 +703,110 @@ unsafe extern "system" fn wnd_proc(
             let old_pen = SelectObject(hdc, ui.border_pen as HGDIOBJ);
             let old_brush = SelectObject(hdc, ui.card_brush as HGDIOBJ);
             let radius = dip(10, ui.dpi);
+
+            // Sefirah desktop geometry: a persistent 320 DIP device control centre on the left,
+            // top navigation on the right, and one layered content surface below it.
+            MoveToEx(hdc, dip(320, ui.dpi), dip(66, ui.dpi), null_mut());
+            LineTo(hdc, dip(320, ui.dpi), dip(624, ui.dpi));
+
+            SelectObject(hdc, ui.layer_brush as HGDIOBJ);
             RoundRect(
                 hdc,
-                dip(24, ui.dpi),
-                dip(78, ui.dpi),
-                dip(246, ui.dpi),
-                dip(496, ui.dpi),
+                dip(336, ui.dpi),
+                dip(116, ui.dpi),
+                dip(956, ui.dpi),
+                dip(620, ui.dpi),
                 radius,
                 radius,
             );
+
+            // Phone frame mirrors Sefirah's DeviceControlCenter silhouette instead of showing the
+            // product tile as the connected-device avatar.
+            SelectObject(hdc, ui.accent_brush as HGDIOBJ);
             RoundRect(
                 hdc,
-                dip(270, ui.dpi),
-                dip(108, ui.dpi),
-                dip(736, ui.dpi),
-                dip(318, ui.dpi),
-                radius,
-                radius,
+                dip(42, ui.dpi),
+                dip(114, ui.dpi),
+                dip(96, ui.dpi),
+                dip(214, ui.dpi),
+                dip(8, ui.dpi),
+                dip(8, ui.dpi),
             );
+            SelectObject(hdc, ui.card_brush as HGDIOBJ);
             RoundRect(
                 hdc,
-                dip(270, ui.dpi),
-                dip(360, ui.dpi),
-                dip(736, ui.dpi),
-                dip(452, ui.dpi),
-                radius,
-                radius,
+                dip(46, ui.dpi),
+                dip(118, ui.dpi),
+                dip(92, ui.dpi),
+                dip(210, ui.dpi),
+                dip(6, ui.dpi),
+                dip(6, ui.dpi),
             );
-            if ui.app_mark_connection != 0 {
-                DrawIconEx(
+            SelectObject(hdc, ui.accent_brush as HGDIOBJ);
+            RoundRect(
+                hdc,
+                dip(49, ui.dpi),
+                dip(122, ui.dpi),
+                dip(89, ui.dpi),
+                dip(205, ui.dpi),
+                dip(4, ui.dpi),
+                dip(4, ui.dpi),
+            );
+
+            SelectObject(hdc, ui.card_brush as HGDIOBJ);
+            if PAGE.load(Ordering::Relaxed) == PAGE_SETTINGS {
+                RoundRect(
                     hdc,
-                    dip(40, ui.dpi),
-                    dip(116, ui.dpi),
-                    ui.app_mark_connection as HICON,
-                    dip(44, ui.dpi),
-                    dip(44, ui.dpi),
-                    0,
-                    null_mut(),
-                    DI_NORMAL,
+                    dip(360, ui.dpi),
+                    dip(170, ui.dpi),
+                    dip(930, ui.dpi),
+                    dip(372, ui.dpi),
+                    radius,
+                    radius,
+                );
+                RoundRect(
+                    hdc,
+                    dip(360, ui.dpi),
+                    dip(404, ui.dpi),
+                    dip(930, ui.dpi),
+                    dip(540, ui.dpi),
+                    radius,
+                    radius,
+                );
+            } else {
+                RoundRect(
+                    hdc,
+                    dip(360, ui.dpi),
+                    dip(170, ui.dpi),
+                    dip(930, ui.dpi),
+                    dip(548, ui.dpi),
+                    radius,
+                    radius,
                 );
             }
+
+            // Small accent underline is the selected top-navigation indicator.
+            let nav_x = if PAGE.load(Ordering::Relaxed) == PAGE_SETTINGS {
+                470
+            } else {
+                360
+            };
+            let underline = RECT {
+                left: dip(nav_x, ui.dpi),
+                top: dip(105, ui.dpi),
+                right: dip(nav_x + 96, ui.dpi),
+                bottom: dip(108, ui.dpi),
+            };
+            FillRect(hdc, &underline, ui.accent_brush as HBRUSH);
+
             if ui.app_mark_title != 0 {
                 DrawIconEx(
                     hdc,
-                    dip(28, ui.dpi),
+                    dip(24, ui.dpi),
                     dip(20, ui.dpi),
                     ui.app_mark_title as HICON,
-                    dip(34, ui.dpi),
-                    dip(34, ui.dpi),
+                    dip(28, ui.dpi),
+                    dip(28, ui.dpi),
                     0,
                     null_mut(),
                     DI_NORMAL,
@@ -550,11 +835,22 @@ unsafe extern "system" fn wnd_proc(
                 },
             );
             match id {
-                ID_TITLE | ID_ROUTING_CAPTION | ID_INTEGRATIONS_CAPTION => ui.bg_brush as LRESULT,
+                ID_TITLE | ID_CONNECTION_CAPTION | ID_CONNECTION_STATE | ID_CONNECTION_DETAIL => {
+                    ui.bg_brush as LRESULT
+                }
+                ID_SETTINGS_CAPTION | ID_LINKS_CAPTION => ui.layer_brush as LRESULT,
                 _ => ui.card_brush as LRESULT,
             }
         }
         WM_CTLCOLOREDIT => {
+            let Some(ui) = UI.get() else {
+                return DefWindowProcW(hwnd, msg, wparam, lparam);
+            };
+            SetTextColor(wparam as HDC, ui.theme.text);
+            SetBkColor(wparam as HDC, ui.theme.edit);
+            ui.edit_brush as LRESULT
+        }
+        WM_CTLCOLORLISTBOX => {
             let Some(ui) = UI.get() else {
                 return DefWindowProcW(hwnd, msg, wparam, lparam);
             };
@@ -569,17 +865,28 @@ unsafe extern "system" fn wnd_proc(
             let id = GetDlgCtrlID(lparam as HWND) as usize;
             SetBkMode(wparam as HDC, TRANSPARENT as i32);
             SetTextColor(wparam as HDC, ui.theme.text);
-            if id == ID_SAVE {
+            if id == ID_NAV_LINKS || id == ID_NAV_SETTINGS {
                 ui.bg_brush as LRESULT
+            } else if id == ID_SAVE {
+                ui.layer_brush as LRESULT
             } else {
                 ui.card_brush as LRESULT
             }
         }
         WM_COMMAND => {
             let id = wparam & 0xffff;
+            let notification = (wparam >> 16) & 0xffff;
             match id {
                 ID_REFRESH => refresh(),
                 ID_SAVE => save_config(),
+                ID_NAV_LINKS => set_page(PAGE_LINKS),
+                ID_NAV_SETTINGS => set_page(PAGE_SETTINGS),
+                ID_LINK_OPEN => open_selected_link(),
+                ID_LINK_CLEAR => clear_shared_links(),
+                ID_LINKS_LIST if notification == LBN_DBLCLK as usize => open_selected_link(),
+                ID_LINKS_LIST if notification == LBN_SELCHANGE as usize => {
+                    show_selected_link_detail()
+                }
                 ID_FOLDER => {
                     if let Some(dir) = UI.get().map(|ui| ui.config_dir.clone()) {
                         let _ = Command::new("explorer.exe").arg(dir).spawn();
@@ -638,7 +945,9 @@ fn main() {
         let common_controls = activate_common_controls();
         let theme = app_theme();
         let bg_brush = CreateSolidBrush(theme.bg);
+        let layer_brush = CreateSolidBrush(theme.layer);
         let card_brush = CreateSolidBrush(theme.card);
+        let accent_brush = CreateSolidBrush(theme.accent);
         let edit_brush = CreateSolidBrush(theme.edit);
         let border_pen = CreatePen(PS_SOLID as i32, 1, theme.border);
         let icon_file = ensure_app_icon_file();
@@ -669,8 +978,8 @@ fn main() {
             style,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            760,
-            560,
+            980,
+            650,
             null_mut(),
             null_mut(),
             instance,
@@ -695,13 +1004,9 @@ fn main() {
             .as_deref()
             .map(|path| load_app_icon(path, dip(32, dpi)))
             .unwrap_or(null_mut());
-        let app_mark_connection = icon_file
-            .as_deref()
-            .map(|path| load_app_icon(path, dip(44, dpi)))
-            .unwrap_or(null_mut());
         let app_mark_title = icon_file
             .as_deref()
-            .map(|path| load_app_icon(path, dip(34, dpi)))
+            .map(|path| load_app_icon(path, dip(32, dpi)))
             .unwrap_or(null_mut());
 
         if !app_icon_big.is_null() {
@@ -727,8 +1032,8 @@ fn main() {
         let mut bounds = RECT {
             left: 0,
             top: 0,
-            right: dip(760, dpi),
-            bottom: dip(560, dpi),
+            right: dip(980, dpi),
+            bottom: dip(650, dpi),
         };
         AdjustWindowRectExForDpi(&mut bounds, style, 0, 0, dpi);
         SetWindowPos(
@@ -743,8 +1048,8 @@ fn main() {
 
         let body_font = font(dpi, 14, FW_NORMAL as i32);
         let caption_font = font(dpi, 12, FW_SEMIBOLD as i32);
-        let title_font = font(dpi, 28, FW_SEMIBOLD as i32);
-        let state_font = font(dpi, 24, FW_SEMIBOLD as i32);
+        let title_font = font(dpi, 24, FW_SEMIBOLD as i32);
+        let state_font = font(dpi, 18, FW_SEMIBOLD as i32);
         let peer_font = font(dpi, 18, FW_SEMIBOLD as i32);
 
         let dark = if theme.dark { 1i32 } else { 0i32 };
@@ -780,120 +1085,44 @@ fn main() {
             hwnd
         };
 
-        label("Conduit", ID_TITLE, 76, 18, 300, 40, title_font);
+        label("Conduit", ID_TITLE, 60, 18, 220, 34, title_font);
 
-        // Left pane: connection state only. No explanatory copy or transport implementation detail.
+        // Left: Sefirah-style device control centre. The phone frame itself is painted in WM_PAINT.
         label(
-            "Connection",
+            "Device",
             ID_CONNECTION_CAPTION,
-            44,
-            96,
-            150,
+            40,
+            82,
+            120,
             20,
             caption_font,
         );
         let status_state = label(
             "Not linked",
             ID_CONNECTION_STATE,
-            96,
-            116,
-            126,
-            58,
+            118,
+            122,
+            178,
+            28,
             peer_font,
         );
         let status_detail = label(
             "Not linked",
             ID_CONNECTION_DETAIL,
-            44,
-            184,
-            174,
-            48,
+            118,
+            154,
+            178,
+            54,
             body_font,
         );
 
-        // Right pane: settings are grouped like Windows Settings cards, with short labels only.
-        label("Relay", ID_ROUTING_CAPTION, 290, 78, 220, 26, state_font);
-        label("Endpoints", ID_RELAY_LABEL, 290, 126, 160, 22, body_font);
-        let relays = child(
-            "EDIT",
-            "",
-            WS_BORDER | WS_TABSTOP | ES_MULTILINE as u32 | ES_AUTOVSCROLL as u32,
-            dip(290, dpi),
-            dip(150, dpi),
-            dip(426, dpi),
-            dip(62, dpi),
-            window,
-            0,
-            instance,
-        );
-        label("SOCKS5 proxy", ID_PROXY_LABEL, 290, 224, 180, 22, body_font);
-        let proxy = child(
-            "EDIT",
-            "",
-            WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL as u32,
-            dip(290, dpi),
-            dip(248, dpi),
-            dip(426, dpi),
-            dip(34, dpi),
-            window,
-            0,
-            instance,
-        );
-
-        label(
-            "Windows",
-            ID_INTEGRATIONS_CAPTION,
-            290,
-            330,
-            220,
-            26,
-            state_font,
-        );
-        let autostart = child(
-            "BUTTON",
-            "Start at sign-in",
-            BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-            dip(290, dpi),
-            dip(382, dpi),
-            dip(190, dpi),
-            dip(24, dpi),
-            window,
-            ID_AUTOSTART,
-            instance,
-        );
-        let explorer = child(
-            "BUTTON",
-            "Send to phone in Explorer",
-            BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-            dip(500, dpi),
-            dip(382, dpi),
-            dip(206, dpi),
-            dip(24, dpi),
-            window,
-            ID_EXPLORER,
-            instance,
-        );
-        let tray = child(
-            "BUTTON",
-            "Show tray icon",
-            BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
-            dip(290, dpi),
-            dip(420, dpi),
-            dip(190, dpi),
-            dip(24, dpi),
-            window,
-            ID_TRAY,
-            instance,
-        );
-
-        // Actions stay explicit and on-demand. Ampersands provide native access keys.
         let folder = child(
             "BUTTON",
             "&Diagnostics",
             BS_PUSHBUTTON as u32 | WS_TABSTOP,
-            dip(44, dpi),
-            dip(404, dpi),
-            dip(158, dpi),
+            dip(40, dpi),
+            dip(548, dpi),
+            dip(112, dpi),
             dip(36, dpi),
             window,
             ID_FOLDER,
@@ -903,21 +1132,179 @@ fn main() {
             "BUTTON",
             "&Refresh",
             BS_PUSHBUTTON as u32 | WS_TABSTOP,
-            dip(44, dpi),
-            dip(448, dpi),
-            dip(158, dpi),
+            dip(164, dpi),
+            dip(548, dpi),
+            dip(112, dpi),
             dip(36, dpi),
             window,
             ID_REFRESH,
+            instance,
+        );
+
+        // Right: Sefirah's top NavigationView translated to two native on-demand tabs.
+        let nav_links = child(
+            "BUTTON",
+            "Shared links",
+            BS_PUSHBUTTON as u32 | BS_FLAT as u32 | WS_TABSTOP,
+            dip(350, dpi),
+            dip(70, dpi),
+            dip(104, dpi),
+            dip(34, dpi),
+            window,
+            ID_NAV_LINKS,
+            instance,
+        );
+        let nav_settings = child(
+            "BUTTON",
+            "Settings",
+            BS_PUSHBUTTON as u32 | BS_FLAT as u32 | WS_TABSTOP,
+            dip(462, dpi),
+            dip(70, dpi),
+            dip(92, dpi),
+            dip(34, dpi),
+            window,
+            ID_NAV_SETTINGS,
+            instance,
+        );
+
+        // Shared links page.
+        label(
+            "Shared links",
+            ID_LINKS_CAPTION,
+            372,
+            140,
+            220,
+            28,
+            state_font,
+        );
+        let shared_links = child(
+            "LISTBOX",
+            "",
+            WS_BORDER | WS_TABSTOP | WS_VSCROLL | LBS_NOTIFY as u32,
+            dip(380, dpi),
+            dip(190, dpi),
+            dip(530, dpi),
+            dip(250, dpi),
+            window,
+            ID_LINKS_LIST,
+            instance,
+        );
+        let shared_link_detail = label("", ID_LINK_DETAIL, 380, 458, 530, 42, body_font);
+        let link_open = child(
+            "BUTTON",
+            "&Open",
+            BS_PUSHBUTTON as u32 | WS_TABSTOP,
+            dip(380, dpi),
+            dip(510, dpi),
+            dip(112, dpi),
+            dip(32, dpi),
+            window,
+            ID_LINK_OPEN,
+            instance,
+        );
+        let link_clear = child(
+            "BUTTON",
+            "C&lear",
+            BS_PUSHBUTTON as u32 | WS_TABSTOP,
+            dip(504, dpi),
+            dip(510, dpi),
+            dip(112, dpi),
+            dip(32, dpi),
+            window,
+            ID_LINK_CLEAR,
+            instance,
+        );
+
+        // Settings page.
+        label(
+            "Settings",
+            ID_SETTINGS_CAPTION,
+            372,
+            140,
+            220,
+            28,
+            state_font,
+        );
+        label("Relay", ID_ROUTING_CAPTION, 382, 186, 220, 24, state_font);
+        label("Endpoints", ID_RELAY_LABEL, 382, 220, 160, 22, body_font);
+        let relays = child(
+            "EDIT",
+            "",
+            WS_BORDER | WS_TABSTOP | ES_MULTILINE as u32 | ES_AUTOVSCROLL as u32,
+            dip(382, dpi),
+            dip(244, dpi),
+            dip(526, dpi),
+            dip(64, dpi),
+            window,
+            0,
+            instance,
+        );
+        label("SOCKS5 proxy", ID_PROXY_LABEL, 382, 320, 180, 22, body_font);
+        let proxy = child(
+            "EDIT",
+            "",
+            WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL as u32,
+            dip(382, dpi),
+            dip(344, dpi),
+            dip(526, dpi),
+            dip(34, dpi),
+            window,
+            0,
+            instance,
+        );
+
+        label(
+            "Windows",
+            ID_INTEGRATIONS_CAPTION,
+            382,
+            420,
+            220,
+            24,
+            state_font,
+        );
+        let autostart = child(
+            "BUTTON",
+            "Start at sign-in",
+            BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
+            dip(382, dpi),
+            dip(458, dpi),
+            dip(190, dpi),
+            dip(24, dpi),
+            window,
+            ID_AUTOSTART,
+            instance,
+        );
+        let explorer = child(
+            "BUTTON",
+            "Explorer menu",
+            BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
+            dip(600, dpi),
+            dip(458, dpi),
+            dip(190, dpi),
+            dip(24, dpi),
+            window,
+            ID_EXPLORER,
+            instance,
+        );
+        let tray = child(
+            "BUTTON",
+            "Show tray icon",
+            BS_AUTOCHECKBOX as u32 | WS_TABSTOP,
+            dip(382, dpi),
+            dip(492, dpi),
+            dip(190, dpi),
+            dip(24, dpi),
+            window,
+            ID_TRAY,
             instance,
         );
         let save = child(
             "BUTTON",
             "&Save",
             BS_DEFPUSHBUTTON as u32 | WS_TABSTOP,
-            dip(612, dpi),
-            dip(486, dpi),
-            dip(124, dpi),
+            dip(798, dpi),
+            dip(560, dpi),
+            dip(112, dpi),
             dip(36, dpi),
             window,
             ID_SAVE,
@@ -930,6 +1317,11 @@ fn main() {
             autostart,
             explorer,
             tray,
+            shared_links,
+            link_open,
+            link_clear,
+            nav_links,
+            nav_settings,
             refresh_button,
             save,
             folder,
@@ -947,19 +1339,24 @@ fn main() {
             autostart: autostart as isize,
             explorer: explorer as isize,
             tray: tray as isize,
+            shared_links: shared_links as isize,
+            shared_link_detail: shared_link_detail as isize,
+            links: Mutex::new(Vec::new()),
             config_dir: config_dir(),
             daemon: sibling("conduit-daemon.exe"),
             dpi,
             theme,
             bg_brush: bg_brush as isize,
+            layer_brush: layer_brush as isize,
             card_brush: card_brush as isize,
+            accent_brush: accent_brush as isize,
             edit_brush: edit_brush as isize,
             border_pen: border_pen as isize,
-            app_mark_connection: app_mark_connection as isize,
             app_mark_title: app_mark_title as isize,
         })
         .ok();
 
+        set_page(PAGE_LINKS);
         refresh();
         InvalidateRect(window, null(), 1);
         ShowWindow(window, SW_SHOW);
@@ -981,13 +1378,7 @@ fn main() {
             ReleaseActCtx(handle);
             let _ = fs::remove_file(path);
         }
-        for icon in [
-            app_icon_class,
-            app_icon_small,
-            app_icon_big,
-            app_mark_connection,
-            app_mark_title,
-        ] {
+        for icon in [app_icon_class, app_icon_small, app_icon_big, app_mark_title] {
             if !icon.is_null() {
                 DestroyIcon(icon);
             }
@@ -999,7 +1390,9 @@ fn main() {
             state_font as HGDIOBJ,
             peer_font as HGDIOBJ,
             bg_brush as HGDIOBJ,
+            layer_brush as HGDIOBJ,
             card_brush as HGDIOBJ,
+            accent_brush as HGDIOBJ,
             edit_brush as HGDIOBJ,
             border_pen as HGDIOBJ,
         ] {

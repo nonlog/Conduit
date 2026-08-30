@@ -136,7 +136,10 @@ async fn arrive(
     let want = match role {
         INITIATOR => RESPONDER,
         RESPONDER => INITIATOR,
-        other => bail!("unknown role {:?}, expected an initiator or a responder", other as char),
+        other => bail!(
+            "unknown role {:?}, expected an initiator or a responder",
+            other as char
+        ),
     };
 
     let mut waiter = {
@@ -363,7 +366,10 @@ mod tests {
         let mut back = [0u8; 11];
         a.read_exact(&mut back).await.unwrap();
         assert_eq!(&back, b"noise-msg2!", "the return direction is not spliced");
-        assert!(waiting.lock().await.is_empty(), "a spliced pair must leave the map");
+        assert!(
+            waiting.lock().await.is_empty(),
+            "a spliced pair must leave the map"
+        );
     }
 
     #[tokio::test]
@@ -377,7 +383,10 @@ mod tests {
         let mut sink = Vec::new();
         let _ = s.read_to_end(&mut sink).await;
         assert!(sink.is_empty(), "the relay answered a stranger: {sink:?}");
-        assert!(waiting.lock().await.is_empty(), "a refusal must not hold a slot");
+        assert!(
+            waiting.lock().await.is_empty(),
+            "a refusal must not hold a slot"
+        );
     }
 
     /// The bug this role byte exists for: a phone whose session died leaves a socket parked
@@ -394,7 +403,11 @@ mod tests {
         // The same side again, as happens on every reconnect. It must park, not pair.
         let mut again = dial(addr, ID).await;
         await_waiter(&waiting, ID).await;
-        assert_eq!(waiting.lock().await.len(), 1, "one waiter per role, the stale one gone");
+        assert_eq!(
+            waiting.lock().await.len(),
+            1,
+            "one waiter per role, the stale one gone"
+        );
         // And the displaced socket is closed rather than left holding an fd forever.
         let mut sink = Vec::new();
         let _ = dead.read_to_end(&mut sink).await;
@@ -417,7 +430,10 @@ mod tests {
 
         let mut got = [0u8; 10];
         desktop.read_exact(&mut got).await.unwrap();
-        assert_eq!(&got, b"old-noise1", "legacy role inference consumed Noise bytes");
+        assert_eq!(
+            &got, b"old-noise1",
+            "legacy role inference consumed Noise bytes"
+        );
         desktop.write_all(b"old-noise2").await.unwrap();
         phone.read_exact(&mut got).await.unwrap();
         assert_eq!(&got, b"old-noise2");
@@ -484,7 +500,10 @@ mod tests {
         let mut sink = Vec::new();
         let _ = b.read_to_end(&mut sink).await;
         assert!(sink.is_empty());
-        assert!(waiting.lock().await.is_empty(), "the id must be free to redial");
+        assert!(
+            waiting.lock().await.is_empty(),
+            "the id must be free to redial"
+        );
         drop(b);
 
         // And the redial genuinely works, which is the half that matters.
@@ -505,7 +524,11 @@ mod tests {
         let other = "zzzzzzzzzz012345678901234567890123456789-_x";
         let mut b1 = dial(addr, other).await;
         await_waiter(&waiting, other).await;
-        assert_eq!(waiting.lock().await.len(), 2, "two ids, two independent waiters");
+        assert_eq!(
+            waiting.lock().await.len(),
+            2,
+            "two ids, two independent waiters"
+        );
 
         let mut a2 = dial_as(addr, ID, RESPONDER).await;
         a1.write_all(b"for-a").await.unwrap();

@@ -172,16 +172,19 @@ const RESERVED: [&str; 22] = [
     "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
 ];
 
-/// Where received files land. `CONDUIT_DOWNLOADS` overrides it.
+/// Where received files land. `CONDUIT_DOWNLOADS` overrides the saved preference.
 ///
-/// Asks the shell rather than assuming `%USERPROFILE%\Downloads`: a relocated Downloads
-/// folder is common, and writing to the place the user moved *away* from means their file
-/// arrives somewhere they will never look.
-pub fn downloads() -> Result<PathBuf> {
+/// Asks the shell rather than assuming `%USERPROFILE%\Downloads` only when the user has not
+/// chosen a folder. A relocated Downloads folder is common, and writing to the place the user
+/// moved *away* from means their file arrives somewhere they will never look.
+pub fn downloads(configured: Option<&str>) -> Result<PathBuf> {
     if let Ok(dir) = std::env::var("CONDUIT_DOWNLOADS") {
         if !dir.trim().is_empty() {
             return Ok(PathBuf::from(dir));
         }
+    }
+    if let Some(dir) = configured.map(str::trim).filter(|dir| !dir.is_empty()) {
+        return Ok(PathBuf::from(dir));
     }
     use windows::Win32::System::Com::CoTaskMemFree;
     use windows::Win32::UI::Shell::{FOLDERID_Downloads, SHGetKnownFolderPath, KF_FLAG_DEFAULT};
@@ -644,7 +647,7 @@ mod tests {
     #[test]
     fn the_downloads_folder_is_an_absolute_path_that_exists() -> Result<()> {
         crate::image::ensure_mta();
-        let dir = downloads()?;
+        let dir = downloads(None)?;
         assert!(dir.is_absolute(), "{}", dir.display());
         assert!(dir.is_dir(), "{} is not a directory", dir.display());
         Ok(())

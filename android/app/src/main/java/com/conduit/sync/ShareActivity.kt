@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import android.widget.Toast
+import java.net.URI
 
 private const val TAG = "conduit.share"
 
@@ -19,6 +20,32 @@ private const val TAG = "conduit.share"
  * dropped quietly. Raise it by giving transfers a queue of their own.
  */
 private const val MAX_FILES = 16
+
+/** A deliberate web-page share, not arbitrary clipboard text. */
+internal fun sharedWebUrl(text: String): String? {
+    val candidate = text.trim()
+    if (candidate.isEmpty() || candidate.length > 4096 || candidate.any { it.code < 0x20 }) return null
+    val uri = runCatching { URI(candidate) }.getOrNull() ?: return null
+    val scheme = uri.scheme?.lowercase()
+    if ((scheme != "http" && scheme != "https") || uri.rawAuthority.isNullOrBlank()) return null
+    return candidate
+}
+/**
+ * Chrome can attach a preview image to an otherwise normal page share. That preview is auxiliary:
+ * when the intent also carries a real http(s) URL plus page metadata, the URL is the user's payload.
+ * Explicit image/file shares still win when there is no page signal.
+ */
+internal fun sharedPageUrl(
+    text: String?,
+    title: String?,
+    mimeType: String?,
+    hasUris: Boolean,
+): String? {
+    val url = text?.let(::sharedWebUrl) ?: return null
+    if (!hasUris) return url
+    val textShare = mimeType?.startsWith("text/", ignoreCase = true) == true
+    return url.takeIf { textShare || !title.isNullOrBlank() }
+}
 
 /**
  * Conduit's entry in the system share sheet.
@@ -39,6 +66,8 @@ class ShareActivity : Activity() {
         super.onCreate(savedInstanceState)
         val uris = uris(intent).distinct()
         val text = intent.getStringExtra(Intent.EXTRA_TEXT)
+        val title = intent.getCharSequenceExtra(Intent.EXTRA_TITLE)?.toString()?.trim()?.takeIf(String::isNotEmpty)
+            ?: intent.getStringExtra(Intent.EXTRA_SUBJECT)?.trim()?.takeIf(String::isNotEmpty)
         val peer = Identity.peerName(filesDir) ?: "the desktop"
 
         // A share with no session would be queued onto a link that drops it, so the honest
@@ -54,8 +83,21 @@ class ShareActivity : Activity() {
             finish()
             return
         }
-
+        val pageUrl = sharedPageUrl(text, title, intent.type, uris.isNotEmpty())
         when {
+            pageUrl != null -> {
+                startForegroundService(
+                    Intent(this, SyncService::class.java)
+                        .setAction(ACTION_SHARE)
+                        .putExtra(Intent.EXTRA_TEXT, pageUrl)
+                        .putExtra(Intent.EXTRA_TITLE, title),
+                )
+                Log.i(
+                    TAG,
+                    "sharing web page instead of ${uris.size} auxiliary URI(s); type=${intent.type}",
+                )
+                toast("Sent to $peer")
+            }
             uris.isNotEmpty() -> {
                 val sending = uris.take(MAX_FILES)
                 if (uris.size > sending.size) {
@@ -77,7 +119,8 @@ class ShareActivity : Activity() {
                 startForegroundService(
                     Intent(this, SyncService::class.java)
                         .setAction(ACTION_SHARE)
-                        .putExtra(Intent.EXTRA_TEXT, text),
+                        .putExtra(Intent.EXTRA_TEXT, text)
+                        .putExtra(Intent.EXTRA_TITLE, title),
                 )
                 toast("Sent to $peer")
             }

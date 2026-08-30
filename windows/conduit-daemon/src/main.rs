@@ -11,9 +11,12 @@ mod autostart;
 mod clip;
 mod config;
 mod control;
+mod data_dir;
 mod explorer;
 mod file;
 mod image;
+mod notification_history;
+mod shared_links;
 mod status;
 mod toast;
 mod tray;
@@ -21,6 +24,7 @@ mod wire;
 
 use anyhow::{bail, Context, Result};
 use prost::Message as _;
+use std::io::Write as _;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -158,7 +162,10 @@ async fn main() -> Result<()> {
                 bail!("usage: conduit-daemon send <file>");
             }
             let path = control::queue(&PathBuf::from(path)).await?;
-            println!("Sent to phone: {}", path.display());
+            // A GUI-subsystem command launched from Explorer may have no stdout handle. `println!`
+            // panics on that write failure even after the phone has confirmed publication, which used to
+            // turn a successful transfer into a false failure dialog. CLI output is best-effort only.
+            let _ = writeln!(std::io::stdout(), "Sent to phone: {}", path.display());
             return Ok(());
         }
         if command == "autostart" {
@@ -211,6 +218,10 @@ async fn main() -> Result<()> {
             }
             return Ok(());
         }
+        if command == "reload" && args.next().is_none() {
+            control::reload().await?;
+            return Ok(());
+        }
         if command == "config" {
             let dir = config_dir()?;
             std::fs::create_dir_all(&dir)?;
@@ -256,7 +267,10 @@ async fn main() -> Result<()> {
                         value.into_owned()
                     });
                     println!("Saved {}", config.save(&dir)?.display());
-                    println!("Restart the daemon to apply this change.");
+                    match control::reload().await {
+                        Ok(()) => println!("Applied to the running daemon."),
+                        Err(_) => println!("Saved; it will apply when the daemon next starts."),
+                    }
                 }
                 "relays" => {
                     let value = args
@@ -272,7 +286,10 @@ async fn main() -> Result<()> {
                         value.into_owned()
                     });
                     println!("Saved {}", config.save(&dir)?.display());
-                    println!("Restart the daemon to apply this change.");
+                    match control::reload().await {
+                        Ok(()) => println!("Applied to the running daemon."),
+                        Err(_) => println!("Saved; it will apply when the daemon next starts."),
+                    }
                 }
                 _ => bail!(
                     "usage: conduit-daemon config <show|relay-proxy <value|off>|relays <list|off>>"
@@ -323,7 +340,7 @@ async fn main() -> Result<()> {
     // Optional tray icon. It is one blocked Win32 message loop and is not created at all when the
     // setting is off. Failures are non-fatal: transport and clipboard sync remain useful without it.
     let (tray_exit_tx, mut tray_exit_rx) = mpsc::unbounded_channel::<()>();
-    let _tray = if user_config.show_tray_icon() {
+    let mut tray = if user_config.show_tray_icon() {
         match tray::Tray::start(&dir, tray_exit_tx.clone()) {
             Ok(tray) => {
                 info!("tray icon up");
@@ -360,8 +377,9 @@ async fn main() -> Result<()> {
     // name a local path and the resident daemon opens/streams it through its one live session.
     let (outbound_tx, outbound_rx) = mpsc::channel::<control::SendRequest>(16);
     let outbound = Arc::new(Mutex::new(outbound_rx));
+    let (reload_tx, mut reload_rx) = mpsc::channel::<control::ReloadRequest>(4);
     tokio::spawn(async move {
-        if let Err(e) = control::serve(outbound_tx).await {
+        if let Err(e) = control::serve(outbound_tx, reload_tx).await {
             warn!(error = %e, "local control pipe stopped");
         }
     });
@@ -376,35 +394,85 @@ async fn main() -> Result<()> {
     // Two ways in now, and the difference ends here: a relay stream is spliced to the
     // phone by a process that cannot read it, so from `serve`'s point of view it is an
     // ordinary socket carrying an ordinary Noise session.
-    let relays = user_config.resolved_relays(DEFAULT_RELAYS);
-    let relay_proxy = user_config.resolved_proxy();
+    let mut relay_endpoints = user_config.resolved_relays(DEFAULT_RELAYS);
+    let mut relay_proxy = user_config.resolved_proxy();
     info!(
-        relays = ?relays,
+        relays = ?relay_endpoints,
         proxy = relay_proxy.as_deref().unwrap_or("direct"),
         "relay configuration"
     );
-    let (relay_tx, mut relay_rx) =
-        tokio::sync::mpsc::channel::<RelayArrival>((relays.len().max(1) * 2).max(2));
-    for endpoint in &relays {
-        let rendezvous = device_id.clone();
-        info!(%endpoint, "parking at relay");
-        tokio::spawn(park_forever(
-            endpoint.clone(),
-            rendezvous,
-            relay_tx.clone(),
-            relay_proxy.clone(),
-        ));
-    }
-    // Only the per-relay workers own senders. With no configured relays this closes the
-    // receiver and permanently disables its select branch without a polling special case.
-    drop(relay_tx);
+    let (mut relay_tasks, mut relay_rx) =
+        start_relay_workers(&relay_endpoints, &device_id, relay_proxy.clone());
 
     let mut active: Option<tokio::task::JoinHandle<()>> = None;
+    let mut active_path: Option<&'static str> = None;
     loop {
         let (stream, peer, via, relay_endpoint) = tokio::select! {
             Some(()) = tray_exit_rx.recv() => {
                 info!("exit requested from tray");
                 break;
+            }
+            Some(request) = reload_rx.recv() => {
+                let result = match config::Config::load(&dir) {
+                    Err(e) => Err(format!("{e:#}")),
+                    Ok(new_config) => {
+                        let wanted_tray = new_config.show_tray_icon();
+                        let new_relays = new_config.resolved_relays(DEFAULT_RELAYS);
+                        let new_proxy = new_config.resolved_proxy();
+                        let relay_changed = new_relays != relay_endpoints || new_proxy != relay_proxy;
+                        let mut apply_error = None;
+
+                        if wanted_tray != tray.is_some() {
+                            if wanted_tray {
+                                match tray::Tray::start(&dir, tray_exit_tx.clone()) {
+                                    Ok(new_tray) => {
+                                        tray = Some(new_tray);
+                                        info!("tray icon enabled without daemon restart");
+                                    }
+                                    Err(e) => apply_error = Some(format!("starting tray icon: {e:#}")),
+                                }
+                            } else {
+                                tray = None;
+                                info!("tray icon disabled without daemon restart");
+                            }
+                        }
+
+                        if relay_changed {
+                            for task in relay_tasks.drain(..) {
+                                task.abort();
+                                let _ = task.await;
+                            }
+                            let (tasks, rx) =
+                                start_relay_workers(&new_relays, &device_id, new_proxy.clone());
+                            relay_tasks = tasks;
+                            relay_rx = rx;
+                            relay_endpoints = new_relays;
+                            relay_proxy = new_proxy;
+                            info!(
+                                relays = ?relay_endpoints,
+                                proxy = relay_proxy.as_deref().unwrap_or("direct"),
+                                "relay configuration applied without daemon restart"
+                            );
+                            // A live relay socket belongs to the old routing configuration. End only
+                            // that session so the phone reconnects through the newly parked routes;
+                            // a LAN session is left untouched.
+                            if active_path == Some("relay") {
+                                if let Some(previous) = active.take() {
+                                    previous.abort();
+                                    let _ = previous.await;
+                                }
+                                active_path = None;
+                            }
+                        }
+
+                        match apply_error {
+                            Some(message) => Err(message),
+                            None => Ok(()),
+                        }
+                    }
+                };
+                let _ = request.completion.send(result);
+                continue;
             }
             accepted = listener.accept() => {
                 let (stream, peer) = accepted?;
@@ -434,6 +502,8 @@ async fn main() -> Result<()> {
         let relay_endpoint = relay_endpoint.clone();
         let desktop_status = desktop_status.clone();
         let toast_action_tx = toast_action_tx.clone();
+        let data_dir = dir.clone();
+        active_path = Some(via);
         active = Some(tokio::spawn(async move {
             let _guard = SessionGuard {
                 metrics: metrics.clone(),
@@ -451,6 +521,7 @@ async fn main() -> Result<()> {
                 relay_endpoint.as_deref(),
                 &desktop_status,
                 &toast_action_tx,
+                &data_dir,
             )
             .await
             {
@@ -465,6 +536,32 @@ async fn main() -> Result<()> {
     }
     desktop_status.disconnected();
     Ok(())
+}
+
+fn start_relay_workers(
+    relays: &[String],
+    rendezvous: &str,
+    relay_proxy: Option<String>,
+) -> (
+    Vec<tokio::task::JoinHandle<()>>,
+    tokio::sync::mpsc::Receiver<RelayArrival>,
+) {
+    let (relay_tx, relay_rx) =
+        tokio::sync::mpsc::channel::<RelayArrival>((relays.len().max(1) * 2).max(2));
+    let mut tasks = Vec::with_capacity(relays.len());
+    for endpoint in relays {
+        info!(%endpoint, "parking at relay");
+        tasks.push(tokio::spawn(park_forever(
+            endpoint.clone(),
+            rendezvous.to_owned(),
+            relay_tx.clone(),
+            relay_proxy.clone(),
+        )));
+    }
+    // Only workers own senders. With no configured relays this closes the receiver and makes the
+    // `Some(arrival)` select branch dormant without any poll or special timer.
+    drop(relay_tx);
+    (tasks, relay_rx)
 }
 
 /// Keeps exactly one connection parked at the relay for the life of the process.
@@ -518,6 +615,7 @@ async fn serve(
     relay_endpoint: Option<&str>,
     desktop_status: &status::StatusFile,
     toast_action_tx: &broadcast::Sender<pb::NotifAction>,
+    data_dir: &std::path::Path,
 ) -> Result<()> {
     stream.set_nodelay(true)?;
     set_keepalive(&stream)?;
@@ -782,20 +880,58 @@ async fn serve(
                     }
                 }
             }
+            pb::Kind::SharedUrl => {
+                let shared = pb::SharedUrl::decode(&envelope.payload[..])?;
+                let scheme = shared.url.to_ascii_lowercase();
+                if !scheme.starts_with("http://") && !scheme.starts_with("https://") {
+                    warn!(url = %shared.url, "refused non-web shared URL");
+                    continue;
+                }
+                info!(url = %shared.url, source = %shared.source_device, "shared URL in");
+                if let Err(e) = shared_links::record(
+                    data_dir,
+                    &shared.url,
+                    &shared.title,
+                    &shared.source_device,
+                    shared.timestamp_ms,
+                ) {
+                    // History is convenience UI, never a reason to break the transport session.
+                    warn!(error = %e, "could not record shared URL history");
+                }
+                if let Some(toasts) = toasts {
+                    toasts.post(toast::Cmd::SharedUrl {
+                        url: shared.url,
+                        title: shared.title,
+                        source: shared.source_device,
+                    });
+                }
+            }
             // A malformed notification is dropped, never fatal: the phone's shade must
             // not be able to end a session that is also carrying the clipboard.
             pb::Kind::NotifNew => {
                 let notif = pb::NotifNew::decode(&envelope.payload[..])?;
                 info!(app = %notif.app_name, pkg = %notif.package, messages = notif.messages.len(), "notif in");
+                let app = if notif.app_name.is_empty() {
+                    notif.package.clone()
+                } else {
+                    notif.app_name.clone()
+                };
+                if let Err(e) = notification_history::record_new(
+                    data_dir,
+                    &notif.key,
+                    &notif.package,
+                    &app,
+                    &notif.title,
+                    &notif.text,
+                    notif.timestamp_ms,
+                ) {
+                    warn!(error = %e, "could not record notification history");
+                }
                 if let Some(toasts) = toasts {
                     toasts.post(toast::Cmd::Show {
                         key: notif.key,
-                        package: notif.package.clone(),
-                        app: if notif.app_name.is_empty() {
-                            notif.package
-                        } else {
-                            notif.app_name
-                        },
+                        package: notif.package,
+                        app,
                         title: notif.title,
                         body: notif.text,
                         messages: notif.messages,
@@ -808,6 +944,14 @@ async fn serve(
             }
             pb::Kind::NotifUpdate => {
                 let notif = pb::NotifUpdate::decode(&envelope.payload[..])?;
+                if let Err(e) = notification_history::record_update(
+                    data_dir,
+                    &notif.key,
+                    &notif.title,
+                    &notif.text,
+                ) {
+                    warn!(error = %e, "could not update notification history");
+                }
                 if let Some(toasts) = toasts {
                     toasts.post(toast::Cmd::Update {
                         key: notif.key,
@@ -836,10 +980,20 @@ async fn serve(
             // shares a 600 MB video must not knock it out.
             pb::Kind::FileOffer => {
                 let offer = pb::FileOffer::decode(&envelope.payload[..])?;
-                let dir = match file::downloads() {
+                // Receive-folder changes are rare and file offers are rarer still. Reading the
+                // tiny config here applies a newly selected folder to the next transfer without
+                // a watcher, polling task, or forced reconnect.
+                let configured_receive_dir = match config::Config::load(data_dir) {
+                    Ok(config) => config.receive_dir,
+                    Err(e) => {
+                        warn!(error = %e, "could not read receive folder; falling back to Downloads");
+                        None
+                    }
+                };
+                let dir = match file::downloads(configured_receive_dir.as_deref()) {
                     Ok(dir) => dir,
                     Err(e) => {
-                        warn!(error = %e, "no Downloads folder, file refused");
+                        warn!(error = %e, "no receive folder, file refused");
                         arriving = None;
                         continue;
                     }
@@ -956,16 +1110,7 @@ fn set_keepalive(stream: &TcpStream) -> Result<()> {
 }
 
 fn config_dir() -> Result<PathBuf> {
-    if let Some(local) = std::env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty()) {
-        return Ok(PathBuf::from(local).join("Conduit"));
-    }
-    let key = windows_registry::CURRENT_USER
-        .open(r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders")
-        .context("opening Windows Shell Folders")?;
-    let local = key
-        .get_string("Local AppData")
-        .context("reading Windows Local AppData known folder")?;
-    Ok(PathBuf::from(local).join("Conduit"))
+    data_dir::resolve()
 }
 
 #[cfg(test)]

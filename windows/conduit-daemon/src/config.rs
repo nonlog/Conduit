@@ -16,6 +16,8 @@ pub struct Config {
     pub relay_proxy: Option<String>,
     /// `None` preserves the product default (shown). The tray is event-driven and adds no poll.
     pub tray_icon: Option<bool>,
+    /// Empty or absent means the Windows Downloads known folder.
+    pub receive_dir: Option<String>,
 }
 
 impl Config {
@@ -46,6 +48,11 @@ impl Config {
         if let Some(value) = self.tray_icon {
             body.push_str("tray_icon=");
             body.push_str(if value { "true" } else { "false" });
+            body.push('\n');
+        }
+        if let Some(value) = &self.receive_dir {
+            body.push_str("receive_dir=");
+            body.push_str(value);
             body.push('\n');
         }
         std::fs::write(&path, body).with_context(|| format!("writing {}", path.display()))?;
@@ -97,6 +104,7 @@ fn parse(text: &str) -> Result<Config> {
                     _ => bail!("invalid tray_icon value {value:?} on line {}", index + 1),
                 })
             }
+            "receive_dir" => config.receive_dir = Some(value),
             other => bail!("unknown configuration key {other:?} on line {}", index + 1),
         }
     }
@@ -137,6 +145,13 @@ mod tests {
         );
         assert!(config.show_tray_icon());
         assert!(!parse("tray_icon=false\n").unwrap().show_tray_icon());
+        assert_eq!(
+            parse("receive_dir=D:\\Received\n")
+                .unwrap()
+                .receive_dir
+                .as_deref(),
+            Some(r"D:\Received")
+        );
         assert!(parse("mystery=yes\n").is_err());
         assert_eq!(parse("relays=\n").unwrap().relays.as_deref(), Some(""));
     }

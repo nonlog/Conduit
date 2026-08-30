@@ -31,7 +31,7 @@ So the hard requirements are non-functional:
 | Component | Language | Runs on |
 |---|---|---|
 | `android/` | Kotlin | phone |
-| `windows/` | Rust | Windows (tray + TOML config, no resident UI framework) |
+| `windows/` | Rust + C# / Uno Platform | Windows (light resident daemon + on-demand WinUI 3 control surface) |
 | `relay/` | Rust | a VPS, for when LAN is unavailable |
 | `proto/` | protobuf | wire contract, single source of truth |
 

@@ -59,19 +59,30 @@ impl Drop for Advert {
 /// The Windows device name shown on the phone. Not a security boundary.
 ///
 /// Do not rely on `COMPUTERNAME`: service/AgentDock/WMI launch paths can omit that environment
-/// variable, which previously made a real machine named `LOG` advertise itself as
+/// variable, which previously made a real machine advertise itself as `conduit-desktop`.
 /// `conduit-desktop`. ActiveComputerName is the same system identity Windows exposes in Settings.
 pub fn hostname() -> String {
+    // TCP/IP's Hostname preserves the casing chosen in Windows Settings (for example `Log`).
+    // ActiveComputerName is the NetBIOS form and Windows commonly normalises it to `LOG`.
     windows_registry::LOCAL_MACHINE
-        .open(r"SYSTEM\CurrentControlSet\Control\ComputerName\ActiveComputerName")
+        .open(r"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters")
         .ok()
-        .and_then(|key| key.get_string("ComputerName").ok())
+        .and_then(|key| key.get_string("Hostname").ok())
         .map(|name| name.trim().to_string())
         .filter(|name| !name.is_empty())
         .or_else(|| {
+            windows_registry::LOCAL_MACHINE
+                .open(r"SYSTEM\CurrentControlSet\Control\ComputerName\ActiveComputerName")
+                .ok()
+                .and_then(|key| key.get_string("ComputerName").ok())
+                .map(|name| name.trim().to_string())
+                .filter(|name| !name.is_empty())
+        })
+        .or_else(|| {
             std::env::var("COMPUTERNAME")
                 .ok()
-                .filter(|name| !name.trim().is_empty())
+                .map(|name| name.trim().to_string())
+                .filter(|name| !name.is_empty())
         })
         .unwrap_or_else(|| "conduit-desktop".to_string())
 }

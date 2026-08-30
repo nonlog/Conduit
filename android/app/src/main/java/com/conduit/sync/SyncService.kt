@@ -106,6 +106,7 @@ class SyncService : Service() {
     private lateinit var clipboard: ClipboardManager
     private lateinit var connectivity: ConnectivityManager
     private lateinit var relayQuality: RelayQualityStore
+    private lateinit var localDeviceName: String
     private var relayEndpoints: List<RelayEndpoint> = emptyList()
     private val main = Handler(Looper.getMainLooper())
     private var foregroundVisible = false
@@ -200,6 +201,9 @@ class SyncService : Service() {
         knownPeer = Identity.peer(filesDir)
         knownPeerName = Identity.peerName(filesDir)
         LinkStatus.peerName = knownPeerName
+        // Refresh the shortcut once per service process so an app update can change its icon even
+        // when the paired desktop name did not change.
+        knownPeerName?.let { ShareTarget.publish(this, it) }
         // Both stores, because this service can be the first component the system starts —
         // under START_STICKY it is started with no activity involved at all — and the
         // remembered disconnect it is about to read lives in one of them.
@@ -208,7 +212,7 @@ class SyncService : Service() {
         relayEndpoints = RelayCatalog.load(filesDir)
         relayQuality = RelayQualityStore(filesDir)
         Log.i(TAG, "relay inventory: ${relayEndpoints.joinToString { it.id }}")
-        val localDeviceName = android.provider.Settings.Global
+        localDeviceName = android.provider.Settings.Global
             .getString(contentResolver, "device_name")
             ?.trim()
             ?.takeIf(String::isNotEmpty)
@@ -661,6 +665,12 @@ class SyncService : Service() {
      */
     private fun onShare(intent: Intent) {
         intent.getStringExtra(Intent.EXTRA_TEXT)?.takeIf { it.isNotBlank() }?.let { shared ->
+            sharedWebUrl(shared)?.let { url ->
+                val title = intent.getStringExtra(Intent.EXTRA_TITLE)?.trim().orEmpty()
+                Log.i(TAG, "sharing web page $url")
+                link.sendSharedUrl(url, title, localDeviceName)
+                return
+            }
             val text = shared.replace("\r\n", "\n")
             if (text.length > MAX_TEXT) {
                 Log.w(TAG, "shared text of ${text.length} chars is too large for one frame")

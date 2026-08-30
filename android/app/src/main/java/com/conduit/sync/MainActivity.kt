@@ -11,6 +11,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -29,8 +30,14 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledIconToggleButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -38,6 +45,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
@@ -52,12 +60,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 private const val TAG = "conduit.ui"
 
@@ -203,6 +213,13 @@ private fun ConduitTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = scheme, content = content)
 }
 
+private enum class MainTab(val title: String) {
+    Home("Home"),
+    Devices("Devices"),
+    Settings("Settings"),
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ConduitApp(
     peerName: String?,
@@ -217,83 +234,123 @@ private fun ConduitApp(
     onDisconnect: () -> Unit,
     onClearHistory: () -> Unit,
 ) {
-    var page by rememberSaveable { mutableStateOf("home") }
-    BackHandler(enabled = page == "history") { page = "home" }
+    var page by rememberSaveable { mutableStateOf("main") }
+    var tabName by rememberSaveable { mutableStateOf(MainTab.Home.name) }
+    val tab = runCatching { MainTab.valueOf(tabName) }.getOrDefault(MainTab.Home)
+
+    BackHandler(enabled = page == "history") { page = "main" }
     if (page == "history") {
         HistoryScreen(
             history = history,
-            onBack = { page = "home" },
+            onBack = { page = "main" },
             onClear = onClearHistory,
         )
-    } else {
-        HomeScreen(
-            peerName = peerName,
-            path = path,
-            state = state,
-            historyCount = history.size,
-            toDesktop = toDesktop,
-            toPhone = toPhone,
-            hideNotifications = hideNotifications,
-            onHideNotifications = onHideNotifications,
-            onConnect = onConnect,
-            onDisconnect = onDisconnect,
-            onOpenHistory = { page = "history" },
-        )
+        return
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(
+                    titleContentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                ),
+                title = { Text(tab.title) },
+            )
+        },
+        bottomBar = {
+            NavigationBar {
+                MainTab.entries.forEach { item ->
+                    val selected = item == tab
+                    NavigationBarItem(
+                        selected = selected,
+                        onClick = { tabName = item.name },
+                        icon = {
+                            Icon(
+                                painter = painterResource(
+                                    when (item) {
+                                        MainTab.Home -> R.drawable.ic_home
+                                        MainTab.Devices -> R.drawable.ic_phone_desktop
+                                        MainTab.Settings -> R.drawable.ic_settings
+                                    },
+                                ),
+                                contentDescription = null,
+                                modifier = Modifier.size(24.dp),
+                            )
+                        },
+                        label = { Text(item.title) },
+                    )
+                }
+            }
+        },
+    ) { insets ->
+        when (tab) {
+            MainTab.Home -> HomeTab(
+                modifier = Modifier.padding(insets),
+                peerName = peerName,
+                path = path,
+                state = state,
+                historyCount = history.size,
+                toDesktop = toDesktop,
+                toPhone = toPhone,
+                onConnect = onConnect,
+                onDisconnect = onDisconnect,
+                onOpenHistory = { page = "history" },
+            )
+            MainTab.Devices -> DevicesTab(
+                modifier = Modifier.padding(insets),
+                peerName = peerName,
+                path = path,
+                state = state,
+                onConnect = onConnect,
+                onDisconnect = onDisconnect,
+            )
+            MainTab.Settings -> SettingsTab(
+                modifier = Modifier.padding(insets),
+                historyCount = history.size,
+                hideNotifications = hideNotifications,
+                onHideNotifications = onHideNotifications,
+                onOpenHistory = { page = "history" },
+            )
+        }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun HomeScreen(
+private fun HomeTab(
+    modifier: Modifier,
     peerName: String?,
     path: String?,
     state: LinkState,
     historyCount: Int,
     toDesktop: FileTransfer?,
     toPhone: FileTransfer?,
-    hideNotifications: Boolean,
-    onHideNotifications: (Boolean) -> Unit,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
     onOpenHistory: () -> Unit,
 ) {
-    Scaffold(
-        topBar = {
-            TopAppBar(title = { Text("Conduit", fontWeight = FontWeight.SemiBold) })
-        },
-    ) { insets ->
-        LazyColumn(
-            modifier = Modifier.padding(insets),
-            contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 32.dp),
-            verticalArrangement = Arrangement.spacedBy(24.dp),
-        ) {
-            item {
-                ConnectionPanel(
-                    state = state,
-                    peerName = peerName,
-                    path = path,
-                    onConnect = onConnect,
-                    onDisconnect = onDisconnect,
-                )
-            }
-            if (toDesktop != null || toPhone != null) {
-                item {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        SectionTitle("Transfers")
-                        toDesktop?.let { TransferCard(it, peerName) }
-                        toPhone?.let { TransferCard(it, peerName) }
-                    }
-                }
-            }
+    LazyColumn(
+        modifier = modifier,
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        item {
+            SefirahDeviceCard(
+                state = state,
+                peerName = peerName,
+                path = path,
+                onConnect = onConnect,
+                onDisconnect = onDisconnect,
+            )
+        }
+        item {
+            DeviceActionsCard(historyCount = historyCount, onOpenHistory = onOpenHistory)
+        }
+        if (toDesktop != null || toPhone != null) {
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SectionTitle("Settings")
-                    SettingsGroup(
-                        historyCount = historyCount,
-                        hideNotifications = hideNotifications,
-                        onHideNotifications = onHideNotifications,
-                        onOpenHistory = onOpenHistory,
-                    )
+                    Text("Transfers", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    toDesktop?.let { TransferCard(it, peerName) }
+                    toPhone?.let { TransferCard(it, peerName) }
                 }
             }
         }
@@ -301,16 +358,83 @@ private fun HomeScreen(
 }
 
 @Composable
-private fun SectionTitle(title: String) {
-    Text(
-        title,
-        style = MaterialTheme.typography.titleMedium,
-        fontWeight = FontWeight.SemiBold,
-    )
+private fun DevicesTab(
+    modifier: Modifier,
+    peerName: String?,
+    path: String?,
+    state: LinkState,
+    onConnect: () -> Unit,
+    onDisconnect: () -> Unit,
+) {
+    LazyColumn(
+        modifier = modifier,
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        item {
+            SefirahDeviceCard(
+                state = state,
+                peerName = peerName,
+                path = path,
+                onConnect = onConnect,
+                onDisconnect = onDisconnect,
+            )
+        }
+        item {
+            Card(shape = MaterialTheme.shapes.large) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Text("Connection", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    InfoRow("Status", state.label)
+                    HorizontalDivider()
+                    InfoRow("Route", path?.takeIf(String::isNotBlank) ?: "—")
+                }
+            }
+        }
+    }
 }
 
 @Composable
-private fun ConnectionPanel(
+private fun SettingsTab(
+    modifier: Modifier,
+    historyCount: Int,
+    hideNotifications: Boolean,
+    onHideNotifications: (Boolean) -> Unit,
+    onOpenHistory: () -> Unit,
+) {
+    LazyColumn(
+        modifier = modifier,
+        contentPadding = PaddingValues(vertical = 4.dp),
+    ) {
+        item {
+            PreferenceRow(
+                icon = R.drawable.ic_history,
+                title = "Clipboard history",
+                subtitle = if (historyCount == 0) "No saved items" else "$historyCount saved items",
+                onClick = onOpenHistory,
+            )
+        }
+        item {
+            SwitchPreferenceRow(
+                icon = R.drawable.ic_notifications,
+                title = "Hide notification content",
+                subtitle = "Show app names only on Windows",
+                checked = hideNotifications,
+                onCheckedChange = onHideNotifications,
+            )
+        }
+        item { HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp)) }
+        item {
+            PreferenceRow(
+                icon = R.drawable.ic_phone_desktop,
+                title = "Conduit",
+                subtitle = "Connected-device sync",
+            )
+        }
+    }
+}
+
+@Composable
+private fun SefirahDeviceCard(
     state: LinkState,
     peerName: String?,
     path: String?,
@@ -318,61 +442,189 @@ private fun ConnectionPanel(
     onDisconnect: () -> Unit,
 ) {
     val linked = state == LinkState.Connected
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-    ) {
+    Card(modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large, colors = CardDefaults.cardColors()) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 14.dp)
-                .heightIn(min = 56.dp),
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Dot(state)
-            Spacer(Modifier.size(12.dp))
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
+            Surface(
+                modifier = Modifier.size(56.dp),
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.14f),
             ) {
-                Text(
-                    text = peerName ?: "No computer",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    text = path?.takeIf(String::isNotBlank)?.let { "${state.label} · $it" } ?: state.label,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_phone_desktop),
+                        contentDescription = null,
+                        modifier = Modifier.size(36.dp),
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
             }
-            Spacer(Modifier.size(12.dp))
-            if (linked) {
-                TextButton(onClick = onDisconnect, modifier = Modifier.heightIn(min = 44.dp)) {
-                    Text("Disconnect")
+            Spacer(Modifier.size(16.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    peerName ?: "No computer",
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(state.label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+                path?.takeIf(String::isNotBlank)?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-            } else {
-                Button(onClick = onConnect, modifier = Modifier.heightIn(min = 44.dp)) {
-                    Text("Connect")
-                }
+            }
+            FilledIconToggleButton(
+                checked = linked,
+                onCheckedChange = { if (linked) onDisconnect() else onConnect() },
+                colors = IconButtonDefaults.filledIconToggleButtonColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    checkedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                    checkedContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                ),
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_sync),
+                    contentDescription = if (linked) "Disconnect" else "Connect",
+                )
             }
         }
     }
 }
 
-/** Decoration only — [LinkState.label] is what actually says the state. */
 @Composable
-private fun Dot(state: LinkState) {
-    val colour = when (state) {
-        LinkState.Connected -> Color(0xFF2FBF71)
-        LinkState.Discovering, LinkState.Retrying -> Color(0xFFE0A02F)
-        LinkState.Idle -> MaterialTheme.colorScheme.outline
+private fun DeviceActionsCard(historyCount: Int, onOpenHistory: () -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 16.dp),
+        ) {
+            DeviceControlButton(
+                modifier = Modifier.weight(1f),
+                icon = R.drawable.ic_history,
+                label = "Clipboard",
+                badge = historyCount.takeIf { it > 0 }?.toString(),
+                onClick = onOpenHistory,
+            )
+            repeat(4) { Spacer(Modifier.weight(1f)) }
+        }
     }
-    Box(Modifier.size(10.dp).background(colour, CircleShape))
+}
+
+@Composable
+private fun DeviceControlButton(
+    modifier: Modifier = Modifier,
+    icon: Int,
+    label: String,
+    badge: String? = null,
+    onClick: () -> Unit,
+) {
+    Column(
+        modifier = modifier.clickable(onClick = onClick).padding(horizontal = 2.dp, vertical = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
+            Icon(
+                painter = painterResource(icon),
+                contentDescription = label,
+                modifier = Modifier.size(24.dp),
+                tint = MaterialTheme.colorScheme.primary,
+            )
+        }
+        Text(
+            label,
+            modifier = Modifier.fillMaxWidth(),
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        badge?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun PreferenceRow(
+    icon: Int,
+    title: String,
+    subtitle: String? = null,
+    onClick: (() -> Unit)? = null,
+    trailing: (@Composable () -> Unit)? = null,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 64.dp)
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            painter = painterResource(icon),
+            contentDescription = null,
+            modifier = Modifier.padding(start = 16.dp, end = 8.dp).size(24.dp),
+            tint = MaterialTheme.colorScheme.primary,
+        )
+        Column(
+            modifier = Modifier.weight(1f).padding(vertical = 16.dp),
+        ) {
+            Text(
+                title,
+                modifier = Modifier.padding(horizontal = 16.dp),
+                style = MaterialTheme.typography.titleLarge,
+                fontSize = 16.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            subtitle?.takeIf(String::isNotBlank)?.let {
+                Text(
+                    it,
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                )
+            }
+        }
+        trailing?.let { Box(Modifier.padding(end = 16.dp), contentAlignment = Alignment.Center) { it() } }
+    }
+}
+
+@Composable
+private fun SwitchPreferenceRow(
+    icon: Int,
+    title: String,
+    subtitle: String? = null,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    PreferenceRow(
+        icon = icon,
+        title = title,
+        subtitle = subtitle,
+        onClick = { onCheckedChange(!checked) },
+        trailing = {
+            Switch(
+                checked = checked,
+                onCheckedChange = null,
+                modifier = Modifier.semantics { contentDescription = title },
+            )
+        },
+    )
+}
+
+@Composable
+private fun InfoRow(label: String, value: String) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(value, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
 }
 
 @Composable
@@ -382,47 +634,16 @@ private fun TransferCard(transfer: FileTransfer, peerName: String?) {
         FileTransferDirection.ToDesktop -> "To $peer"
         FileTransferDirection.ToPhone -> "From $peer"
     }
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-        ),
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    direction,
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onTertiaryContainer,
-                )
+    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors()) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(direction, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.weight(1f))
-                Text(
-                    "${transfer.percent}%",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onTertiaryContainer,
-                )
+                Text("${transfer.percent}%", style = MaterialTheme.typography.titleSmall)
             }
-            Text(
-                transfer.name,
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            LinearProgressIndicator(
-                progress = { transfer.fraction },
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Text(
-                "${formatBytes(transfer.transferred)} of ${formatBytes(transfer.total)}",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onTertiaryContainer,
-            )
+            Text(transfer.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            LinearProgressIndicator(progress = { transfer.fraction }, modifier = Modifier.fillMaxWidth())
+            Text("${formatBytes(transfer.transferred)} of ${formatBytes(transfer.total)}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -555,50 +776,60 @@ private fun SettingsGroup(
     onHideNotifications: (Boolean) -> Unit,
     onOpenHistory: () -> Unit,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            onClick = onOpenHistory,
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-        ) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(),
+    ) {
+        Column {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .clickable(onClick = onOpenHistory)
+                    .padding(horizontal = 16.dp, vertical = 14.dp)
                     .heightIn(min = 48.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        "Clipboard history",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    Text(
+                        if (historyCount == 0) "No saved items" else "$historyCount saved items",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Text(
-                    "Clipboard history",
-                    modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Medium,
-                )
-                Text(
-                    if (historyCount == 0) "Empty" else historyCount.toString(),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    "Open",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
                 )
             }
-        }
 
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-        ) {
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .padding(horizontal = 16.dp, vertical = 14.dp)
                     .heightIn(min = 48.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    "Hide notification content",
-                    modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Medium,
-                )
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        "Hide notification content",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    Text(
+                        "Mirror app names only",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Spacer(Modifier.size(12.dp))
                 Switch(
                     checked = hideNotifications,

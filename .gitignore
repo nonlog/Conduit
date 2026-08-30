@@ -3,6 +3,10 @@ target/
 **/*.rs.bk
 *.pdb
 
+# Windows WPF build output
+windows/conduit-ui/bin/
+windows/conduit-ui/obj/
+
 # Android / Gradle
 .gradle/
 build/
@@ -16,6 +20,7 @@ captures/
 # Captured build output
 build-log.txt
 build-err.txt
+artifacts/
 
 # Signing keys and device identity — must never be committed
 *.jks
@@ -40,3 +45,6 @@ conduit.toml
 Thumbs.db
 desktop.ini
 .DS_Store
+.reference/
+.tools/
+.work/

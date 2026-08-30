@@ -1,0 +1,225 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: conduit-build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  android:
+    name: Android
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Android SDK 36
+        shell: bash
+        run: |
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-36" \
+            "build-tools;36.0.0"
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Test and build Android debug APK
+        working-directory: android
+        shell: bash
+        run: ./gradlew --no-daemon --stacktrace testDebugUnitTest assembleDebug
+
+      - name: Upload Android artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: conduit-android-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  windows:
+    name: Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.400
+
+      - name: Set up Rust 1.98
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal --component rustfmt
+          rustup default 1.98.0
+          rustc --version
+          cargo --version
+
+      - name: Install protoc
+        shell: pwsh
+        run: choco install protoc -y --no-progress
+
+      - name: Check Rust formatting
+        shell: pwsh
+        run: cargo fmt --check
+
+      - name: Test Windows daemon
+        shell: pwsh
+        run: cargo test -p conduit-daemon
+
+      - name: Build Windows Rust binaries
+        shell: pwsh
+        run: cargo build --release -p conduit-daemon --bins
+
+      - name: Restore Uno / WinUI desktop
+        working-directory: windows/conduit-ui
+        shell: pwsh
+        run: dotnet restore Conduit.csproj -r win-x64
+
+      - name: Publish Uno / WinUI desktop
+        working-directory: windows/conduit-ui
+        shell: pwsh
+        run: >-
+          dotnet publish Conduit.csproj
+          -c Release
+          -f net10.0-windows10.0.26100
+          -p:Platform=x64
+          -r win-x64
+          --self-contained true
+          --no-restore
+          -p:PublishReadyToRun=false
+          -o ../../artifacts/windows-ui
+
+      - name: Package Scoop-compatible Windows build
+        shell: pwsh
+        run: >-
+          ./scripts/package-windows.ps1
+          -UiPublishDir ./artifacts/windows-ui
+          -RustReleaseDir ./target/release
+          -OutputZip ./artifacts/Conduit-windows-x64.zip
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: conduit-windows-x64
+          path: artifacts/Conduit-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  relay:
+    name: Relay Linux x64
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Rust 1.98
+        shell: bash
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal
+          rustup default 1.98.0
+          rustc --version
+          cargo --version
+
+      - name: Test relay
+        shell: bash
+        run: cargo test -p conduit-relay
+
+      - name: Build relay
+        shell: bash
+        run: cargo build --release -p conduit-relay
+
+      - name: Stage relay artifact
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          cp target/release/conduit-relay artifacts/conduit-relay-linux-x64
+          chmod +x artifacts/conduit-relay-linux-x64
+
+      - name: Upload relay artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: conduit-relay-linux-x64
+          path: artifacts/conduit-relay-linux-x64
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - android
+      - windows
+      - relay
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Download Android build
+        uses: actions/download-artifact@v5
+        with:
+          name: conduit-android-debug
+          path: dist/android
+
+      - name: Download Windows build
+        uses: actions/download-artifact@v5
+        with:
+          name: conduit-windows-x64
+          path: dist/windows
+
+      - name: Download relay build
+        uses: actions/download-artifact@v5
+        with:
+          name: conduit-relay-linux-x64
+          path: dist/relay
+
+      - name: Validate and name release assets
+        shell: pwsh
+        run: |
+          $version = '${{ github.ref_name }}'.TrimStart('v')
+          ./scripts/verify-version.ps1 -ExpectedVersion $version
+          New-Item -ItemType Directory -Force -Path dist/release | Out-Null
+          Copy-Item dist/android/app-debug.apk "dist/release/Conduit-$version-android-debug.apk"
+          Copy-Item dist/windows/Conduit-windows-x64.zip "dist/release/Conduit-$version-windows-x64.zip"
+          Copy-Item dist/relay/conduit-relay-linux-x64 "dist/release/Conduit-$version-relay-linux-x64"
+
+      - name: Write SHA-256 checksums
+        shell: bash
+        working-directory: dist/release
+        run: sha256sum Conduit-* > SHA256SUMS.txt
+
+      - name: Create or update GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --generate-notes --title "Conduit ${GITHUB_REF_NAME#v}"
+          fi
+          gh release upload "${GITHUB_REF_NAME}" dist/release/* --repo "${GITHUB_REPOSITORY}" --clobber

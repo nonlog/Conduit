@@ -20,6 +20,14 @@ Conduit is a small native system utility, not a dashboard or marketing surface. 
 - Never expose device fingerprints, MAC-like identifiers, protocol IDs, or pairing internals on the normal paired home screen.
 - Status text should answer only: which peer, connected or not, and which route when useful.
 
+## Sefirah reference baseline
+
+- Use `shrimqy/Sefirah` and `shrimqy/Sefirah-Android` as the direct layout/component template for Conduit: mirror their main navigation geometry, device-card/control-centre structure, card rhythm, spacing, density, and page separation while keeping Conduit branding, strings, and feature set.
+- Reference means adapt the structure to Conduit without copying Sefirah branding, feature scope, or strings. On Windows, use the same application/UI stack as Sefirah: Uno Platform + WinUI 3 / Windows App SDK, Uno Toolkit, and CommunityToolkit WinUI controls.
+- Put the connected device first. Secondary settings and utilities must visually recede behind device/link state.
+- Android home follows the Sefirah rhythm: one primary device card first, transient/active content only when present, then compact grouped settings.
+- Windows follows the Sefirah split: a persistent device/status pane on the left and a calm settings/content pane on the right, with short labels and discrete cards.
+- Avoid adding decoration merely to resemble Sefirah. If an icon, subtitle, card, or action does not clarify state or enable a task, omit it.
 ## Android — Material 3
 
 - Use the platform Material 3 theme and dynamic color; do not invent a fixed brand palette.
@@ -33,10 +41,12 @@ Conduit is a small native system utility, not a dashboard or marketing surface. 
 - Entire navigation rows should be clickable; avoid redundant `Open` buttons when the row itself can navigate.
 - Clipboard History is a real child destination: system Back/predictive-back must return to Home before the Activity can exit.
 - History rows show direction, time, and content only. Do not add instructions such as “tap to copy”.
+- Direct Share target icons must visually match the launcher app mark at chooser size; use a dedicated shortcut asset when the chooser renders adaptive icons at a different foreground scale.
+- The device card uses a dedicated Phone Desktop content glyph without launcher safe-zone inset; size the visible glyph for the 56 dp tile rather than reusing the adaptive-launcher foreground.
 
 ## Windows — Fluent / Windows 11
 
-- Keep native Win32/DWM/Common Controls; this file defines visual/UX language, not a framework migration.
+- Use Uno Platform + WinUI 3 / Windows App SDK for the desktop control surface, matching Sefirah. Prefer native WinUI controls and theme resources over custom-drawn WPF/Win32 substitutes. Keep the Rust daemon as the resident backend; the UI remains on-demand.
 - Follow Windows 11 principles: calm, familiar, coherent, and system-accent aware.
 - Use Segoe UI Variable, system light/dark mode, rounded top-level window corners, and the system accent sparingly.
 - The Windows application/titlebar/taskbar icon, notification identity icon, and primary connection symbol use Microsoft Fluent `Phone Desktop` geometry, matching Android. The coloured app mark keeps the violet-to-blue background (`#6E5BD6` -> `#2F6FE0`); the tray uses dedicated monochrome 16/20/24 px regular glyphs rather than shrinking the coloured tile. Relay and Windows section headings stay text-only; never add decorative section glyphs.
@@ -46,7 +56,7 @@ Conduit is a small native system utility, not a dashboard or marketing surface. 
 - Group related controls by spacing and a subtle surface/border; do not add explanatory paragraphs inside cards.
 - Keep section labels short: `Connection`, `Relay`, `Windows`.
 - Use native access keys and keyboard traversal.
-- No fake navigation, resident control UI, animation loop, watcher, timer, or background refresh. The already-resident daemon may expose the optional event-driven tray icon; disabling it creates no tray thread.
+- No fake navigation, resident control UI, animation loop, polling timer, or periodic background refresh. While the on-demand desktop UI is open, an event-driven `FileSystemWatcher` may observe the daemon's bounded status/history files so UI state updates immediately; it must be disposed when the window closes. The already-resident daemon may expose the optional event-driven tray icon; disabling it creates no tray thread.
 
 ## Accessibility and interaction
 

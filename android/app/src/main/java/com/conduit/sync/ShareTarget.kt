@@ -49,7 +49,7 @@ object ShareTarget {
         val shortcut = ShortcutInfo.Builder(context, ID)
             .setShortLabel(name)
             .setLongLabel(name)
-            .setIcon(Icon.createWithResource(context, R.mipmap.ic_launcher))
+            .setIcon(Icon.createWithResource(context, R.drawable.ic_share_target))
             .setCategories(setOf(CATEGORY))
             // A shortcut needs an intent even as a share target, because tapping it from a
             // launcher's shortcut menu has to do something. Sharing nothing means there is

@@ -36,7 +36,8 @@ static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 static TRAY_ICON: AtomicIsize = AtomicIsize::new(0);
 
 pub struct Tray {
-    _thread: thread::JoinHandle<()>,
+    thread: Option<thread::JoinHandle<()>>,
+    hwnd: isize,
 }
 
 impl Tray {
@@ -49,7 +50,7 @@ impl Tray {
         let _ = CONFIG_DIR.set(config_dir.to_path_buf());
         let _ = EXIT_TX.set(exit_tx);
         ensure_tray_assets(config_dir)?;
-        let (ready_tx, ready_rx) = mpsc::sync_channel::<std::result::Result<(), String>>(1);
+        let (ready_tx, ready_rx) = mpsc::sync_channel::<std::result::Result<isize, String>>(1);
         let handle = thread::Builder::new()
             .name("conduit-tray".into())
             .spawn(move || unsafe {
@@ -59,9 +60,25 @@ impl Tray {
             })
             .context("starting Conduit tray thread")?;
         match ready_rx.recv_timeout(Duration::from_secs(3)) {
-            Ok(Ok(())) => Ok(Self { _thread: handle }),
+            Ok(Ok(hwnd)) => Ok(Self {
+                thread: Some(handle),
+                hwnd,
+            }),
             Ok(Err(message)) => bail!("starting Conduit tray: {message}"),
             Err(_) => bail!("timed out starting Conduit tray"),
+        }
+    }
+}
+
+impl Drop for Tray {
+    fn drop(&mut self) {
+        unsafe {
+            if self.hwnd != 0 {
+                let _ = PostMessageW(self.hwnd as HWND, WM_CLOSE, 0, 0);
+            }
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
         }
     }
 }
@@ -187,7 +204,7 @@ unsafe fn refresh_tray_icon(hwnd: HWND) {
     }
 }
 
-unsafe fn run(ready: mpsc::SyncSender<std::result::Result<(), String>>) -> Result<()> {
+unsafe fn run(ready: mpsc::SyncSender<std::result::Result<isize, String>>) -> Result<()> {
     let instance = GetModuleHandleW(null());
     let class = wide("ConduitTrayWindow");
     let icon = load_tray_icon()?;
@@ -196,7 +213,7 @@ unsafe fn run(ready: mpsc::SyncSender<std::result::Result<(), String>>) -> Resul
     wc.hInstance = instance;
     wc.hIcon = icon;
     wc.lpszClassName = class.as_ptr();
-    if RegisterClassW(&wc) == 0 {
+    if RegisterClassW(&wc) == 0 && std::io::Error::last_os_error().raw_os_error() != Some(1410) {
         DestroyIcon(icon);
         bail!("RegisterClassW failed: {}", std::io::Error::last_os_error());
     }
@@ -233,7 +250,7 @@ unsafe fn run(ready: mpsc::SyncSender<std::result::Result<(), String>>) -> Resul
         bail!("Shell_NotifyIconW(NIM_ADD) failed");
     }
     set_modern_version(hwnd, icon);
-    let _ = ready.send(Ok(()));
+    let _ = ready.send(Ok(hwnd as isize));
 
     let mut message: MSG = std::mem::zeroed();
     while GetMessageW(&mut message, null_mut(), 0, 0) > 0 {
