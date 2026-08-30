@@ -758,3 +758,12 @@ a milestone complete based solely on source review or a single happy-path run.
 - The latest self-contained WinUI build was published and overlaid onto the installed Scoop app without restarting the resident daemon or disturbing persistent data. The live session remained linked to OnePlus 12 over WA Relay.
 - Installed `conduit-send.exe` was re-tested end-to-end: exit `0` in about 1.0 s, exact temporary file confirmed in Android Downloads, then local and remote test files removed.
 - Regression: daemon **59 passed / 0 failed / 3 ignored**, send helper **2/2 passed**, `cargo fmt --check`, `git diff --check`, Release build and WinUI self-contained publish all pass. No commit or push was made.
+
+### GitHub build authority + Log-only integration gate — 2026-08-30
+
+- Added a clean-run GitHub Actions pipeline for Android, Windows x64, and Linux x64 Relay. Toolchain versions and Uno/NuGet inputs are pinned in the repository; local `.tools`, Scoop contents and Log SDK caches are not build inputs.
+- First-run failures were used to remove hidden assumptions (`yes | sdkmanager` under `pipefail`, and Debug Uno restore reused by Release publish). Run `33319898971` on commit `f7830fe` subsequently passed Android, Windows Rust + Uno/WinUI, and Relay jobs on GitHub-hosted runners.
+- Added GitHub artifact packaging/version validation and a tag release path compatible with the existing `www` Scoop manifest. Tag releases publish both aggregate checksums and a per-Windows-zip `.sha256`; the current bucket may continue computing the hash automatically or consume the published hash later.
+- Added `scripts/install-github-build.ps1` for Log. It downloads a successful Actions build (optionally through Log's Mihomo proxy), installs the Windows package into the existing Scoop path without touching the persisted `data` junction, refreshes Windows integration, detaches the installed daemon from AgentDock's invoking command job through `Win32_Process.Create`, and installs the APK through ADB. It does not compile anything.
+- Log verification used run `33319898971` artifacts only: Android 0.1.0 installed, WinUI launched/responded, `data` remained linked to `D:\Programs\Scoop\persist\conduit\data`, the installed daemon linked to OnePlus 12 over WA Relay, and installed `conduit-send.exe` delivered a temporary file to Android Downloads with cleanup afterward.
+- Final operating model: GitHub is the mandatory development/build gate; Log remains the mandatory install/Scoop-update/real-device/Windows-integration test gate.

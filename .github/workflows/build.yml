@@ -77,10 +77,6 @@ jobs:
           rustc --version
           cargo --version
 
-      - name: Install protoc
-        shell: pwsh
-        run: choco install protoc -y --no-progress
-
       - name: Check Rust formatting
         shell: pwsh
         run: cargo fmt --check
@@ -212,7 +208,9 @@ jobs:
       - name: Write SHA-256 checksums
         shell: bash
         working-directory: dist/release
-        run: sha256sum Conduit-* > SHA256SUMS.txt
+        run: |
+          sha256sum Conduit-* > SHA256SUMS.txt
+          sha256sum "Conduit-${GITHUB_REF_NAME#v}-windows-x64.zip" | awk '{print $1}' > "Conduit-${GITHUB_REF_NAME#v}-windows-x64.zip.sha256"
 
       - name: Create or update GitHub release
         shell: bash

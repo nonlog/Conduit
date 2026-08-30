@@ -42,7 +42,8 @@ dispatches, and `v*` tags. It builds three independent artifacts on clean GitHub
 Successful runs retain `conduit-android-debug`, `conduit-windows-x64`, and
 `conduit-relay-linux-x64` Actions artifacts for 14 days. A `vX.Y.Z` tag first verifies that Cargo,
 Android, and desktop project versions all match `X.Y.Z`, then publishes versioned GitHub Release
-assets and `SHA256SUMS.txt`.
+assets, `SHA256SUMS.txt`, and a per-Windows-asset `.sha256` file that is available to the Scoop
+autoupdate path if the bucket chooses to consume a published hash directly.
 
 A change is build-complete only when this GitHub workflow succeeds. Local output under `target/`,
 Gradle build directories, `.tools`, Scoop, or machine-specific SDK caches is never a release input.
@@ -61,6 +62,13 @@ Select an exact Actions run when needed:
 
 ```powershell
 pwsh .\scripts\install-github-build.ps1 -RunId <run-id>
+```
+
+On Log, GitHub's Actions blob endpoint can be much faster through the existing local Mihomo proxy.
+The installer accepts an optional download-only proxy without changing Conduit's own Relay routing:
+
+```powershell
+pwsh .\scripts\install-github-build.ps1 -RunId <run-id> -DownloadProxy http://127.0.0.1:7890
 ```
 
 The script downloads the Windows and Android Actions artifacts, overlays the Windows program files
