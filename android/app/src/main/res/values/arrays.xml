@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- LSPosed pre-selects this scope. "android" is system_server, where
-         ClipboardService lives; the hook has no business anywhere else. -->
+    <!-- System Framework hosts ClipboardService. Conduit's own process is scoped only so the
+         module can expose a zero-cost activation marker; no app API is otherwise hooked there. -->
     <string-array name="xposed_scope">
         <item>android</item>
+        <item>com.conduit.sync</item>
     </string-array>
 </resources>

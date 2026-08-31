@@ -12,10 +12,11 @@ private const val MIN_LAUNCH_INTERVAL_MS = 100L
 /**
  * Stock-Android clipboard bridge adapted from Sefirah's accessibility path.
  *
- * The service observes UI copy events only while a Conduit link is actually connected. When the
- * link is down [setLinkActive] sets eventTypes to zero, so an enabled accessibility permission does
- * not keep waking Conduit for unrelated UI traffic. A likely copy event opens one translucent
- * activity long enough for Android 10+ to grant foreground clipboard access; there is no polling.
+ * This is the compatibility path for devices where the LSPosed hook is unavailable. It observes
+ * UI copy events only while a Conduit link is connected. When the link is down, or when LSPosed is
+ * active, eventTypes stay at zero even if Accessibility permission remains enabled. A likely copy
+ * event opens one translucent activity long enough for Android 10+ to grant foreground clipboard
+ * access; there is no polling.
  */
 class ClipboardAccessibilityService : AccessibilityService() {
     companion object {
@@ -54,7 +55,11 @@ class ClipboardAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (event == null || LinkStatus.state != LinkState.Connected) return
+        if (
+            event == null ||
+            LinkStatus.state != LinkState.Connected ||
+            ClipboardAccess.isLsposedActive()
+        ) return
         val snapshot = ClipboardEventSnapshot.from(event) ?: return
         val detected = detector.isClipboardReadTrigger(snapshot)
         val followUp = runForNextEventAlso
@@ -78,14 +83,19 @@ class ClipboardAccessibilityService : AccessibilityService() {
     }
 
     private fun configure(active: Boolean) {
-        if (::detector.isInitialized && !active) detector.reset()
-        if (!active) runForNextEventAlso = false
+        val compatibilityActive = active && !ClipboardAccess.isLsposedActive()
+        if (::detector.isInitialized && !compatibilityActive) detector.reset()
+        if (!compatibilityActive) runForNextEventAlso = false
         serviceInfo = AccessibilityServiceInfo().apply {
-            eventTypes = if (active) MONITORED_EVENTS else 0
+            eventTypes = if (compatibilityActive) MONITORED_EVENTS else 0
             feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
             notificationTimeout = 120L
             flags = AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
         }
-        Log.d(ACCESSIBILITY_TAG, "clipboard accessibility events active=$active")
+        Log.d(
+            ACCESSIBILITY_TAG,
+            "clipboard accessibility events active=$compatibilityActive " +
+                "lsposed=${ClipboardAccess.isLsposedActive()}",
+        )
     }
 }

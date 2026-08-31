@@ -1,8 +1,6 @@
 package com.conduit.sync
 
 import android.Manifest
-import android.content.ComponentName
-import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -114,6 +112,7 @@ class MainActivity : ComponentActivity() {
      * Registered before `onCreate` runs, which is the contract: the result callback has
      * to survive the activity being recreated behind the system's permission dialog.
      */
+    private var clipboardMode by mutableStateOf(ClipboardSyncMode.Unavailable)
     private var clipboardAccessibilityEnabled by mutableStateOf(false)
 
     private val ask = registerForActivityResult(RequestMultiplePermissions()) { granted ->
@@ -135,7 +134,7 @@ class MainActivity : ComponentActivity() {
         // than showing an empty list until the service happens to start.
         History.load(this)
         Settings.load(this)
-        clipboardAccessibilityEnabled = isClipboardAccessibilityEnabled(this)
+        refreshClipboardAccessMode()
         request()
         // A host on the launch intent pins the address and links straight away. It has to
         // go through the activity: Android 12+ refuses a foreground service started from
@@ -152,6 +151,7 @@ class MainActivity : ComponentActivity() {
                     toPhone = FileTransfers.toPhone,
                     hideNotifications = Settings.hideNotificationContent,
                     onHideNotifications = { Settings.hideNotificationContent = it },
+                    clipboardMode = clipboardMode,
                     clipboardAccessibilityEnabled = clipboardAccessibilityEnabled,
                     onOpenClipboardAccessibility = {
                         startActivity(Intent(AndroidSettings.ACTION_ACCESSIBILITY_SETTINGS))
@@ -166,7 +166,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        clipboardAccessibilityEnabled = isClipboardAccessibilityEnabled(this)
+        refreshClipboardAccessMode()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -212,18 +212,11 @@ class MainActivity : ComponentActivity() {
         val intent = Intent(this, SyncService::class.java).setAction(action)
         if (action == ACTION_DISCONNECT) startService(intent) else startForegroundService(intent)
     }
-}
 
-internal fun isClipboardAccessibilityEnabled(context: Context): Boolean {
-    val expected = ComponentName(context, ClipboardAccessibilityService::class.java)
-    val enabled = AndroidSettings.Secure.getString(
-        context.contentResolver,
-        AndroidSettings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
-    ).orEmpty()
-    return enabled
-        .split(':')
-        .mapNotNull(ComponentName::unflattenFromString)
-        .any { it == expected }
+    private fun refreshClipboardAccessMode() {
+        clipboardAccessibilityEnabled = ClipboardAccess.isAccessibilityEnabled(this)
+        clipboardMode = ClipboardAccess.mode(this)
+    }
 }
 
 @Composable
@@ -257,6 +250,7 @@ private fun ConduitApp(
     toPhone: FileTransfer?,
     hideNotifications: Boolean,
     onHideNotifications: (Boolean) -> Unit,
+    clipboardMode: ClipboardSyncMode,
     clipboardAccessibilityEnabled: Boolean,
     onOpenClipboardAccessibility: () -> Unit,
     onConnect: () -> Unit,
@@ -338,6 +332,7 @@ private fun ConduitApp(
                 historyCount = history.size,
                 hideNotifications = hideNotifications,
                 onHideNotifications = onHideNotifications,
+                clipboardMode = clipboardMode,
                 clipboardAccessibilityEnabled = clipboardAccessibilityEnabled,
                 onOpenClipboardAccessibility = onOpenClipboardAccessibility,
                 onOpenHistory = { page = "history" },
@@ -430,6 +425,7 @@ private fun SettingsTab(
     historyCount: Int,
     hideNotifications: Boolean,
     onHideNotifications: (Boolean) -> Unit,
+    clipboardMode: ClipboardSyncMode,
     clipboardAccessibilityEnabled: Boolean,
     onOpenClipboardAccessibility: () -> Unit,
     onOpenHistory: () -> Unit,
@@ -449,11 +445,17 @@ private fun SettingsTab(
         item {
             PreferenceRow(
                 icon = R.drawable.ic_sync,
-                title = "Clipboard access",
-                subtitle = if (clipboardAccessibilityEnabled) {
-                    "Accessibility service enabled"
-                } else {
-                    "Enable Accessibility Service for background clipboard sync"
+                title = "Clipboard sync",
+                subtitle = when (clipboardMode) {
+                    ClipboardSyncMode.Lsposed -> if (clipboardAccessibilityEnabled) {
+                        "Mode: LSPosed (root) · Accessibility enabled as standby"
+                    } else {
+                        "Mode: LSPosed (root) · Accessibility not required"
+                    }
+                    ClipboardSyncMode.Accessibility ->
+                        "Mode: Accessibility · Non-root compatibility"
+                    ClipboardSyncMode.Unavailable ->
+                        "Mode: unavailable · Enable Accessibility on non-root devices"
                 },
                 onClick = onOpenClipboardAccessibility,
             )
