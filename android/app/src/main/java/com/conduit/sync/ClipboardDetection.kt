@@ -58,7 +58,7 @@ internal data class ClipboardEventSnapshot(
 internal class ClipboardDetection(copyLabel: String) {
     private val actionLabels = setOf(copyLabel, "Copy", "Cut", "复制", "複製", "剪切")
         .map { it.lowercase() }
-        .filter(String::isNotBlank)
+        .filter { it.isNotBlank() }
         .toSet()
     private var selectedText: ClipboardEventSnapshot? = null
     private var windowCopyArmed = false
@@ -107,16 +107,16 @@ internal class ClipboardDetection(copyLabel: String) {
     private fun containsCopyAction(event: ClipboardEventSnapshot): Boolean =
         (event.text + event.contentDescription)
             .asSequence()
-            .map(String::trim)
+            .map { it.trim() }
             .filter { it.isNotEmpty() && it.length <= 48 }
-            .map(String::lowercase)
+            .map { it.lowercase() }
             .any { token -> actionLabels.any(token::contains) }
 
     private fun containsCopiedToast(event: ClipboardEventSnapshot): Boolean {
         val copied = listOf("copied", "clipboard", "已复制", "已複製", "剪贴板", "剪貼簿")
         return event.text
             .asSequence()
-            .map(String::lowercase)
+            .map { it.lowercase() }
             .any { token -> token.length <= 160 && copied.any(token::contains) }
     }
 

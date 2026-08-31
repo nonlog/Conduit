@@ -66,6 +66,7 @@ fn extract_from_text(text: &str) -> Option<String> {
     let keywords = KEYWORDS
         .iter()
         .flat_map(|keyword| {
+            let keyword = *keyword;
             text.match_indices(keyword)
                 .map(move |(start, _)| (start, start + keyword.len()))
         })

@@ -1,10 +1,13 @@
 package com.conduit.sync
 
 import android.Manifest
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings as AndroidSettings
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -111,6 +114,8 @@ class MainActivity : ComponentActivity() {
      * Registered before `onCreate` runs, which is the contract: the result callback has
      * to survive the activity being recreated behind the system's permission dialog.
      */
+    private var clipboardAccessibilityEnabled by mutableStateOf(false)
+
     private val ask = registerForActivityResult(RequestMultiplePermissions()) { granted ->
         granted.filterValues { !it }.keys.forEach {
             // Not fatal, and not worth nagging over. Photo mirroring simply stays off
@@ -130,6 +135,7 @@ class MainActivity : ComponentActivity() {
         // than showing an empty list until the service happens to start.
         History.load(this)
         Settings.load(this)
+        clipboardAccessibilityEnabled = isClipboardAccessibilityEnabled(this)
         request()
         // A host on the launch intent pins the address and links straight away. It has to
         // go through the activity: Android 12+ refuses a foreground service started from
@@ -146,12 +152,21 @@ class MainActivity : ComponentActivity() {
                     toPhone = FileTransfers.toPhone,
                     hideNotifications = Settings.hideNotificationContent,
                     onHideNotifications = { Settings.hideNotificationContent = it },
+                    clipboardAccessibilityEnabled = clipboardAccessibilityEnabled,
+                    onOpenClipboardAccessibility = {
+                        startActivity(Intent(AndroidSettings.ACTION_ACCESSIBILITY_SETTINGS))
+                    },
                     onConnect = { send(ACTION_CONNECT) },
                     onDisconnect = { send(ACTION_DISCONNECT) },
                     onClearHistory = History::clear,
                 )
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        clipboardAccessibilityEnabled = isClipboardAccessibilityEnabled(this)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -199,6 +214,18 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+internal fun isClipboardAccessibilityEnabled(context: Context): Boolean {
+    val expected = ComponentName(context, ClipboardAccessibilityService::class.java)
+    val enabled = AndroidSettings.Secure.getString(
+        context.contentResolver,
+        AndroidSettings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
+    ).orEmpty()
+    return enabled
+        .split(':')
+        .mapNotNull(ComponentName::unflattenFromString)
+        .any { it == expected }
+}
+
 @Composable
 private fun ConduitTheme(content: @Composable () -> Unit) {
     val dark = isSystemInDarkTheme()
@@ -230,6 +257,8 @@ private fun ConduitApp(
     toPhone: FileTransfer?,
     hideNotifications: Boolean,
     onHideNotifications: (Boolean) -> Unit,
+    clipboardAccessibilityEnabled: Boolean,
+    onOpenClipboardAccessibility: () -> Unit,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
     onClearHistory: () -> Unit,
@@ -309,6 +338,8 @@ private fun ConduitApp(
                 historyCount = history.size,
                 hideNotifications = hideNotifications,
                 onHideNotifications = onHideNotifications,
+                clipboardAccessibilityEnabled = clipboardAccessibilityEnabled,
+                onOpenClipboardAccessibility = onOpenClipboardAccessibility,
                 onOpenHistory = { page = "history" },
             )
         }
@@ -399,6 +430,8 @@ private fun SettingsTab(
     historyCount: Int,
     hideNotifications: Boolean,
     onHideNotifications: (Boolean) -> Unit,
+    clipboardAccessibilityEnabled: Boolean,
+    onOpenClipboardAccessibility: () -> Unit,
     onOpenHistory: () -> Unit,
 ) {
     LazyColumn(
@@ -411,6 +444,18 @@ private fun SettingsTab(
                 title = "Clipboard history",
                 subtitle = if (historyCount == 0) "No saved items" else "$historyCount saved items",
                 onClick = onOpenHistory,
+            )
+        }
+        item {
+            PreferenceRow(
+                icon = R.drawable.ic_sync,
+                title = "Clipboard access",
+                subtitle = if (clipboardAccessibilityEnabled) {
+                    "Accessibility service enabled"
+                } else {
+                    "Enable Accessibility Service for background clipboard sync"
+                },
+                onClick = onOpenClipboardAccessibility,
             )
         }
         item {

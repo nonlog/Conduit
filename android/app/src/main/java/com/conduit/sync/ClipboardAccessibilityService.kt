@@ -84,8 +84,7 @@ class ClipboardAccessibilityService : AccessibilityService() {
             eventTypes = if (active) MONITORED_EVENTS else 0
             feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
             notificationTimeout = 120L
-            flags = AccessibilityServiceInfo.DEFAULT or
-                AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+            flags = AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
         }
         Log.d(ACCESSIBILITY_TAG, "clipboard accessibility events active=$active")
     }

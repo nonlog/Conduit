@@ -39,7 +39,6 @@ class ClipboardChangeActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.setDimAmount(0f)
-        @Suppress("DEPRECATION")
         overridePendingTransition(0, 0)
     }
 
@@ -69,7 +68,6 @@ class ClipboardChangeActivity : Activity() {
 
     private fun finishWithoutAnimation() {
         finish()
-        @Suppress("DEPRECATION")
         overridePendingTransition(0, 0)
     }
 }
