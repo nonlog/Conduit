@@ -77,19 +77,23 @@ jobs:
           rustc --version
           cargo --version
 
-      - name: Install protoc
+      - name: Install protoc 36.0
         shell: pwsh
         run: |
-          if (-not (Get-Command protoc -ErrorAction SilentlyContinue)) {
-            for ($attempt = 1; $attempt -le 3; $attempt++) {
-              choco install protoc -y --no-progress
-              if (Get-Command protoc -ErrorAction SilentlyContinue) { break }
-              if ($attempt -lt 3) { Start-Sleep -Seconds (5 * $attempt) }
-            }
+          $ErrorActionPreference = 'Stop'
+          $version = '36.0'
+          $expectedSha256 = '510fb2369a4720adb457783768c5e1481a0e1137d9e7694478dfe9b8fe445dc1'
+          $archive = Join-Path $env:RUNNER_TEMP "protoc-$version-win64.zip"
+          $root = Join-Path $env:RUNNER_TEMP "protoc-$version"
+          Invoke-WebRequest -Uri "https://github.com/protocolbuffers/protobuf/releases/download/v$version/protoc-$version-win64.zip" -OutFile $archive
+          $actualSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          if ($actualSha256 -ne $expectedSha256) {
+            throw "protoc archive checksum mismatch: $actualSha256"
           }
-          if (-not (Get-Command protoc -ErrorAction SilentlyContinue)) {
-            throw 'protoc installation failed after three attempts'
-          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $root -Force
+          $bin = Join-Path $root 'bin'
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $env:PATH = "$bin;$env:PATH"
           protoc --version
 
       - name: Check Rust formatting
