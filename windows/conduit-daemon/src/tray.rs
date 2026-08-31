@@ -15,6 +15,7 @@ use std::thread;
 use std::time::Duration;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
 use windows_sys::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
     NIM_SETVERSION, NOTIFYICONDATAW, NOTIFYICON_VERSION_4,
@@ -168,7 +169,12 @@ unsafe fn set_modern_version(hwnd: HWND, icon: HICON) {
 unsafe fn load_tray_icon() -> Result<HICON> {
     let path = tray_icon_path().context("Conduit tray icon directory is unavailable")?;
     let path = wide(path.as_os_str());
-    let size = GetSystemMetrics(SM_CXSMICON).max(16);
+    // Choose a physical-size frame for the system DPI. Loading a logical 16 px icon and letting
+    // Explorer upscale it is visibly soft on 150-300% displays.
+    let dpi = GetDpiForSystem();
+    let size = GetSystemMetricsForDpi(SM_CXSMICON, dpi)
+        .max(GetSystemMetrics(SM_CXSMICON))
+        .max(16);
     let icon = LoadImageW(
         null_mut(),
         path.as_ptr(),

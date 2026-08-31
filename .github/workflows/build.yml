@@ -96,6 +96,14 @@ jobs:
           $env:PATH = "$bin;$env:PATH"
           protoc --version
 
+      - name: Render high-DPI Windows icons
+        shell: pwsh
+        run: |
+          npm ci --prefix windows/conduit-daemon/tools/icon-render
+          node windows/conduit-daemon/tools/icon-render/render-icons.mjs
+          Copy-Item windows/conduit-daemon/assets/conduit-icon.ico windows/conduit-ui/Assets/conduit-icon.ico -Force
+          Copy-Item windows/conduit-daemon/assets/conduit-icon.png windows/conduit-ui/Assets/conduit-icon.png -Force
+
       - name: Check Rust formatting
         shell: pwsh
         run: cargo fmt --check
@@ -124,7 +132,7 @@ jobs:
           -r win-x64
           --self-contained true
           --no-restore
-          -p:PublishReadyToRun=false
+          -p:PublishReadyToRun=true
           -o ../../artifacts/windows-ui
 
       - name: Package Scoop-compatible Windows build

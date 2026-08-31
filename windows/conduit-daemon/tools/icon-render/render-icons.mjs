@@ -8,7 +8,7 @@ const assets = path.resolve(here, '..', '..', 'assets');
 const fluent = path.join(assets, 'fluent');
 
 const brandSizes = [16, 20, 24, 28, 32, 34, 40, 43, 44, 48, 51, 55, 60, 64, 66, 68, 77, 88, 96, 128, 256];
-const traySizes = [16, 20, 24, 28, 32, 40, 48];
+const traySizes = [16, 20, 24, 28, 32, 40, 48, 64];
 const start = '#6E5BD6';
 const end = '#2F6FE0';
 const darkGlyph = '#202020';
@@ -22,8 +22,10 @@ function parseSource(file) {
   return { width: Number(viewBox[1]), height: Number(viewBox[2]), d: pathData[1] };
 }
 
-function brandSource() {
-  return parseSource(path.join(fluent, 'ic_fluent_phone_desktop_24_filled.svg'));
+function brandSource(size) {
+  const sourceSize = size <= 18 ? 16 : size <= 22 ? 20 : 24;
+  const weight = sourceSize < 24 ? 'regular' : 'filled';
+  return parseSource(path.join(fluent, `ic_fluent_phone_desktop_${sourceSize}_${weight}.svg`));
 }
 
 function traySource(size) {
@@ -31,13 +33,15 @@ function traySource(size) {
   return parseSource(path.join(fluent, `ic_fluent_phone_desktop_${sourceSize}_regular.svg`));
 }
 
-function brandSvg() {
-  const source = brandSource();
+function brandSvg(size) {
+  const source = brandSource(size);
   const radius = (source.width * 0.22).toFixed(3);
+  const scale = size <= 20 ? 0.86 : 0.82;
+  const pad = (source.width * (1 - scale) / 2).toFixed(3);
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${source.width}" height="${source.height}" viewBox="0 0 ${source.width} ${source.height}">
   <defs><linearGradient id="brand" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${start}"/><stop offset="1" stop-color="${end}"/></linearGradient></defs>
   <rect width="${source.width}" height="${source.height}" rx="${radius}" fill="url(#brand)"/>
-  <g transform="translate(4.2 4.2) scale(0.65)"><path d="${source.d}" fill="#FFFFFF"/></g>
+  <g transform="translate(${pad} ${pad}) scale(${scale})"><path d="${source.d}" fill="#FFFFFF"/></g>
 </svg>`;
 }
 
@@ -76,10 +80,9 @@ function writeIco(file, frames) {
 }
 
 fs.mkdirSync(assets, { recursive: true });
-const brand = brandSvg();
-const brandFrames = brandSizes.map((size) => ({ size, png: render(brand, size) }));
+const brandFrames = brandSizes.map((size) => ({ size, png: render(brandSvg(size), size) }));
 writeIco(path.join(assets, 'conduit-icon.ico'), brandFrames);
-fs.writeFileSync(path.join(assets, 'conduit-icon.png'), render(brand, 512));
+fs.writeFileSync(path.join(assets, 'conduit-icon.png'), render(brandSvg(512), 512));
 
 const trayLight = traySizes.map((size) => ({ size, png: render(traySvg(size, darkGlyph), size) }));
 const trayDark = traySizes.map((size) => ({ size, png: render(traySvg(size, lightGlyph), size) }));

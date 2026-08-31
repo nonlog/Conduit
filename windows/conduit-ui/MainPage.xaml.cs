@@ -1,5 +1,6 @@
 using Conduit.Models;
 using Conduit.ViewModels;
+using Microsoft.UI.Dispatching;
 using Windows.Storage.Pickers;
 
 namespace Conduit;
@@ -21,11 +22,16 @@ public sealed partial class MainPage : Page
         App.MainWindow.SetTitleBar(TitleBarRoot);
         MainNavigationView.SelectedItem = SharedLinksNavigationItem;
         SettingsNavigation.SelectedItem = GeneralSettingsNavigationItem;
-        ViewModel.Initialize(DispatcherQueue);
         _loaded = true;
-
-        if (!string.IsNullOrWhiteSpace(ViewModel.StartupSendError))
-            ShowInfo("Could not send file", ViewModel.StartupSendError, InfoBarSeverity.Error);
+        // Present the shell first. Status/config/history I/O is useful, but none of it should delay
+        // the first frame when the resident tray launches this on-demand UI.
+        DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, () =>
+        {
+            if (!_loaded) return;
+            ViewModel.Initialize(DispatcherQueue);
+            if (!string.IsNullOrWhiteSpace(ViewModel.StartupSendError))
+                ShowInfo("Could not send file", ViewModel.StartupSendError, InfoBarSeverity.Error);
+        });
     }
 
     private void MainPage_Unloaded(object sender, RoutedEventArgs e)
