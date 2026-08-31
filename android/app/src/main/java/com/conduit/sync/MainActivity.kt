@@ -235,7 +235,6 @@ private fun ConduitTheme(content: @Composable () -> Unit) {
 
 private enum class MainTab(val title: String) {
     Home("Home"),
-    Devices("Devices"),
     Settings("Settings"),
 }
 
@@ -292,7 +291,6 @@ private fun ConduitApp(
                                 painter = painterResource(
                                     when (item) {
                                         MainTab.Home -> R.drawable.ic_home
-                                        MainTab.Devices -> R.drawable.ic_phone_desktop
                                         MainTab.Settings -> R.drawable.ic_settings
                                     },
                                 ),
@@ -312,20 +310,12 @@ private fun ConduitApp(
                 peerName = peerName,
                 path = path,
                 state = state,
-                historyCount = history.size,
+                history = history,
                 toDesktop = toDesktop,
                 toPhone = toPhone,
                 onConnect = onConnect,
                 onDisconnect = onDisconnect,
                 onOpenHistory = { page = "history" },
-            )
-            MainTab.Devices -> DevicesTab(
-                modifier = Modifier.padding(insets),
-                peerName = peerName,
-                path = path,
-                state = state,
-                onConnect = onConnect,
-                onDisconnect = onDisconnect,
             )
             MainTab.Settings -> SettingsTab(
                 modifier = Modifier.padding(insets),
@@ -347,7 +337,7 @@ private fun HomeTab(
     peerName: String?,
     path: String?,
     state: LinkState,
-    historyCount: Int,
+    history: List<HistoryEntry>,
     toDesktop: FileTransfer?,
     toPhone: FileTransfer?,
     onConnect: () -> Unit,
@@ -369,7 +359,7 @@ private fun HomeTab(
             )
         }
         item {
-            DeviceActionsCard(historyCount = historyCount, onOpenHistory = onOpenHistory)
+            DeviceActionsCard(history = history, onOpenHistory = onOpenHistory)
         }
         if (toDesktop != null || toPhone != null) {
             item {
@@ -377,42 +367,6 @@ private fun HomeTab(
                     Text("Transfers", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     toDesktop?.let { TransferCard(it, peerName) }
                     toPhone?.let { TransferCard(it, peerName) }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun DevicesTab(
-    modifier: Modifier,
-    peerName: String?,
-    path: String?,
-    state: LinkState,
-    onConnect: () -> Unit,
-    onDisconnect: () -> Unit,
-) {
-    LazyColumn(
-        modifier = modifier,
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        item {
-            SefirahDeviceCard(
-                state = state,
-                peerName = peerName,
-                path = path,
-                onConnect = onConnect,
-                onDisconnect = onDisconnect,
-            )
-        }
-        item {
-            Card(shape = MaterialTheme.shapes.large) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Text("Connection", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    InfoRow("Status", state.label)
-                    HorizontalDivider()
-                    InfoRow("Route", path?.takeIf(String::isNotBlank) ?: "—")
                 }
             }
         }
@@ -543,61 +497,79 @@ private fun SefirahDeviceCard(
 }
 
 @Composable
-private fun DeviceActionsCard(historyCount: Int, onOpenHistory: () -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 16.dp),
-        ) {
-            DeviceControlButton(
-                modifier = Modifier.weight(1f),
-                icon = R.drawable.ic_history,
-                label = "Clipboard",
-                badge = historyCount.takeIf { it > 0 }?.toString(),
-                onClick = onOpenHistory,
-            )
-            repeat(4) { Spacer(Modifier.weight(1f)) }
-        }
-    }
-}
-
-@Composable
-private fun DeviceControlButton(
-    modifier: Modifier = Modifier,
-    icon: Int,
-    label: String,
-    badge: String? = null,
-    onClick: () -> Unit,
-) {
-    Column(
-        modifier = modifier.clickable(onClick = onClick).padding(horizontal = 2.dp, vertical = 4.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+private fun DeviceActionsCard(history: List<HistoryEntry>, onOpenHistory: () -> Unit) {
+    val latest = history.firstOrNull()
+    Card(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onOpenHistory),
+        shape = MaterialTheme.shapes.large,
     ) {
-        Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
-            Icon(
-                painter = painterResource(icon),
-                contentDescription = label,
-                modifier = Modifier.size(24.dp),
-                tint = MaterialTheme.colorScheme.primary,
-            )
-        }
-        Text(
-            label,
-            modifier = Modifier.fillMaxWidth(),
-            style = MaterialTheme.typography.bodySmall,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        badge?.let {
-            Text(
-                it,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Surface(
+                modifier = Modifier.size(48.dp),
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.primaryContainer,
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_history),
+                        contentDescription = null,
+                        modifier = Modifier.size(24.dp),
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                }
+            }
+            Spacer(Modifier.size(14.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Clipboard", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    if (history.isNotEmpty()) {
+                        Spacer(Modifier.size(8.dp))
+                        Text(
+                            history.size.toString(),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                Text(
+                    latest?.preview?.takeIf(String::isNotBlank) ?: "No clipboard history yet",
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    color = if (latest == null) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                )
+                latest?.let {
+                    Text(
+                        it.ago().toString(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            latest?.let { clip ->
+                Spacer(Modifier.size(12.dp))
+                Surface(
+                    modifier = Modifier.size(36.dp),
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        val sent = clip.direction == Direction.Sent
+                        Icon(
+                            painter = painterResource(if (sent) R.drawable.ic_stat_upload else R.drawable.ic_stat_download),
+                            contentDescription = if (sent) "Sent to desktop" else "Received from desktop",
+                            modifier = Modifier.size(20.dp),
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+            }
         }
     }
 }
-
 @Composable
 private fun PreferenceRow(
     icon: Int,
@@ -664,14 +636,6 @@ private fun SwitchPreferenceRow(
             )
         },
     )
-}
-
-@Composable
-private fun InfoRow(label: String, value: String) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(value, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-    }
 }
 
 @Composable
