@@ -113,7 +113,11 @@ fn digit_candidates(text: &str) -> Vec<Candidate> {
             break;
         }
         if (4..=8).contains(&code.len()) {
-            out.push(Candidate { code, start, end: j });
+            out.push(Candidate {
+                code,
+                start,
+                end: j,
+            });
         }
         i = j.max(i + 1);
     }
@@ -136,13 +140,22 @@ mod tests {
 
     #[test]
     fn detects_chinese_and_english_codes() {
-        assert_eq!(extract_from_text("【银行】验证码 482731，5分钟内有效"), Some("482731".into()));
-        assert_eq!(extract_from_text("Your verification code is 130944"), Some("130944".into()));
+        assert_eq!(
+            extract_from_text("【银行】验证码 482731，5分钟内有效"),
+            Some("482731".into())
+        );
+        assert_eq!(
+            extract_from_text("Your verification code is 130944"),
+            Some("130944".into())
+        );
     }
 
     #[test]
     fn normalizes_a_hyphenated_code() {
-        assert_eq!(extract_from_text("Your security code is 123-456"), Some("123456".into()));
+        assert_eq!(
+            extract_from_text("Your security code is 123-456"),
+            Some("123456".into())
+        );
     }
 
     #[test]
@@ -157,7 +170,10 @@ mod tests {
     #[test]
     fn unrelated_numbers_and_long_phone_numbers_are_rejected() {
         assert_eq!(extract_from_text("Order 482731 shipped"), None);
-        assert_eq!(extract_from_text("Your verification code help line is 18001234567"), None);
+        assert_eq!(
+            extract_from_text("Your verification code help line is 18001234567"),
+            None
+        );
         assert_eq!(extract_from_text("2026-08-31 monthly statement"), None);
     }
 

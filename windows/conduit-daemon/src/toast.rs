@@ -443,7 +443,12 @@ fn pump(
                         }
                         shapes.insert(
                             key.clone(),
-                            ToastShape { app, logo, actions, code },
+                            ToastShape {
+                                app,
+                                logo,
+                                actions,
+                                code,
+                            },
                         );
                         if let Some(toast) = toast {
                             actionable.insert(key, toast);
@@ -695,8 +700,7 @@ fn parse_action_index(arguments: &str) -> Option<u32> {
 
 fn parse_copy_code(arguments: &str) -> Option<&str> {
     let code = arguments.strip_prefix("copy=")?;
-    (code.len() >= 4 && code.len() <= 8 && code.bytes().all(|b| b.is_ascii_digit()))
-        .then_some(code)
+    (code.len() >= 4 && code.len() <= 8 && code.bytes().all(|b| b.is_ascii_digit())).then_some(code)
 }
 
 /// A phone-capture toast: the picture itself, and a click that opens it in Snipping Tool.
@@ -1261,7 +1265,11 @@ mod tests {
         let markup = show_xml("Messages", None, &actions, Some("482731"));
         let xml = XmlDocument::new()?;
         xml.LoadXml(&HSTRING::from(&markup))?;
-        assert_eq!(xml.GetElementsByTagName(&HSTRING::from("action"))?.Length()?, 2);
+        assert_eq!(
+            xml.GetElementsByTagName(&HSTRING::from("action"))?
+                .Length()?,
+            2
+        );
         assert!(markup.contains(r#"content="Copy" arguments="copy=482731""#));
         assert_eq!(parse_copy_code("copy=482731"), Some("482731"));
         assert_eq!(parse_copy_code("copy=123"), None);
@@ -1282,8 +1290,17 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let xml = XmlDocument::new()?;
-        xml.LoadXml(&HSTRING::from(show_xml("Messages", None, &actions, Some("123456"))))?;
-        assert_eq!(xml.GetElementsByTagName(&HSTRING::from("action"))?.Length()?, 5);
+        xml.LoadXml(&HSTRING::from(show_xml(
+            "Messages",
+            None,
+            &actions,
+            Some("123456"),
+        )))?;
+        assert_eq!(
+            xml.GetElementsByTagName(&HSTRING::from("action"))?
+                .Length()?,
+            5
+        );
         Ok(())
     }
 

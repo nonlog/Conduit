@@ -79,7 +79,18 @@ jobs:
 
       - name: Install protoc
         shell: pwsh
-        run: choco install protoc -y --no-progress
+        run: |
+          if (-not (Get-Command protoc -ErrorAction SilentlyContinue)) {
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+              choco install protoc -y --no-progress
+              if (Get-Command protoc -ErrorAction SilentlyContinue) { break }
+              if ($attempt -lt 3) { Start-Sleep -Seconds (5 * $attempt) }
+            }
+          }
+          if (-not (Get-Command protoc -ErrorAction SilentlyContinue)) {
+            throw 'protoc installation failed after three attempts'
+          }
+          protoc --version
 
       - name: Check Rust formatting
         shell: pwsh
