@@ -119,7 +119,7 @@ jobs:
       - name: Restore Uno / WinUI desktop
         working-directory: windows/conduit-ui
         shell: pwsh
-        run: dotnet restore Conduit.csproj -r win-x64 -p:Configuration=Release
+        run: dotnet restore Conduit.csproj -r win-x64 -p:Configuration=Release -p:PublishReadyToRun=true
 
       - name: Publish Uno / WinUI desktop
         working-directory: windows/conduit-ui
