@@ -74,6 +74,9 @@ const val ACTION_DISCONNECT = "com.conduit.sync.DISCONNECT"
 /** Sent by [ShareActivity]: URIs in the intent's ClipData, or text in EXTRA_TEXT. */
 const val ACTION_SHARE = "com.conduit.sync.SHARE"
 
+/** A focused accessibility handoff carrying the exact ClipData Android just allowed us to read. */
+const val ACTION_ACCESSIBILITY_CLIP = "com.conduit.sync.ACCESSIBILITY_CLIP"
+
 /**
  * The long-running half of the app.
  *
@@ -225,6 +228,7 @@ class SyncService : Service() {
                 override fun onState(state: LinkState, peer: String?) {
                     LinkStatus.state = state
                     LinkStatus.peer = peer
+                    ClipboardAccessibilityService.setLinkActive(state == LinkState.Connected)
                     LinkTileService.refresh(this@SyncService)
                     when (state) {
                         // A completed handshake is the only proof the path works, so it is
@@ -401,6 +405,7 @@ class SyncService : Service() {
         //       --es host 127.0.0.1
         val host = intent?.getStringExtra("host")
         when {
+            intent?.action == ACTION_ACCESSIBILITY_CLIP -> onAccessibilityClip(intent)
             intent?.action == ACTION_SHARE -> onShare(intent)
             host != null -> {
                 Settings.linkWanted = true
@@ -435,6 +440,7 @@ class SyncService : Service() {
         // Cleared next, so the notification relay stops handing frames to a link that
         // is being torn down.
         activeLink = null
+        ClipboardAccessibilityService.setLinkActive(false)
         clipboard.removePrimaryClipChangedListener(clipListener)
         connectivity.unregisterNetworkCallback(network)
         screenshots.stop()
@@ -694,12 +700,20 @@ class SyncService : Service() {
         }
     }
 
-    private fun onLocalClip() {        val clip = clipboard.primaryClip
+    /** Receives ClipData while [ClipboardChangeActivity] still owns foreground clipboard access. */
+    private fun onAccessibilityClip(intent: Intent) {
+        if (LinkStatus.state != LinkState.Connected) return
+        sendLocalClip(intent.clipData, "accessibility")
+    }
+
+    private fun onLocalClip() = sendLocalClip(clipboard.primaryClip, "listener")
+
+    private fun sendLocalClip(clip: ClipData?, source: String) {
         val item = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)
         if (item == null) {
-            // Expected on stock Android 10+: a background app is not allowed to read the
-            // clipboard. The LSPosed hook on ClipboardService is what lifts this.
-            Log.d(TAG, "clipboard unreadable from the background")
+            // On stock Android 10+ the background listener cannot read the clipboard. The
+            // AccessibilityService focus handoff is the non-root path; LSPosed remains optional.
+            Log.d(TAG, "clipboard unreadable from $source")
             return
         }
         val text = item.text?.toString()?.replace("\r\n", "\n")

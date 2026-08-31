@@ -20,6 +20,7 @@ mod shared_links;
 mod status;
 mod toast;
 mod tray;
+mod verification_code;
 mod wire;
 
 use anyhow::{bail, Context, Result};
@@ -366,7 +367,7 @@ async fn main() -> Result<()> {
     let (toast_action_tx, _) = broadcast::channel::<pb::NotifAction>(16);
     // Likewise one toast thread. A failure here is not fatal: clipboard sync is still
     // worth having on a machine where the notification platform will not cooperate.
-    let toasts = match toast::Notifier::start(&dir, toast_action_tx.clone()) {
+    let toasts = match toast::Notifier::start(&dir, toast_action_tx.clone(), bridge.clone()) {
         Ok(notifier) => Some(Arc::new(notifier)),
         Err(e) => {
             warn!(error = %e, "toasts unavailable, mirroring notifications is disabled");

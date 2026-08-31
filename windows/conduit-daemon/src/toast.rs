@@ -21,7 +21,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 use std::thread::JoinHandle;
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
@@ -36,6 +36,8 @@ use windows::UI::Notifications::{
     ToastNotifier,
 };
 
+use crate::clip;
+use crate::verification_code;
 use crate::wire::pb;
 
 /// Must match the registry key below. Reverse-DNS-ish because that is the convention
@@ -300,7 +302,11 @@ pub struct Notifier {
 impl Notifier {
     /// `cache` is where the phone's icons are written; a toast image can only be named by
     /// URI, so they have to land somewhere the shell can read them.
-    pub fn start(cache: &Path, action_tx: broadcast::Sender<pb::NotifAction>) -> Result<Self> {
+    pub fn start(
+        cache: &Path,
+        action_tx: broadcast::Sender<pb::NotifAction>,
+        clipboard: Arc<clip::Bridge>,
+    ) -> Result<Self> {
         let identity_icon = ensure_app_identity_icon(cache)?;
         register_aumid(&identity_icon).context("registering the toast AppUserModelID")?;
         let cache = Cache::prepare(cache).context("preparing the toast icon cache")?;
@@ -322,7 +328,7 @@ impl Notifier {
                 match ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(AUMID)) {
                     Ok(notifier) => {
                         if ready_tx.send(Ok(())).is_ok() {
-                            pump(&notifier, &cache, rx, action_tx);
+                            pump(&notifier, &cache, rx, action_tx, clipboard);
                         }
                     }
                     Err(e) => {
@@ -366,11 +372,20 @@ impl Drop for Notifier {
     }
 }
 
+#[derive(Clone)]
+struct ToastShape {
+    app: String,
+    logo: Option<PathBuf>,
+    actions: Vec<pb::NotifActionDesc>,
+    code: Option<String>,
+}
+
 fn pump(
     notifier: &ToastNotifier,
     cache: &Cache,
     rx: mpsc::Receiver<Cmd>,
     action_tx: broadcast::Sender<pb::NotifAction>,
+    clipboard: Arc<clip::Bridge>,
 ) {
     // The broker token for the phone capture currently on screen. At most one is ever
     // outstanding, because a new capture replaces the toast that named the old one — so
@@ -379,6 +394,9 @@ fn pump(
     // A ToastNotification owns its Activated delegate. Keep only currently mirrored toasts alive,
     // with the same hard ceiling Android already uses for remembered notification keys.
     let mut actionable: HashMap<String, ToastNotification> = HashMap::new();
+    // Shape data is needed only when an update adds/removes a verification code, because toast
+    // actions are XML and cannot be changed through NotificationData. Bounded like actionable.
+    let mut shapes: HashMap<String, ToastShape> = HashMap::new();
     while let Ok(cmd) = rx.recv() {
         let result = match cmd {
             Cmd::Show {
@@ -401,6 +419,7 @@ fn pump(
                         warn!(error = %e, "could not cache the notification icon");
                         None
                     });
+                let code = verification_code::extract(&title, &body, &messages);
                 match show(
                     notifier,
                     &key,
@@ -410,16 +429,23 @@ fn pump(
                     &messages,
                     logo.as_deref(),
                     &actions,
+                    code.as_deref(),
                     suppress_popup,
                     &action_tx,
+                    &clipboard,
                 ) {
                     Ok(toast) => {
-                        if let Some(toast) = toast {
-                            if actionable.len() >= 256 && !actionable.contains_key(&key) {
-                                if let Some(evict) = actionable.keys().next().cloned() {
-                                    actionable.remove(&evict);
-                                }
+                        if shapes.len() >= 256 && !shapes.contains_key(&key) {
+                            if let Some(evict) = shapes.keys().next().cloned() {
+                                shapes.remove(&evict);
+                                actionable.remove(&evict);
                             }
+                        }
+                        shapes.insert(
+                            key.clone(),
+                            ToastShape { app, logo, actions, code },
+                        );
+                        if let Some(toast) = toast {
                             actionable.insert(key, toast);
                         } else {
                             actionable.remove(&key);
@@ -434,9 +460,48 @@ fn pump(
                 title,
                 body,
                 messages,
-            } => update(notifier, &key, &title, &body, &messages),
+            } => {
+                let code = verification_code::extract(&title, &body, &messages);
+                let shape = shapes.get(&key).cloned();
+                if let Some(shape) = shape {
+                    if shape.code != code {
+                        match show(
+                            notifier,
+                            &key,
+                            &shape.app,
+                            &title,
+                            &body,
+                            &messages,
+                            shape.logo.as_deref(),
+                            &shape.actions,
+                            code.as_deref(),
+                            true,
+                            &action_tx,
+                            &clipboard,
+                        ) {
+                            Ok(toast) => {
+                                if let Some(shape) = shapes.get_mut(&key) {
+                                    shape.code = code;
+                                }
+                                if let Some(toast) = toast {
+                                    actionable.insert(key, toast);
+                                } else {
+                                    actionable.remove(&key);
+                                }
+                                Ok(())
+                            }
+                            Err(e) => Err(e),
+                        }
+                    } else {
+                        update(notifier, &key, &title, &body, &messages)
+                    }
+                } else {
+                    update(notifier, &key, &title, &body, &messages)
+                }
+            }
             Cmd::Hide { key } => {
                 actionable.remove(&key);
+                shapes.remove(&key);
                 hide(&key)
             }
             Cmd::Photo { path } => show_capture(notifier, &path, &mut staged, false),
@@ -468,11 +533,13 @@ fn show(
     messages: &[pb::TextMessage],
     logo: Option<&Path>,
     actions: &[pb::NotifActionDesc],
+    copy_code: Option<&str>,
     suppress_popup: bool,
     action_tx: &broadcast::Sender<pb::NotifAction>,
+    clipboard: &Arc<clip::Bridge>,
 ) -> Result<Option<ToastNotification>> {
     let xml = XmlDocument::new()?;
-    xml.LoadXml(&HSTRING::from(show_xml(app, logo, actions)))?;
+    xml.LoadXml(&HSTRING::from(show_xml(app, logo, actions, copy_code)))?;
 
     let toast = ToastNotification::CreateToastNotification(&xml)?;
     let tag = tag_for(key);
@@ -480,15 +547,27 @@ fn show(
     toast.SetGroup(&HSTRING::from(GROUP))?;
     toast.SetData(&data(title, body, messages)?)?;
     toast.SetSuppressPopup(suppress_popup)?;
-    if !actions.is_empty() {
+    let has_copy_code = copy_code.is_some();
+    if !actions.is_empty() || has_copy_code {
         let key = key.to_owned();
         let actions = actions.to_vec();
+        let expected_copy_code = copy_code.map(str::to_owned);
         let action_tx = action_tx.clone();
+        let clipboard = clipboard.clone();
         let handler = TypedEventHandler::<ToastNotification, windows::core::IInspectable>::new(
             move |_sender, args| {
                 let Some(args) = &*args else { return Ok(()) };
                 let args: ToastActivatedEventArgs = args.cast()?;
                 let arguments = args.Arguments()?.to_string();
+                if let Some(code) = parse_copy_code(&arguments) {
+                    // Only the exact code embedded in this toast is accepted. Never log the value.
+                    if expected_copy_code.as_deref() == Some(code) {
+                        if let Err(e) = clipboard.apply(code) {
+                            warn!(error = %e, "could not copy verification code");
+                        }
+                    }
+                    return Ok(());
+                }
                 let Some(index) = parse_action_index(&arguments) else {
                     return Ok(());
                 };
@@ -528,7 +607,7 @@ fn show(
     }
     notifier.Show(&toast)?;
     debug!(%tag, logo = logo.is_some(), suppress_popup, "toast shown");
-    Ok((!actions.is_empty()).then_some(toast))
+    Ok((!actions.is_empty() || has_copy_code).then_some(toast))
 }
 
 /// Split out so the markup can be checked without a notifier, the same as [`photo_xml`].
@@ -537,7 +616,12 @@ fn show(
 /// bound — which also settles what [`update`] can do: a later message in the same thread
 /// rewrites the text and keeps the picture the first one arrived with. Re-showing to change
 /// a face would pop and re-alert, which is the thing update exists to avoid.
-fn show_xml(app: &str, logo: Option<&Path>, actions: &[pb::NotifActionDesc]) -> String {
+fn show_xml(
+    app: &str,
+    logo: Option<&Path>,
+    actions: &[pb::NotifActionDesc],
+    copy_code: Option<&str>,
+) -> String {
     let image = match logo {
         // Circle-cropped because that is what the slot is for, and because an Android
         // adaptive icon has already been drawn through the platform's own round mask.
@@ -547,7 +631,7 @@ fn show_xml(app: &str, logo: Option<&Path>, actions: &[pb::NotifActionDesc]) -> 
         ),
         None => String::new(),
     };
-    let actions = action_xml(actions);
+    let actions = action_xml(actions, copy_code);
     format!(
         r#"<toast>
              <visual>
@@ -564,8 +648,8 @@ fn show_xml(app: &str, logo: Option<&Path>, actions: &[pb::NotifActionDesc]) -> 
     )
 }
 
-fn action_xml(actions: &[pb::NotifActionDesc]) -> String {
-    if actions.is_empty() {
+fn action_xml(actions: &[pb::NotifActionDesc], copy_code: Option<&str>) -> String {
+    if actions.is_empty() && copy_code.is_none() {
         return String::new();
     }
     let remote_position = actions.iter().position(|action| action.has_remote_input);
@@ -573,13 +657,13 @@ fn action_xml(actions: &[pb::NotifActionDesc]) -> String {
     if remote_position.is_some() {
         xml.push_str(r#"<input id="reply" type="text" placeHolderContent="Reply"/>"#);
     }
+    // ToastGeneric supports at most five action buttons. Reserve one for Copy when a code exists.
+    let action_budget = if copy_code.is_some() { 4 } else { 5 };
+    let mut added = 0usize;
     for (position, action) in actions.iter().enumerate() {
-        if action.label.is_empty() {
+        if action.label.is_empty() || added >= action_budget {
             continue;
         }
-        // Windows supplies one free-form text box per toast in this design. Preserve ordinary
-        // buttons, but expose only the first Android free-form reply action rather than attaching
-        // the wrong text field to a later one.
         if action.has_remote_input && Some(position) != remote_position {
             continue;
         }
@@ -593,6 +677,13 @@ fn action_xml(actions: &[pb::NotifActionDesc]) -> String {
             escape(&action.label),
             action.index,
         ));
+        added += 1;
+    }
+    if let Some(code) = copy_code {
+        xml.push_str(&format!(
+            r#"<action content="Copy" arguments="copy={}" activationType="foreground"/>"#,
+            escape(code),
+        ));
     }
     xml.push_str("</actions>");
     xml
@@ -600,6 +691,12 @@ fn action_xml(actions: &[pb::NotifActionDesc]) -> String {
 
 fn parse_action_index(arguments: &str) -> Option<u32> {
     arguments.strip_prefix("action=")?.parse().ok()
+}
+
+fn parse_copy_code(arguments: &str) -> Option<&str> {
+    let code = arguments.strip_prefix("copy=")?;
+    (code.len() >= 4 && code.len() <= 8 && code.bytes().all(|b| b.is_ascii_digit()))
+        .then_some(code)
 }
 
 /// A phone-capture toast: the picture itself, and a click that opens it in Snipping Tool.
@@ -1047,7 +1144,7 @@ mod tests {
         let logo = Path::new(r"C:\Users\a b\Conduit\icons\deadbeef.png");
 
         let xml = XmlDocument::new()?;
-        xml.LoadXml(&HSTRING::from(show_xml("WeChat", Some(logo), &[])))?;
+        xml.LoadXml(&HSTRING::from(show_xml("WeChat", Some(logo), &[], None)))?;
         let images = xml.GetElementsByTagName(&HSTRING::from("image"))?;
         assert_eq!(images.Length()?, 1, "the toast has no logo element");
         let image = images.GetAt(0)?;
@@ -1071,7 +1168,7 @@ mod tests {
 
         // No icon yet: still a valid toast, just a bare one.
         let plain = XmlDocument::new()?;
-        plain.LoadXml(&HSTRING::from(show_xml("WeChat", None, &[])))?;
+        plain.LoadXml(&HSTRING::from(show_xml("WeChat", None, &[], None)))?;
         assert_eq!(
             plain
                 .GetElementsByTagName(&HSTRING::from("image"))?
@@ -1085,7 +1182,7 @@ mod tests {
     fn source_app_name_is_the_first_readable_line_above_the_notification_title() -> Result<()> {
         crate::image::ensure_mta();
         let xml = XmlDocument::new()?;
-        xml.LoadXml(&HSTRING::from(show_xml("ChatGPT", None, &[])))?;
+        xml.LoadXml(&HSTRING::from(show_xml("ChatGPT", None, &[], None)))?;
         let texts = xml.GetElementsByTagName(&HSTRING::from("text"))?;
         assert_eq!(texts.Length()?, 3);
         let source = texts.GetAt(0)?;
@@ -1132,7 +1229,7 @@ mod tests {
             },
         ];
         let xml = XmlDocument::new()?;
-        xml.LoadXml(&HSTRING::from(show_xml("Chat", None, &actions)))?;
+        xml.LoadXml(&HSTRING::from(show_xml("Chat", None, &actions, None)))?;
         assert_eq!(
             xml.GetElementsByTagName(&HSTRING::from("input"))?
                 .Length()?,
@@ -1144,11 +1241,49 @@ mod tests {
             2,
             "later RemoteInput action must be omitted"
         );
-        assert!(show_xml("Chat", None, &actions).contains("Reply &amp; send"));
-        assert!(show_xml("Chat", None, &actions).contains("Mark &lt;read&gt;"));
+        assert!(show_xml("Chat", None, &actions, None).contains("Reply &amp; send"));
+        assert!(show_xml("Chat", None, &actions, None).contains("Mark &lt;read&gt;"));
         assert_eq!(parse_action_index("action=7"), Some(7));
         assert_eq!(parse_action_index("action=nope"), None);
         assert_eq!(parse_action_index("launch=7"), None);
+        Ok(())
+    }
+
+    #[test]
+    fn verification_code_adds_a_local_copy_button_without_breaking_android_actions() -> Result<()> {
+        crate::image::ensure_mta();
+        let actions = vec![pb::NotifActionDesc {
+            label: "Reply".into(),
+            index: 3,
+            has_remote_input: true,
+            result_key: "message".into(),
+        }];
+        let markup = show_xml("Messages", None, &actions, Some("482731"));
+        let xml = XmlDocument::new()?;
+        xml.LoadXml(&HSTRING::from(&markup))?;
+        assert_eq!(xml.GetElementsByTagName(&HSTRING::from("action"))?.Length()?, 2);
+        assert!(markup.contains(r#"content="Copy" arguments="copy=482731""#));
+        assert_eq!(parse_copy_code("copy=482731"), Some("482731"));
+        assert_eq!(parse_copy_code("copy=123"), None);
+        assert_eq!(parse_copy_code("copy=123456789"), None);
+        assert_eq!(parse_copy_code("copy=12ab56"), None);
+        Ok(())
+    }
+
+    #[test]
+    fn verification_code_reserves_one_of_five_toast_buttons_for_copy() -> Result<()> {
+        crate::image::ensure_mta();
+        let actions = (0..5)
+            .map(|index| pb::NotifActionDesc {
+                label: format!("A{index}"),
+                index,
+                has_remote_input: false,
+                result_key: String::new(),
+            })
+            .collect::<Vec<_>>();
+        let xml = XmlDocument::new()?;
+        xml.LoadXml(&HSTRING::from(show_xml("Messages", None, &actions, Some("123456"))))?;
+        assert_eq!(xml.GetElementsByTagName(&HSTRING::from("action"))?.Length()?, 5);
         Ok(())
     }
 
@@ -1244,7 +1379,8 @@ mod tests {
         println!("launch: {}", snip_url(&token));
 
         let (action_tx, _) = broadcast::channel(4);
-        let notifier = Notifier::start(&scratch("photo"), action_tx)?;
+        let clipboard = Arc::new(clip::Bridge::start()?);
+        let notifier = Notifier::start(&scratch("photo"), action_tx, clipboard)?;
         notifier.post(Cmd::Photo { path });
         std::thread::sleep(std::time::Duration::from_millis(2000));
         assert!(
@@ -1270,7 +1406,8 @@ mod tests {
         let key = "0|com.conduit.test|1|null|10000";
         let tag = tag_for(key);
         let (action_tx, _) = broadcast::channel(4);
-        let notifier = Notifier::start(&scratch("live"), action_tx)?;
+        let clipboard = Arc::new(clip::Bridge::start()?);
+        let notifier = Notifier::start(&scratch("live"), action_tx, clipboard)?;
         // A real 96 px square, the size the phone sends, so the logo slot is exercised by
         // something the shell will actually decode rather than a path to nothing.
         crate::image::ensure_mta();
