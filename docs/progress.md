@@ -767,3 +767,12 @@ a milestone complete based solely on source review or a single happy-path run.
 - Added `scripts/install-github-build.ps1` for Log. It downloads a successful Actions build (optionally through Log's Mihomo proxy), installs the Windows package into the existing Scoop path without touching the persisted `data` junction, refreshes Windows integration, detaches the installed daemon from AgentDock's invoking command job through `Win32_Process.Create`, and installs the APK through ADB. It does not compile anything.
 - Log verification used run `33319898971` artifacts only: Android 0.1.0 installed, WinUI launched/responded, `data` remained linked to `D:\Programs\Scoop\persist\conduit\data`, the installed daemon linked to OnePlus 12 over WA Relay, and installed `conduit-send.exe` delivered a temporary file to Android Downloads with cleanup afterward.
 - Final operating model: GitHub is the mandatory development/build gate; Log remains the mandatory install/Scoop-update/real-device/Windows-integration test gate.
+
+### Android Home merge + Windows launch/icon optimization — 2026-09-01
+
+- Merged Android Home/Devices into a single Home surface; bottom navigation is now Home + Settings. Clipboard home card shows the latest preview, count, age, and explicit send/receive direction icon instead of only `Clipboard <count>`.
+- Deferred Windows status/config/history initialization until after the first WinUI frame and enabled ReadyToRun for the self-contained desktop publish. Tray Open now reuses an existing current WinUI window.
+- Rebuilt Windows icon generation around size-specific Fluent vectors; GitHub CI regenerates assets before compilation, and tray ICOs include native frames through 64px. Log runs at 125% DPI and now selects 20x20 directly.
+- GitHub clean run `33412249555` is green across Android, Relay, Windows Rust, Uno/WinUI ReadyToRun publish, packaging and artifacts. No Log-local build was used.
+- After installing those artifacts on Log, UIAutomator confirmed Devices is gone and the latest clipboard preview plus `Sent to desktop` semantics are present. Real daemon-tray cold-open timing over five launches averaged **567.5 ms** (509.1-665.1 ms), and repeated tray Open with the UI already running kept one process.
+- Installed-path `conduit-send.exe` regression: exit 0 in 720 ms, exact file confirmed in Android Downloads, both test copies cleaned; daemon stayed linked to OnePlus 12 via US Relay.
