@@ -169,12 +169,12 @@ unsafe fn set_modern_version(hwnd: HWND, icon: HICON) {
 unsafe fn load_tray_icon() -> Result<HICON> {
     let path = tray_icon_path().context("Conduit tray icon directory is unavailable")?;
     let path = wide(path.as_os_str());
-    // Choose a physical-size frame for the system DPI. Loading a logical 16 px icon and letting
-    // Explorer upscale it is visibly soft on 150-300% displays.
-    let dpi = GetDpiForSystem();
-    let size = GetSystemMetricsForDpi(SM_CXSMICON, dpi)
-        .max(GetSystemMetrics(SM_CXSMICON))
-        .max(16);
+    // Map the canonical 16 px notification-area size to physical pixels. The renderer emits
+    // matching 16/20/24/28/32/40/48/64 ICO frames, so Explorer selects a native frame instead
+    // of upscaling a soft 16 px bitmap. Avoid GetSystemMetricsForDpi here because the windows-sys
+    // version used by Conduit does not expose that Win32 symbol.
+    let dpi = GetDpiForSystem().max(96);
+    let size = (((16u32 * dpi) + 95) / 96).clamp(16, 64) as i32;
     let icon = LoadImageW(
         null_mut(),
         path.as_ptr(),
@@ -351,8 +351,15 @@ unsafe fn request_exit(hwnd: HWND) {
 }
 
 unsafe fn open_control() {
-    let class = wide("ConduitControlWindow");
-    let existing = FindWindowW(class.as_ptr(), null());
+    // Keep compatibility with the legacy control window, but prefer the real WinUI title for the
+    // current shell. A second tray activation should restore the existing UI immediately instead
+    // of launching another Uno/WinUI process.
+    let legacy_class = wide("ConduitControlWindow");
+    let mut existing = FindWindowW(legacy_class.as_ptr(), null());
+    if existing.is_null() {
+        let title = wide("Conduit");
+        existing = FindWindowW(null(), title.as_ptr());
+    }
     if !existing.is_null() {
         ShowWindow(existing, SW_RESTORE);
         let _ = SetForegroundWindow(existing);
