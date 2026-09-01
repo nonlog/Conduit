@@ -22,12 +22,7 @@ pub fn install() -> Result<String> {
         );
     }
     let command = command_for(&helper.to_string_lossy());
-    let icon = exe.with_file_name("conduit-icon.ico");
-    let icon_spec = if icon.is_file() {
-        format!("\"{}\",0", icon.to_string_lossy())
-    } else {
-        format!("\"{}\",0", exe.to_string_lossy())
-    };
+    let icon_spec = icon_spec_for(&exe);
 
     let verb = windows_registry::CURRENT_USER
         .create(VERB_KEY)
@@ -61,6 +56,51 @@ pub fn status() -> Option<String> {
         .ok()?
         .get_string("")
         .ok()
+}
+
+/// Refreshes only the Explorer icon for an already-installed verb. This is called from the
+/// daemon's existing blocked tray window when Windows announces a theme change; it creates no
+/// watcher, timer or additional resident worker.
+pub fn refresh_icon() -> Result<bool> {
+    let Ok(verb) = windows_registry::CURRENT_USER.open(VERB_KEY) else {
+        return Ok(false);
+    };
+    let exe = std::env::current_exe().context("finding the Conduit executable")?;
+    let wanted = icon_spec_for(&exe);
+    if verb.get_string("Icon").ok().as_deref() == Some(wanted.as_str()) {
+        return Ok(false);
+    }
+    verb.set_string("Icon", &wanted)?;
+    unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED as i32, SHCNF_IDLIST, null(), null()) };
+    Ok(true)
+}
+
+fn themed_icon(exe: &std::path::Path) -> std::path::PathBuf {
+    let light = windows_registry::CURRENT_USER
+        .open(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+        .ok()
+        .and_then(|key| key.get_u32("SystemUsesLightTheme").ok())
+        .unwrap_or(1)
+        != 0;
+    let themed = exe.with_file_name(if light {
+        "conduit-icon-light.ico"
+    } else {
+        "conduit-icon-dark.ico"
+    });
+    if themed.is_file() {
+        themed
+    } else {
+        exe.with_file_name("conduit-icon.ico")
+    }
+}
+
+fn icon_spec_for(exe: &std::path::Path) -> String {
+    let icon = themed_icon(exe);
+    if icon.is_file() {
+        format!("\"{}\",0", icon.to_string_lossy())
+    } else {
+        format!("\"{}\",0", exe.to_string_lossy())
+    }
 }
 
 fn command_for(helper: &str) -> String {

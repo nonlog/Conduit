@@ -43,7 +43,8 @@ use crate::wire::pb;
 /// Must match the registry key below. Reverse-DNS-ish because that is the convention
 /// Windows uses for AUMIDs and it keeps us out of anyone else's namespace.
 const AUMID: &str = "Conduit.Desktop";
-const APP_IDENTITY_ICON: &[u8] = include_bytes!("../assets/conduit-icon.png");
+const APP_IDENTITY_ICON_LIGHT: &[u8] = include_bytes!("../assets/conduit-icon-light.png");
+const APP_IDENTITY_ICON_DARK: &[u8] = include_bytes!("../assets/conduit-icon-dark.png");
 
 /// Every toast shares one group, so a single call clears the lot on shutdown and the
 /// phone's tag alone identifies a notification within it.
@@ -298,17 +299,45 @@ impl Cache {
     }
 }
 
+fn system_uses_light_theme() -> bool {
+    windows_registry::CURRENT_USER
+        .open(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+        .ok()
+        .and_then(|key| key.get_u32("SystemUsesLightTheme").ok())
+        .unwrap_or(1)
+        != 0
+}
+
 fn ensure_app_identity_icon(root: &Path) -> Result<PathBuf> {
     std::fs::create_dir_all(root)?;
-    let path = root.join("conduit-icon.png");
+    let light = system_uses_light_theme();
+    let bytes = if light {
+        APP_IDENTITY_ICON_LIGHT
+    } else {
+        APP_IDENTITY_ICON_DARK
+    };
+    // A theme-specific filename makes the AUMID IconUri itself change, which is more reliable than
+    // asking Action Center to notice different bytes behind the same cached URI. The AUMID remains
+    // one stable Conduit.Desktop identity.
+    let path = root.join(if light {
+        "conduit-icon-light.png"
+    } else {
+        "conduit-icon-dark.png"
+    });
     let matches = std::fs::read(&path)
-        .map(|current| current.as_slice() == APP_IDENTITY_ICON)
+        .map(|current| current.as_slice() == bytes)
         .unwrap_or(false);
     if !matches {
-        std::fs::write(&path, APP_IDENTITY_ICON)
-            .with_context(|| format!("writing {}", path.display()))?;
+        std::fs::write(&path, bytes).with_context(|| format!("writing {}", path.display()))?;
     }
     Ok(path)
+}
+
+/// Rebinds the existing AUMID to the light/dark identity icon selected by Windows. Theme-change
+/// notification is borrowed from the tray's existing message loop, so this adds no background poll.
+pub fn refresh_app_identity(root: &Path) -> Result<()> {
+    let identity_icon = ensure_app_identity_icon(root)?;
+    register_aumid(&identity_icon)
 }
 
 pub struct Notifier {

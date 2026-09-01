@@ -9,7 +9,6 @@ const fluent = path.join(assets, 'fluent');
 
 const brandSizes = [16, 20, 24, 28, 32, 34, 40, 43, 44, 48, 51, 55, 60, 64, 66, 68, 77, 88, 96, 128, 256];
 const traySizes = [16, 20, 24, 28, 32, 40, 48, 64];
-const brandGlyph = '#5B5BD6';
 const darkGlyph = '#202020';
 const lightGlyph = '#F6F6F6';
 
@@ -21,33 +20,21 @@ function parseSource(file) {
   return { width: Number(viewBox[1]), height: Number(viewBox[2]), d: pathData[1] };
 }
 
-function brandSource(size) {
-  const sourceSize = size <= 18 ? 16 : size <= 22 ? 20 : 24;
-  const weight = sourceSize < 24 ? 'regular' : 'filled';
-  return parseSource(path.join(fluent, `ic_fluent_phone_desktop_${sourceSize}_${weight}.svg`));
-}
-
-function traySource(size) {
+function glyphSource(size) {
   const sourceSize = size <= 18 ? 16 : size <= 22 ? 20 : 24;
   return parseSource(path.join(fluent, `ic_fluent_phone_desktop_${sourceSize}_regular.svg`));
 }
 
-function brandSvg(size) {
-  const source = brandSource(size);
-  // Keep the mark transparent and monoline/monochrome like Sefirah instead of placing it in a
-  // rounded app tile. Small frames use the matching Fluent 16/20px path so Explorer, the taskbar
-  // and notification attribution never have to downscale the 24px geometry.
-  const scale = size <= 20 ? 0.90 : 0.86;
-  const pad = (source.width * (1 - scale) / 2).toFixed(3);
+function glyphSvg(size, color) {
+  const source = glyphSource(size);
+  // The Fluent Phone Desktop path itself has generous optical insets. Scale it slightly past the
+  // source viewBox centre so the visible mark carries the same weight as neighbouring Explorer and
+  // notification-area glyphs. The 16/20/24 source paths still leave enough native margin at 1.10x.
+  const scale = 1.10;
+  const padX = (source.width * (1 - scale) / 2).toFixed(3);
+  const padY = (source.height * (1 - scale) / 2).toFixed(3);
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${source.width}" height="${source.height}" viewBox="0 0 ${source.width} ${source.height}">
-  <g transform="translate(${pad} ${pad}) scale(${scale})"><path d="${source.d}" fill="${brandGlyph}"/></g>
-</svg>`;
-}
-
-function traySvg(size, color) {
-  const source = traySource(size);
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${source.width}" height="${source.height}" viewBox="0 0 ${source.width} ${source.height}">
-  <path d="${source.d}" fill="${color}"/>
+  <g transform="translate(${padX} ${padY}) scale(${scale})"><path d="${source.d}" fill="${color}"/></g>
 </svg>`;
 }
 
@@ -79,16 +66,33 @@ function writeIco(file, frames) {
 }
 
 fs.mkdirSync(assets, { recursive: true });
-const brandFrames = brandSizes.map((size) => ({ size, png: render(brandSvg(size), size) }));
-writeIco(path.join(assets, 'conduit-icon.ico'), brandFrames);
-fs.writeFileSync(path.join(assets, 'conduit-icon.png'), render(brandSvg(512), 512));
 
-const trayLight = traySizes.map((size) => ({ size, png: render(traySvg(size, darkGlyph), size) }));
-const trayDark = traySizes.map((size) => ({ size, png: render(traySvg(size, lightGlyph), size) }));
+function writeThemeIcon(stem, color) {
+  const frames = brandSizes.map((size) => ({ size, png: render(glyphSvg(size, color), size) }));
+  writeIco(path.join(assets, `${stem}.ico`), frames);
+  fs.writeFileSync(path.join(assets, `${stem}.png`), render(glyphSvg(512, color), 512));
+}
+
+writeThemeIcon('conduit-icon-light', darkGlyph);
+writeThemeIcon('conduit-icon-dark', lightGlyph);
+
+// Compatibility aliases stay monochrome. New shell integrations select a theme-specific asset.
+writeThemeIcon('conduit-icon', darkGlyph);
+
+const trayLight = traySizes.map((size) => ({ size, png: render(glyphSvg(size, darkGlyph), size) }));
+const trayDark = traySizes.map((size) => ({ size, png: render(glyphSvg(size, lightGlyph), size) }));
 writeIco(path.join(assets, 'conduit-tray-light.ico'), trayLight);
 writeIco(path.join(assets, 'conduit-tray-dark.ico'), trayDark);
 
-console.log(path.join(assets, 'conduit-icon.png'));
-console.log(path.join(assets, 'conduit-icon.ico'));
-console.log(path.join(assets, 'conduit-tray-light.ico'));
-console.log(path.join(assets, 'conduit-tray-dark.ico'));
+for (const name of [
+  'conduit-icon.png',
+  'conduit-icon.ico',
+  'conduit-icon-light.png',
+  'conduit-icon-light.ico',
+  'conduit-icon-dark.png',
+  'conduit-icon-dark.ico',
+  'conduit-tray-light.ico',
+  'conduit-tray-dark.ico',
+]) {
+  console.log(path.join(assets, name));
+}

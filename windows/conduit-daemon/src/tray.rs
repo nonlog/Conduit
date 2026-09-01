@@ -309,6 +309,14 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_SETTINGCHANGE | WM_THEMECHANGED => {
             refresh_tray_icon(hwnd);
+            if let Err(e) = crate::explorer::refresh_icon() {
+                tracing::warn!(error = %e, "could not refresh Explorer icon for theme change");
+            }
+            if let Some(dir) = CONFIG_DIR.get() {
+                if let Err(e) = crate::toast::refresh_app_identity(dir) {
+                    tracing::warn!(error = %e, "could not refresh notification identity icon for theme change");
+                }
+            }
             0
         }
         WM_DESTROY => {

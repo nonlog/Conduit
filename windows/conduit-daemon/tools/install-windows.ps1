@@ -37,7 +37,7 @@ foreach ($name in $required) {
 }
 
 $assetDir = Join-Path $PSScriptRoot '..\assets'
-foreach ($name in @('conduit-icon.ico', 'conduit-icon.png')) {
+foreach ($name in @('conduit-icon.ico', 'conduit-icon.png', 'conduit-icon-light.ico', 'conduit-icon-light.png', 'conduit-icon-dark.ico', 'conduit-icon-dark.png')) {
     if (-not (Test-Path (Join-Path $assetDir $name))) {
         throw "Missing icon asset $name"
     }
@@ -62,7 +62,7 @@ if (-not [string]::Equals((Resolve-Path $controlSource).Path, (Join-Path $instal
     Copy-Item -Force $controlSource (Join-Path $installDir 'Conduit.exe')
 }
 Remove-Item (Join-Path $installDir 'conduit-control.exe') -Force -ErrorAction SilentlyContinue
-foreach ($name in @('conduit-icon.ico', 'conduit-icon.png')) {
+foreach ($name in @('conduit-icon.ico', 'conduit-icon.png', 'conduit-icon-light.ico', 'conduit-icon-light.png', 'conduit-icon-dark.ico', 'conduit-icon-dark.png')) {
     $from = (Resolve-Path (Join-Path $assetDir $name)).Path
     $to = Join-Path $installDir $name
     if (-not [string]::Equals($from, $to, [StringComparison]::OrdinalIgnoreCase)) {
@@ -162,8 +162,10 @@ if (-not ('ConduitShortcut' -as [type])) {
 
 $controlExe = Join-Path $installDir 'Conduit.exe'
 $daemonExe = Join-Path $installDir 'conduit-daemon.exe'
-$iconIco = Join-Path $installDir 'conduit-icon.ico'
-$iconPng = Join-Path $installDir 'conduit-icon.png'
+$systemUsesLightTheme = (Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name SystemUsesLightTheme -ErrorAction SilentlyContinue).SystemUsesLightTheme
+$lightShell = $null -eq $systemUsesLightTheme -or $systemUsesLightTheme -ne 0
+$iconIco = Join-Path $installDir $(if ($lightShell) { 'conduit-icon-light.ico' } else { 'conduit-icon-dark.ico' })
+$iconPng = Join-Path $installDir $(if ($lightShell) { 'conduit-icon-light.png' } else { 'conduit-icon-dark.png' })
 [ConduitShortcut]::Write($shortcut, $controlExe, $installDir, $iconIco, 'Conduit.Desktop')
 
 New-Item -Force -Path $aumidKey | Out-Null
