@@ -165,12 +165,12 @@ $daemonExe = Join-Path $installDir 'conduit-daemon.exe'
 $systemUsesLightTheme = (Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name SystemUsesLightTheme -ErrorAction SilentlyContinue).SystemUsesLightTheme
 $lightShell = $null -eq $systemUsesLightTheme -or $systemUsesLightTheme -ne 0
 $iconIco = Join-Path $installDir $(if ($lightShell) { 'conduit-icon-light.ico' } else { 'conduit-icon-dark.ico' })
-$iconPng = Join-Path $installDir $(if ($lightShell) { 'conduit-icon-light.png' } else { 'conduit-icon-dark.png' })
+$iconAumid = $iconIco
 [ConduitShortcut]::Write($shortcut, $controlExe, $installDir, $iconIco, 'Conduit.Desktop')
 
 New-Item -Force -Path $aumidKey | Out-Null
 Set-ItemProperty -Path $aumidKey -Name DisplayName -Value 'Conduit'
-Set-ItemProperty -Path $aumidKey -Name IconUri -Value $iconPng
+Set-ItemProperty -Path $aumidKey -Name IconUri -Value $iconAumid
 Set-ItemProperty -Path $aumidKey -Name IconBackgroundColor -Value '00000000'
 Set-ItemProperty -Path $aumidKey -Name ShowInActionCenter -Type DWord -Value 1
 

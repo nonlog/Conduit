@@ -43,8 +43,8 @@ use crate::wire::pb;
 /// Must match the registry key below. Reverse-DNS-ish because that is the convention
 /// Windows uses for AUMIDs and it keeps us out of anyone else's namespace.
 const AUMID: &str = "Conduit.Desktop";
-const APP_IDENTITY_ICON_LIGHT: &[u8] = include_bytes!("../assets/conduit-icon-light.png");
-const APP_IDENTITY_ICON_DARK: &[u8] = include_bytes!("../assets/conduit-icon-dark.png");
+const APP_IDENTITY_ICON_LIGHT: &[u8] = include_bytes!("../assets/conduit-icon-light.ico");
+const APP_IDENTITY_ICON_DARK: &[u8] = include_bytes!("../assets/conduit-icon-dark.ico");
 
 /// Every toast shares one group, so a single call clears the lot on shutdown and the
 /// phone's tag alone identifies a notification within it.
@@ -317,12 +317,13 @@ fn ensure_app_identity_icon(root: &Path) -> Result<PathBuf> {
         APP_IDENTITY_ICON_DARK
     };
     // A theme-specific filename makes the AUMID IconUri itself change, which is more reliable than
-    // asking Action Center to notice different bytes behind the same cached URI. The AUMID remains
-    // one stable Conduit.Desktop identity.
+    // asking Action Center to notice different bytes behind the same cached URI. Use the multi-size
+    // ICO rather than a single large PNG so the notification shell can select an exact target frame.
+    // The AUMID remains one stable Conduit.Desktop identity.
     let path = root.join(if light {
-        "conduit-icon-light.png"
+        "conduit-icon-light.ico"
     } else {
-        "conduit-icon-dark.png"
+        "conduit-icon-dark.ico"
     });
     let matches = std::fs::read(&path)
         .map(|current| current.as_slice() == bytes)
