@@ -63,15 +63,49 @@ if ($running.Count -gt 0) {
     }
 }
 New-Item -ItemType Directory -Force -Path $installDir, $programs | Out-Null
-foreach ($name in $required) {
-    $from = (Resolve-Path (Join-Path $source $name)).Path
-    $to = Join-Path $installDir $name
-    if (-not [string]::Equals($from, $to, [StringComparison]::OrdinalIgnoreCase)) {
-        Copy-Item -Force $from $to
+
+# A packaged Conduit build contains the complete self-contained WinUI publish, not just the three
+# executable entry points. Updating only Conduit.exe leaves the old Conduit.dll/PRI/resources in
+# place, which means XAML and code-behind changes never reach the running UI. When the source is a
+# published package, copy the whole runtime payload while deliberately preserving the install's
+# data junction and keeping installer tooling out of the runtime root.
+$hasPublishedUi = Test-Path -LiteralPath (Join-Path $source 'Conduit.dll') -PathType Leaf
+if ($hasPublishedUi) {
+    foreach ($entry in Get-ChildItem -LiteralPath $source -Force) {
+        if ($entry.Name -in @('tools', 'data')) { continue }
+        $to = Join-Path $installDir $entry.Name
+        if ([string]::Equals($entry.FullName, $to, [StringComparison]::OrdinalIgnoreCase)) { continue }
+        if ($entry.PSIsContainer) {
+            Copy-Item -LiteralPath $entry.FullName -Destination $installDir -Recurse -Force
+        } else {
+            Copy-Item -LiteralPath $entry.FullName -Destination $to -Force
+        }
+    }
+} else {
+    # Developer/repo invocation still supports a Rust-only target/release directory.
+    foreach ($name in $required) {
+        $from = (Resolve-Path (Join-Path $source $name)).Path
+        $to = Join-Path $installDir $name
+        if (-not [string]::Equals($from, $to, [StringComparison]::OrdinalIgnoreCase)) {
+            Copy-Item -Force $from $to
+        }
+    }
+    if (-not [string]::Equals((Resolve-Path $controlSource).Path, (Join-Path $installDir 'Conduit.exe'), [StringComparison]::OrdinalIgnoreCase)) {
+        Copy-Item -Force $controlSource (Join-Path $installDir 'Conduit.exe')
     }
 }
-if (-not [string]::Equals((Resolve-Path $controlSource).Path, (Join-Path $installDir 'Conduit.exe'), [StringComparison]::OrdinalIgnoreCase)) {
-    Copy-Item -Force $controlSource (Join-Path $installDir 'Conduit.exe')
+if ($hasPublishedUi) {
+    foreach ($name in @('Conduit.dll', 'Conduit.pri')) {
+        $from = Join-Path $source $name
+        $to = Join-Path $installDir $name
+        if (-not (Test-Path -LiteralPath $to -PathType Leaf)) {
+            throw "Published UI payload did not install $name"
+        }
+        if ((Get-FileHash -LiteralPath $from -Algorithm SHA256).Hash -ne
+            (Get-FileHash -LiteralPath $to -Algorithm SHA256).Hash) {
+            throw "Published UI payload hash mismatch after installing $name"
+        }
+    }
 }
 Remove-Item (Join-Path $installDir 'conduit-control.exe') -Force -ErrorAction SilentlyContinue
 foreach ($name in @($requiredIconAssets + $optionalIconAssets)) {
