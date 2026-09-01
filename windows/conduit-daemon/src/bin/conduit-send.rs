@@ -13,13 +13,27 @@ const TRANSFER_TAG: &str = "file-send";
 const TRANSFER_GROUP: &str = "transfer";
 
 fn main() -> ExitCode {
-    match run() {
+    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
+    use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+
+    unsafe {
+        let _ = SetCurrentProcessExplicitAppUserModelID(&windows::core::HSTRING::from(AUMID));
+    }
+    // Windows Runtime activation factories are cached by the windows crate. Keep one COM apartment
+    // alive for the entire short-lived helper rather than tearing it down after every progress
+    // update; repeated CoInitialize/CoUninitialize cycles can invalidate cached WinRT state.
+    let com_initialized = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+    let result = match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
             show_failure(&message);
             ExitCode::FAILURE
         }
+    };
+    if com_initialized {
+        unsafe { CoUninitialize() };
     }
+    result
 }
 
 fn run() -> Result<(), String> {
@@ -220,28 +234,16 @@ fn show_failure_toast(message: &str) -> windows::core::Result<()> {
 fn show_tagged_toast(markup: &str, suppress_popup: bool) -> windows::core::Result<()> {
     use windows::core::HSTRING;
     use windows::Data::Xml::Dom::XmlDocument;
-    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
-    use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
     use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
 
-    unsafe {
-        let _ = SetCurrentProcessExplicitAppUserModelID(&HSTRING::from(AUMID));
-    }
-    let initialized = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
-    let result = (|| {
-        let xml = XmlDocument::new()?;
-        xml.LoadXml(&HSTRING::from(markup))?;
-        let toast = ToastNotification::CreateToastNotification(&xml)?;
-        toast.SetTag(&HSTRING::from(TRANSFER_TAG))?;
-        toast.SetGroup(&HSTRING::from(TRANSFER_GROUP))?;
-        toast.SetSuppressPopup(suppress_popup)?;
-        let notifier = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(AUMID))?;
-        notifier.Show(&toast)
-    })();
-    if initialized {
-        unsafe { CoUninitialize() };
-    }
-    result
+    let xml = XmlDocument::new()?;
+    xml.LoadXml(&HSTRING::from(markup))?;
+    let toast = ToastNotification::CreateToastNotification(&xml)?;
+    toast.SetTag(&HSTRING::from(TRANSFER_TAG))?;
+    toast.SetGroup(&HSTRING::from(TRANSFER_GROUP))?;
+    toast.SetSuppressPopup(suppress_popup)?;
+    let notifier = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(AUMID))?;
+    notifier.Show(&toast)
 }
 
 fn escape_xml(value: &str) -> String {
