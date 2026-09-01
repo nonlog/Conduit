@@ -77,9 +77,32 @@ jobs:
           rustc --version
           cargo --version
 
-      - name: Install protoc
+      - name: Install protoc 36.0
         shell: pwsh
-        run: choco install protoc -y --no-progress
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '36.0'
+          $expectedSha256 = '510fb2369a4720adb457783768c5e1481a0e1137d9e7694478dfe9b8fe445dc1'
+          $archive = Join-Path $env:RUNNER_TEMP "protoc-$version-win64.zip"
+          $root = Join-Path $env:RUNNER_TEMP "protoc-$version"
+          Invoke-WebRequest -Uri "https://github.com/protocolbuffers/protobuf/releases/download/v$version/protoc-$version-win64.zip" -OutFile $archive
+          $actualSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          if ($actualSha256 -ne $expectedSha256) {
+            throw "protoc archive checksum mismatch: $actualSha256"
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $root -Force
+          $bin = Join-Path $root 'bin'
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $env:PATH = "$bin;$env:PATH"
+          protoc --version
+
+      - name: Render high-DPI Windows icons
+        shell: pwsh
+        run: |
+          npm ci --prefix windows/conduit-daemon/tools/icon-render
+          node windows/conduit-daemon/tools/icon-render/render-icons.mjs
+          Copy-Item windows/conduit-daemon/assets/conduit-icon.ico windows/conduit-ui/Assets/conduit-icon.ico -Force
+          Copy-Item windows/conduit-daemon/assets/conduit-icon.png windows/conduit-ui/Assets/conduit-icon.png -Force
 
       - name: Check Rust formatting
         shell: pwsh
@@ -96,7 +119,7 @@ jobs:
       - name: Restore Uno / WinUI desktop
         working-directory: windows/conduit-ui
         shell: pwsh
-        run: dotnet restore Conduit.csproj -r win-x64 -p:Configuration=Release
+        run: dotnet restore Conduit.csproj -r win-x64 -p:Configuration=Release -p:PublishReadyToRun=true
 
       - name: Publish Uno / WinUI desktop
         working-directory: windows/conduit-ui
@@ -109,7 +132,7 @@ jobs:
           -r win-x64
           --self-contained true
           --no-restore
-          -p:PublishReadyToRun=false
+          -p:PublishReadyToRun=true
           -o ../../artifacts/windows-ui
 
       - name: Package Scoop-compatible Windows build

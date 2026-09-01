@@ -9,30 +9,51 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage
 private const val PACKAGE = "com.conduit.sync"
 
 /**
- * Lets this app read the clipboard while it is in the background.
+ * Lets Conduit read the clipboard while it is in the background and exposes whether that root path
+ * is actually active to Conduit's own process.
  *
- * On stock Android 10 and later `ClipboardService.clipboardAccessAllowed` refuses any
- * caller that is neither focused nor the current input method — and it refuses *before*
- * consulting app-ops, so no amount of `appops set` helps. The change listener is gated on
- * the same method, so without this the app is not merely unable to read a clip: it is
- * never told one happened. AOSP's own escape hatch,
- * `android.permission.READ_CLIPBOARD_IN_BACKGROUND`, is `signature|privileged` and would
- * mean shipping the app into `/system/priv-app`.
+ * On stock Android 10 and later `ClipboardService.clipboardAccessAllowed` refuses any caller that
+ * is neither focused nor the current input method. The System Framework hook keeps the original
+ * narrow behaviour: only Conduit's package is allowed and every other app still follows Android's
+ * normal clipboard policy.
  *
- * Two deliberate narrowings, because this hook runs inside system_server:
- *  - it only forces the result when this package's own name is among the arguments, so
- *    every other app on the device stays subject to the normal check;
- *  - it matches on the *name* `clipboardAccessAllowed`, never a signature. That method
- *    gained a `userId` in 11, a `shouldNoteOp` in 12 and an `attributionTag` plus a
- *    `deviceId` in 13, so pinning a parameter list would break on the next upgrade.
+ * The Conduit-app scope does not alter clipboard APIs. It only hooks the inert
+ * [ClipboardAccess.isLsposedActive] marker to return true. That gives Settings and the
+ * AccessibilityService a reliable way to prefer the low-overhead LSPosed path and leave the
+ * accessibility compatibility path dormant on rooted devices.
  *
- * Scope in LSPosed: **System Framework** only.
+ * Scope in LSPosed: **System Framework + Conduit**.
  */
 class ClipboardHook : IXposedHookLoadPackage {
 
     override fun handleLoadPackage(param: XC_LoadPackage.LoadPackageParam) {
-        if (param.packageName != "android") return
+        when (param.packageName) {
+            PACKAGE -> exposeModuleState(param)
+            "android" -> hookClipboardService(param)
+        }
+    }
 
+    private fun exposeModuleState(param: XC_LoadPackage.LoadPackageParam) {
+        val marker = runCatching {
+            param.classLoader
+                .loadClass("com.conduit.sync.ClipboardAccess")
+                .getDeclaredMethod("isLsposedActive")
+        }.getOrElse {
+            XposedBridge.log("conduit: could not expose LSPosed state to app process: $it")
+            return
+        }
+        XposedBridge.hookMethod(
+            marker,
+            object : XC_MethodHook() {
+                override fun beforeHookedMethod(call: MethodHookParam) {
+                    call.result = true
+                }
+            },
+        )
+        XposedBridge.log("conduit: LSPosed app-process marker active")
+    }
+
+    private fun hookClipboardService(param: XC_LoadPackage.LoadPackageParam) {
         val service = runCatching {
             param.classLoader.loadClass("com.android.server.clipboard.ClipboardService")
         }.getOrElse {
@@ -43,7 +64,6 @@ class ClipboardHook : IXposedHookLoadPackage {
         val allow = object : XC_MethodHook() {
             override fun beforeHookedMethod(call: MethodHookParam) {
                 if (call.args.any { it == PACKAGE }) {
-                    // Short-circuits the method: the real check never runs for us.
                     call.result = true
                 }
             }
