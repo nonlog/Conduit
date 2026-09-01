@@ -5,16 +5,17 @@
 
 use anyhow::{bail, Context, Result};
 use std::os::windows::ffi::OsStrExt;
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::ptr::{null, null_mut};
 use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 use std::sync::{mpsc, OnceLock};
 use std::thread;
 use std::time::Duration;
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::Threading::{
+    CreateProcessW, PROCESS_INFORMATION, STARTF_FORCEOFFFEEDBACK, STARTUPINFOW,
+};
 use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
 use windows_sys::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
@@ -26,7 +27,6 @@ const CALLBACK_MESSAGE: u32 = WM_APP + 1;
 const TRAY_ID: u32 = 1;
 const MENU_OPEN: usize = 1001;
 const MENU_EXIT: usize = 1002;
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const TRAY_DARK_BYTES: &[u8] = include_bytes!("../assets/conduit-tray-dark.ico");
 const TRAY_LIGHT_BYTES: &[u8] = include_bytes!("../assets/conduit-tray-light.ico");
 
@@ -374,6 +374,45 @@ unsafe fn open_control() {
         return;
     }
     if let Some(path) = CONTROL_PATH.get() {
-        let _ = Command::new(path).creation_flags(CREATE_NO_WINDOW).spawn();
+        if let Err(e) = launch_control(path) {
+            tracing::warn!(error = %e, "could not launch Conduit UI from tray");
+        }
     }
+}
+
+unsafe fn launch_control(path: &Path) -> Result<()> {
+    let application = wide(path.as_os_str());
+    let mut startup = STARTUPINFOW::default();
+    startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+    // A GUI process gets the Windows launch-feedback (busy) cursor by default. Conduit reaches its
+    // first window in well under a second, so that feedback makes a fast launch feel much slower
+    // than it is. Force the normal pointer while retaining cold-start-on-demand memory behaviour.
+    startup.dwFlags = STARTF_FORCEOFFFEEDBACK;
+    let mut process = PROCESS_INFORMATION::default();
+    if CreateProcessW(
+        application.as_ptr(),
+        null_mut(),
+        null(),
+        null(),
+        0,
+        0,
+        null(),
+        null(),
+        &startup,
+        &mut process,
+    ) == 0
+    {
+        bail!(
+            "CreateProcessW({}) failed: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        );
+    }
+    if !process.hThread.is_null() {
+        CloseHandle(process.hThread);
+    }
+    if !process.hProcess.is_null() {
+        CloseHandle(process.hProcess);
+    }
+    Ok(())
 }

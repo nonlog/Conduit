@@ -7,10 +7,13 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const assets = path.resolve(here, '..', '..', 'assets');
 const fluent = path.join(assets, 'fluent');
 
-const brandSizes = [16, 20, 24, 28, 32, 34, 40, 43, 44, 48, 51, 55, 60, 64, 66, 68, 77, 88, 96, 128, 256];
-const traySizes = [16, 20, 24, 28, 32, 40, 48, 64];
-const darkGlyph = '#202020';
-const lightGlyph = '#F6F6F6';
+// Windows 11 looks for exact target-size frames before falling back to resampling a nearby one.
+// Keep this list aligned with the documented AppList/taskbar/notification-area target sizes so
+// 125%, 150%, 175%, 200%, and 250% scaling never turns a neighbouring bitmap into a soft icon.
+const brandSizes = [16, 20, 24, 30, 32, 36, 40, 48, 60, 64, 72, 80, 96, 256];
+const traySizes = [16, 20, 24, 32, 40, 48, 64];
+const darkGlyph = '#000000';
+const lightGlyph = '#FFFFFF';
 
 function parseSource(file) {
   const svg = fs.readFileSync(file, 'utf8');
@@ -21,20 +24,21 @@ function parseSource(file) {
 }
 
 function glyphSource(size) {
-  const sourceSize = size <= 18 ? 16 : size <= 22 ? 20 : 24;
+  // Prefer a Fluent source whose native canvas scales by an integer. That preserves its hand-tuned
+  // 1 px / half-pixel geometry in the small ICO frames instead of introducing a second fractional
+  // transform before Windows draws it. The remaining target sizes use the richest 24 px source.
+  const sourceSize = size >= 128 ? 24 : size % 24 === 0 ? 24 : size % 20 === 0 ? 20 : size % 16 === 0 ? 16 : 24;
   return parseSource(path.join(fluent, `ic_fluent_phone_desktop_${sourceSize}_regular.svg`));
 }
 
 function glyphSvg(size, color) {
   const source = glyphSource(size);
-  // The Fluent Phone Desktop path itself has generous optical insets. Scale it slightly past the
-  // source viewBox centre so the visible mark carries the same weight as neighbouring Explorer and
-  // notification-area glyphs. The 16/20/24 source paths still leave enough native margin at 1.10x.
-  const scale = 1.10;
-  const padX = (source.width * (1 - scale) / 2).toFixed(3);
-  const padY = (source.height * (1 - scale) / 2).toFixed(3);
+  // Do not enlarge this path with a fractional transform. In particular, the former 1.10x
+  // transform moved the native 20 px tray strokes off the pixel grid at 125% DPI and made the icon
+  // visibly fuzzy. Resvg now rasterises the original Fluent geometry directly at the requested
+  // Windows target size.
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${source.width}" height="${source.height}" viewBox="0 0 ${source.width} ${source.height}">
-  <g transform="translate(${padX} ${padY}) scale(${scale})"><path d="${source.d}" fill="${color}"/></g>
+  <path d="${source.d}" fill="${color}"/>
 </svg>`;
 }
 
