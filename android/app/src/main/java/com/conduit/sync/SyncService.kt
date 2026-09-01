@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.app.WallpaperManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
@@ -107,6 +108,7 @@ class SyncService : Service() {
     private lateinit var screenshots: Screenshots
     private lateinit var clipboard: ClipboardManager
     private lateinit var connectivity: ConnectivityManager
+    private lateinit var wallpaperManager: WallpaperManager
     private lateinit var relayQuality: RelayQualityStore
     private lateinit var localDeviceName: String
     private var relayEndpoints: List<RelayEndpoint> = emptyList()
@@ -164,6 +166,21 @@ class SyncService : Service() {
         redial()
     }
 
+    /** Wallpaper updates are pushed by Android itself; this one delayed refresh is not polling. */
+    private val wallpaperRefresh = Runnable {
+        if (destroyed || LinkStatus.state != LinkState.Connected) return@Runnable
+        link.sendWallpaperPreview(ByteArray(0)) { Wallpapers.preview(this, force = true) }
+    }
+    private val wallpaperListener = WallpaperManager.OnColorsChangedListener { _, which ->
+        if ((which and WallpaperManager.FLAG_SYSTEM) != 0) {
+            Wallpapers.invalidate()
+            main.removeCallbacks(wallpaperRefresh)
+            // OEM wallpaper services often update the colors callback a few milliseconds before the
+            // rendered wallpaper file. Coalesce that one edge instead of polling for file stability.
+            main.postDelayed(wallpaperRefresh, 400L)
+        }
+    }
+
     /**
      * The *default* network only. A Wi-Fi to cellular handover is then one
      * [onAvailable] for the network that replaced it, rather than a pair of events about
@@ -200,6 +217,7 @@ class SyncService : Service() {
 
         clipboard = getSystemService(ClipboardManager::class.java)
         connectivity = getSystemService(ConnectivityManager::class.java)
+        wallpaperManager = getSystemService(WallpaperManager::class.java)
         knownPeer = Identity.peer(filesDir)
         knownPeerName = Identity.peerName(filesDir)
         LinkStatus.peerName = knownPeerName
@@ -359,6 +377,10 @@ class SyncService : Service() {
 
                 override fun onPeerName(name: String) = rememberPeerName(name)
 
+                override fun onWallpaperHash(hash: ByteArray) {
+                    link.sendWallpaperPreview(hash) { Wallpapers.preview(this@SyncService) }
+                }
+
                 override fun onSessionLost() {
                     // Deliberately does not dial: [onState] already scheduled a retry for
                     // this same teardown, and a second dial here would race it. The backoff
@@ -377,6 +399,7 @@ class SyncService : Service() {
         photos = Photos(this, link).apply { start() }
         screenshots = Screenshots(this, link).apply { start() }
         activeLink = link
+        wallpaperManager.addOnColorsChangedListener(wallpaperListener, main)
 
         clipboard.addPrimaryClipChangedListener(clipListener)
         // The default network, not a transport-filtered set: see [network].
@@ -431,6 +454,8 @@ class SyncService : Service() {
         // retry cannot fire against a [Link] that close() is about to spend.
         destroyed = true
         main.removeCallbacks(retry)
+        main.removeCallbacks(wallpaperRefresh)
+        if (::wallpaperManager.isInitialized) wallpaperManager.removeOnColorsChangedListener(wallpaperListener)
         // Cleared next, so the notification relay stops handing frames to a link that
         // is being torn down.
         activeLink = null

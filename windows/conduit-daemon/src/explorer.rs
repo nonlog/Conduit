@@ -79,7 +79,14 @@ fn themed_icon(exe: &std::path::Path) -> std::path::PathBuf {
     let light = windows_registry::CURRENT_USER
         .open(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
         .ok()
-        .and_then(|key| key.get_u32("SystemUsesLightTheme").ok())
+        // Explorer context menus follow the app theme, not the taskbar/system theme. These two
+        // settings may intentionally differ, so using SystemUsesLightTheme makes a black glyph
+        // disappear inside a dark Explorer menu.
+        .and_then(|key| {
+            key.get_u32("AppsUseLightTheme")
+                .ok()
+                .or_else(|| key.get_u32("SystemUsesLightTheme").ok())
+        })
         .unwrap_or(1)
         != 0;
     // Explorer's modern context menu has a smaller visual slot than the taskbar/notification

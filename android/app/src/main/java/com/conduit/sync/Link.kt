@@ -13,6 +13,7 @@ import com.conduit.sync.proto.Kind
 import com.conduit.sync.proto.NotifAction
 import com.conduit.sync.proto.PairRequest
 import com.conduit.sync.proto.SharedUrl
+import com.conduit.sync.proto.WallpaperPreview
 import java.net.InetSocketAddress
 import java.net.InetAddress
 import java.net.Socket
@@ -156,6 +157,9 @@ class Link(
          */
         fun onPeerName(name: String)
 
+        /** The desktop's cached phone-wallpaper hash. Empty means it has no preview yet. */
+        fun onWallpaperHash(hash: ByteArray) {}
+
         /**
          * A session that was actually up has gone. A dial that never completed its
          * handshake deliberately does not call this: re-dialling on a refusal is how a
@@ -245,6 +249,33 @@ class Link(
                 teardown()
             }
         }
+
+    /**
+     * Sends the tiny phone-wallpaper preview only when the desktop says its cached copy differs.
+     * Loading and root/platform access stay on the existing sender thread, never the UI thread.
+     */
+    fun sendWallpaperPreview(desktopHash: ByteArray, load: () -> Wallpapers.Preview?) = sender.execute {
+        val live = session ?: return@execute
+        val preview = runCatching { load() }
+            .onFailure { Log.w(TAG, "wallpaper preview could not be read", it) }
+            .getOrNull() ?: return@execute
+        if (desktopHash.contentEquals(preview.sha256)) {
+            Log.d(TAG, "desktop wallpaper preview is already current")
+            return@execute
+        }
+        val message = WallpaperPreview.newBuilder()
+            .setJpeg(com.google.protobuf.ByteString.copyFrom(preview.jpeg))
+            .setSha256(com.google.protobuf.ByteString.copyFrom(preview.sha256))
+            .build()
+        try {
+            live.send(Kind.WALLPAPER_PREVIEW, message.toByteArray())
+            sendPendingPong(live)
+            Log.i(TAG, "wallpaper preview sent: ${preview.jpeg.size} B")
+        } catch (e: Exception) {
+            Log.w(TAG, "wallpaper preview write failed", e)
+            teardown()
+        }
+    }
 
     /**
      * Streams one file to the desktop on the sender thread.
@@ -480,10 +511,15 @@ class Link(
             // Capped, because it is peer-supplied text on its way to a launcher shortcut
             // label and a notification. A desktop is not hostile, but a relay session is
             // reachable by anything that guesses a rendezvous.
-            Kind.PAIR_REQUEST -> PairRequest.parseFrom(envelope.payload).deviceName
-                .take(PEER_NAME_MAX)
-                .takeIf { it.isNotBlank() }
-                ?.let { events.onPeerName(it) }
+            Kind.PAIR_REQUEST -> {
+                val hello = PairRequest.parseFrom(envelope.payload)
+                hello.deviceName
+                    .take(PEER_NAME_MAX)
+                    .takeIf { it.isNotBlank() }
+                    ?.let { events.onPeerName(it) }
+                events.onWallpaperHash(hello.wallpaperHash.toByteArray())
+            }
+            Kind.WALLPAPER_PREVIEW -> Log.w(TAG, "unexpected wallpaper preview from desktop, dropped")
             Kind.CLIP_TEXT -> events.onText(ClipText.parseFrom(envelope.payload).text)
             Kind.NOTIF_ACTION -> events.onNotificationAction(NotifAction.parseFrom(envelope.payload))
             // Reassembly state lives on this thread and nowhere else, so it needs no

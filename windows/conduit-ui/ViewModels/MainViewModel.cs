@@ -1,5 +1,7 @@
 using Conduit.Models;
 using Microsoft.UI.Dispatching;
+using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.Win32;
 
 namespace Conduit.ViewModels;
@@ -16,6 +18,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private string _connectionState = "Disconnected";
     private string _connectionRoute = "—";
     private string _connectionGlyph = "\uE711";
+    private ImageSource? _wallpaperSource;
     private bool _isLinked;
     private bool _relayUs = true;
     private bool _relayWa = true;
@@ -38,6 +41,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public string ConnectionState { get => _connectionState; private set => SetProperty(ref _connectionState, value); }
     public string ConnectionRoute { get => _connectionRoute; private set => SetProperty(ref _connectionRoute, value); }
     public string ConnectionGlyph { get => _connectionGlyph; private set => SetProperty(ref _connectionGlyph, value); }
+    public ImageSource? WallpaperSource { get => _wallpaperSource; private set => SetProperty(ref _wallpaperSource, value); }
     public bool IsLinked { get => _isLinked; private set => SetProperty(ref _isLinked, value); }
     public bool RelayUs { get => _relayUs; set => SetRelay(ref _relayUs, value); }
     public bool RelayWa { get => _relayWa; set => SetRelay(ref _relayWa, value); }
@@ -92,6 +96,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             Directory.CreateDirectory(_dataDir);
             LoadStatusAndConfig();
+            LoadWallpaper();
             LoadNotifications();
             LoadLinks();
         }
@@ -131,6 +136,26 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             ?.GetValue("Conduit") is not null;
         ExplorerIntegration = Registry.CurrentUser
             .OpenSubKey(@"Software\Classes\*\shell\Conduit.SendToPhone") is not null;
+    }
+
+    private void LoadWallpaper()
+    {
+        var file = Path.Combine(_dataDir, "wallpaper.jpg");
+        if (!File.Exists(file))
+        {
+            WallpaperSource = null;
+            return;
+        }
+        try
+        {
+            // A fresh BitmapImage instance on every real file-system change keeps the UI cache
+            // coherent while the daemon continues to use one bounded file on disk.
+            WallpaperSource = new BitmapImage(new Uri(file));
+        }
+        catch
+        {
+            WallpaperSource = null;
+        }
     }
 
     private void LoadNotifications()
@@ -237,12 +262,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (!name.Equals("status.txt", StringComparison.OrdinalIgnoreCase) &&
             !name.Equals("config.txt", StringComparison.OrdinalIgnoreCase) &&
             !name.Equals("notifications.tsv", StringComparison.OrdinalIgnoreCase) &&
-            !name.Equals("shared-links.tsv", StringComparison.OrdinalIgnoreCase)) return;
+            !name.Equals("shared-links.tsv", StringComparison.OrdinalIgnoreCase) &&
+            !name.Equals("wallpaper.jpg", StringComparison.OrdinalIgnoreCase)) return;
 
         _dispatcher?.TryEnqueue(() =>
         {
             if (name.Equals("notifications.tsv", StringComparison.OrdinalIgnoreCase)) LoadNotifications();
             else if (name.Equals("shared-links.tsv", StringComparison.OrdinalIgnoreCase)) LoadLinks();
+            else if (name.Equals("wallpaper.jpg", StringComparison.OrdinalIgnoreCase)) LoadWallpaper();
             else LoadStatusAndConfig();
         });
     }

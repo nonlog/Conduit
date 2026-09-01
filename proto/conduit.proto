@@ -32,6 +32,7 @@ enum Kind {
   FILE_CHUNK         = 31;
   FILE_RESULT        = 32;
   SHARED_URL         = 40;
+  WALLPAPER_PREVIEW  = 41;
 }
 
 message Envelope {
@@ -53,6 +54,7 @@ message PairRequest {
   string device_name = 2;
   bytes  static_pub  = 3;  // empty over an established session: the handshake carried it
   string version     = 4;
+  bytes  wallpaper_hash = 5;  // SHA-256 of the cached desktop preview; empty means missing
 }
 
 message PairResponse {
@@ -141,6 +143,15 @@ message SharedUrl {
   string title         = 2;  // best-effort page title from the source app's share intent
   uint64 timestamp_ms  = 3;
   string source_device = 4;
+}
+
+// --- device appearance ---
+// A tiny phone-wallpaper thumbnail for the desktop device frame. It is deliberately a single
+// bounded JPEG frame rather than a general image transfer: the preview is UI chrome, not a file,
+// and keeping it below the Noise plaintext limit avoids a second long-lived reassembly path.
+message WallpaperPreview {
+  bytes jpeg   = 1;  // <= 56 KiB, generated at phone-frame resolution
+  bytes sha256 = 2;  // SHA-256(jpeg), used to skip unchanged reconnect traffic
 }
 
 // --- notifications ---

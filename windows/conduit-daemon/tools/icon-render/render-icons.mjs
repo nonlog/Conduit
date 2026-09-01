@@ -48,7 +48,10 @@ function glyphSvg(size, color) {
 
 function explorerGlyphSvg(color) {
   const source = parseSource(path.join(fluent, 'ic_fluent_phone_desktop_24_filled.svg'));
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${source.width}" height="${source.height}" viewBox="0 0 ${source.width} ${source.height}">
+  // Explorer's modern menu gives third-party classic verbs a smaller optical icon box than its
+  // built-ins. Tighten only this dedicated canvas around the Fluent path (~2..22) so Windows still
+  // receives exact-size raster frames, but the mark reads at the same weight as Edit/Open with.
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="21" height="21" viewBox="1.5 1.5 21 21">
   <path d="${source.d}" fill="${color}"/>
 </svg>`;
 }
