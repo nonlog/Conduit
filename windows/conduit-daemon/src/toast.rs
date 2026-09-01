@@ -980,7 +980,7 @@ fn register_aumid(identity_icon: &Path) -> Result<()> {
     // Unpackaged Win32 notifications get their Action Center identity from this AUMID
     // registry entry. Without IconUri, Windows falls back to the generic window glyph.
     key.set_string("IconUri", identity_icon.to_string_lossy().as_ref())?;
-    key.set_string("IconBackgroundColor", "FF2F6FE0")?;
+    key.set_string("IconBackgroundColor", "00000000")?;
     // On, so Conduit gets its own entry in Settings -> Notifications and the toasts can
     // be muted there like any other app's rather than only by killing the daemon.
     key.set_u32("ShowInActionCenter", 1)?;
