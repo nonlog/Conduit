@@ -103,14 +103,30 @@ impl Outbound {
         &self.offer.transfer_id
     }
 
+    pub fn total_bytes(&self) -> u64 {
+        self.offer.total_bytes
+    }
+
     /// Sends the offer and every chunk, returning the number of encrypted frames written.
-    pub async fn send(mut self, session: &mut Session, stream: &mut TcpStream) -> Result<u64> {
+    /// Progress is emitted only when the integer percentage changes, so a 512 MiB file still
+    /// produces at most 101 local UI updates rather than one IPC event per 32 KiB chunk.
+    pub async fn send<F>(
+        mut self,
+        session: &mut Session,
+        stream: &mut TcpStream,
+        mut progress: F,
+    ) -> Result<u64>
+    where
+        F: FnMut(u64, u64),
+    {
         session
             .send(stream, pb::Kind::FileOffer, &self.offer.encode_to_vec())
             .await?;
         let mut frames = 1u64;
         let mut sent = 0u64;
         let mut index = 0u64;
+        let mut last_percent = 0u64;
+        progress(0, self.offer.total_bytes);
         let mut buffer = vec![0u8; CHUNK as usize];
         while sent < self.offer.total_bytes {
             let want = (self.offer.total_bytes - sent).min(CHUNK as u64) as usize;
@@ -129,6 +145,11 @@ impl Outbound {
             sent += want as u64;
             index += 1;
             frames += 1;
+            let percent = sent.saturating_mul(100) / self.offer.total_bytes;
+            if percent > last_percent || sent == self.offer.total_bytes {
+                last_percent = percent;
+                progress(sent, self.offer.total_bytes);
+            }
         }
         info!(path = %self.path.display(), bytes = sent, chunks = index, "file sent");
         Ok(frames)

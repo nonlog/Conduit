@@ -12,9 +12,14 @@ class RelaySelectionTest {
 
     @Test
     fun relayCatalogParserIsStrictAndKeepsFallbackOptional() {
-        assertEquals(listOf("us", "tyo", "wa"), RelayCatalog.defaults.map(RelayEndpoint::id))
+        assertEquals(listOf("us", "wa", "tyo", "jp"), RelayCatalog.defaults.map(RelayEndpoint::id))
         assertEquals(
-            listOf("us.414222.xyz", "tyo.414222.xyz", "wa.414222.xyz"),
+            listOf(
+                "conduit-us.414222.xyz",
+                "conduit-wa.414222.xyz",
+                "conduit-tyo.414222.xyz",
+                "conduit-jp.414222.xyz",
+            ),
             RelayCatalog.defaults.map(RelayEndpoint::host),
         )
         assertEquals(
@@ -27,6 +32,24 @@ class RelaySelectionTest {
         )
         assertEquals(null, RelayCatalog.parse("bad|host|0"))
         assertEquals(null, RelayCatalog.parse("# comment"))
+    }
+
+    @Test
+    fun oldGeneratedFleetIsRecognizedForOneTimeMigration() {
+        assertTrue(
+            RelayCatalog.isLegacyDefault(
+                listOf(
+                    RelayEndpoint("wa", "wa.414222.xyz", 41113),
+                    RelayEndpoint("us", "us.414222.xyz", 41113),
+                    RelayEndpoint("tyo", "tyo.414222.xyz", 41113),
+                ),
+            ),
+        )
+        assertTrue(
+            !RelayCatalog.isLegacyDefault(
+                listOf(RelayEndpoint("wa", "custom.example", 41113)),
+            ),
+        )
     }
 
     @Test

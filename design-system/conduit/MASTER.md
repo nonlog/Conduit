@@ -76,3 +76,10 @@ Do not reintroduce:
 - section subtitles that merely explain the section title;
 - separate `Open` CTA buttons on otherwise clickable rows;
 - a Windows vertical stack of three large dashboard cards with repeated operational descriptions.
+
+### Managed connectivity settings (2026-09-01)
+
+- Do not expose production Relay inventory as a raw endpoint text field. Present named, selectable Conduit Relay points and keep endpoint syntax an implementation detail.
+- Relay proxy choice must be explicit: inherit the enabled Windows system proxy, use a manually entered SOCKS5 endpoint, or connect directly. Never imply a hard-coded localhost port is part of the product design.
+- File transfers started from Explorer must show immediate Windows feedback, real byte progress when available, and a terminal success/failure state. Android transfer notifications must remain visible long enough for fast transfers to be perceptible.
+- Windows app, notification-attribution, tray and Explorer glyphs should be transparent, high-DPI monochrome marks rather than bitmap-like coloured tiles. Theme-dependent notification-area glyphs must retain light/dark contrast.

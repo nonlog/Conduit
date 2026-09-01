@@ -169,7 +169,7 @@ $iconPng = Join-Path $installDir 'conduit-icon.png'
 New-Item -Force -Path $aumidKey | Out-Null
 Set-ItemProperty -Path $aumidKey -Name DisplayName -Value 'Conduit'
 Set-ItemProperty -Path $aumidKey -Name IconUri -Value $iconPng
-Set-ItemProperty -Path $aumidKey -Name IconBackgroundColor -Value 'FF2F6FE0'
+Set-ItemProperty -Path $aumidKey -Name IconBackgroundColor -Value '00000000'
 Set-ItemProperty -Path $aumidKey -Name ShowInActionCenter -Type DWord -Value 1
 
 if ($hadAutostart) {

@@ -17,8 +17,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private string _connectionRoute = "—";
     private string _connectionGlyph = "\uE711";
     private bool _isLinked;
-    private string _relayEndpoints = string.Empty;
-    private string _proxy = string.Empty;
+    private bool _relayUs = true;
+    private bool _relayWa = true;
+    private bool _relayTyo = true;
+    private bool _relayJp = true;
+    private string _proxyMode = "System proxy";
+    private string _manualProxy = string.Empty;
+    private string _systemProxyDescription = "Windows system proxy is off";
     private string _receiveFolder = string.Empty;
     private bool _trayIcon;
     private bool _startAtSignIn;
@@ -34,8 +39,24 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public string ConnectionRoute { get => _connectionRoute; private set => SetProperty(ref _connectionRoute, value); }
     public string ConnectionGlyph { get => _connectionGlyph; private set => SetProperty(ref _connectionGlyph, value); }
     public bool IsLinked { get => _isLinked; private set => SetProperty(ref _isLinked, value); }
-    public string RelayEndpoints { get => _relayEndpoints; set => SetProperty(ref _relayEndpoints, value); }
-    public string Proxy { get => _proxy; set => SetProperty(ref _proxy, value); }
+    public bool RelayUs { get => _relayUs; set => SetRelay(ref _relayUs, value); }
+    public bool RelayWa { get => _relayWa; set => SetRelay(ref _relayWa, value); }
+    public bool RelayTyo { get => _relayTyo; set => SetRelay(ref _relayTyo, value); }
+    public bool RelayJp { get => _relayJp; set => SetRelay(ref _relayJp, value); }
+    public string RelaySummary => $"{EnabledRelayCount} of 4 relay points enabled";
+    public ObservableCollection<string> ProxyModes { get; } = ["System proxy", "Manual SOCKS5", "Direct"];
+    public string ProxyMode
+    {
+        get => _proxyMode;
+        set
+        {
+            if (!SetProperty(ref _proxyMode, value)) return;
+            OnPropertyChanged(nameof(ManualProxyEnabled));
+        }
+    }
+    public string ManualProxy { get => _manualProxy; set => SetProperty(ref _manualProxy, value); }
+    public bool ManualProxyEnabled => ProxyMode.Equals("Manual SOCKS5", StringComparison.Ordinal);
+    public string SystemProxyDescription { get => _systemProxyDescription; private set => SetProperty(ref _systemProxyDescription, value); }
     public string ReceiveFolder { get => _receiveFolder; private set => SetProperty(ref _receiveFolder, value); }
     public bool TrayIcon { get => _trayIcon; set => SetProperty(ref _trayIcon, value); }
     public bool StartAtSignIn { get => _startAtSignIn; private set => SetProperty(ref _startAtSignIn, value); }
@@ -98,8 +119,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             ? PrettyRoute(path, relay)
             : (string.IsNullOrWhiteSpace(path) ? "—" : path);
 
-        RelayEndpoints = Get(config, "relays").Replace(';', '\n');
-        Proxy = Get(config, "relay_proxy");
+        LoadRelaySelection(Get(config, "relays"));
+        LoadProxySelection(Get(config, "relay_proxy"));
+        SystemProxyDescription = ReadSystemProxyDescription();
         _receiveDir = Get(config, "receive_dir").Trim();
         if (string.IsNullOrWhiteSpace(_receiveDir)) _receiveDir = null;
         ReceiveFolder = _receiveDir ?? DownloadsFolder();
@@ -230,12 +252,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         Directory.CreateDirectory(_dataDir);
         var configPath = Path.Combine(_dataDir, "config.txt");
         var config = ReadPairs(configPath);
-        var relays = RelayEndpoints
-            .Split(['\r', '\n', ';', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(v => !string.IsNullOrWhiteSpace(v))
-            .Distinct(StringComparer.OrdinalIgnoreCase);
-        config["relays"] = string.Join(';', relays);
-        config["relay_proxy"] = Proxy.Replace("\r", "").Replace("\n", "").Trim();
+        config["relays"] = string.Join(';', EnabledRelayEndpoints());
+        config["relay_proxy"] = ProxyMode switch
+        {
+            "System proxy" => "system",
+            "Manual SOCKS5" => ManualProxy.Replace("\r", "").Replace("\n", "").Trim(),
+            _ => string.Empty,
+        };
         config["tray_icon"] = TrayIcon ? "true" : "false";
         config["receive_dir"] = _receiveDir ?? string.Empty;
 
@@ -248,6 +271,109 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         var applied = RunDaemonCommand("reload");
         RefreshAll();
         return applied;
+    }
+
+    private int EnabledRelayCount =>
+        (RelayUs ? 1 : 0) + (RelayWa ? 1 : 0) + (RelayTyo ? 1 : 0) + (RelayJp ? 1 : 0);
+
+    private void SetRelay(ref bool field, bool value)
+    {
+        if (!SetProperty(ref field, value)) return;
+        OnPropertyChanged(nameof(RelaySummary));
+    }
+
+    private void LoadRelaySelection(string saved)
+    {
+        var endpoints = saved
+            .Split(['\r', '\n', ';', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToArray();
+        if (endpoints.Length == 0)
+        {
+            RelayUs = RelayWa = RelayTyo = RelayJp = true;
+            return;
+        }
+
+        RelayUs = ContainsRelay(endpoints, "conduit-us.414222.xyz:41113", "us.414222.xyz:41113");
+        RelayWa = ContainsRelay(endpoints, "conduit-wa.414222.xyz:41113", "wa.414222.xyz:41113");
+        RelayTyo = ContainsRelay(endpoints, "conduit-tyo.414222.xyz:41113", "tyo.414222.xyz:41113");
+        RelayJp = ContainsRelay(endpoints, "conduit-jp.414222.xyz:41113", "jp.414222.xyz:41113");
+
+        // The old production fleet contained exactly US/TYO/WA. Treat that known three-node
+        // inventory as a product default and migrate it to the new four-node managed fleet rather
+        // than making JP look like a mysterious opt-in created by the UI rewrite.
+        var known = endpoints.All(endpoint => ContainsRelay(
+            [endpoint],
+            "conduit-us.414222.xyz:41113", "us.414222.xyz:41113",
+            "conduit-wa.414222.xyz:41113", "wa.414222.xyz:41113",
+            "conduit-tyo.414222.xyz:41113", "tyo.414222.xyz:41113",
+            "conduit-jp.414222.xyz:41113", "jp.414222.xyz:41113"));
+        if (known && RelayUs && RelayWa && RelayTyo && !RelayJp)
+            RelayJp = true;
+    }
+
+    private static bool ContainsRelay(IEnumerable<string> values, params string[] candidates) =>
+        values.Any(value => candidates.Any(candidate => value.Equals(candidate, StringComparison.OrdinalIgnoreCase)));
+
+    private IEnumerable<string> EnabledRelayEndpoints()
+    {
+        if (RelayUs) yield return "conduit-us.414222.xyz:41113";
+        if (RelayWa) yield return "conduit-wa.414222.xyz:41113";
+        if (RelayTyo) yield return "conduit-tyo.414222.xyz:41113";
+        if (RelayJp) yield return "conduit-jp.414222.xyz:41113";
+    }
+
+    private void LoadProxySelection(string saved)
+    {
+        var value = saved.Trim();
+        if (value.Equals("system", StringComparison.OrdinalIgnoreCase))
+        {
+            ProxyMode = "System proxy";
+            ManualProxy = string.Empty;
+        }
+        else if (string.IsNullOrWhiteSpace(value))
+        {
+            ProxyMode = "Direct";
+            ManualProxy = string.Empty;
+        }
+        else
+        {
+            ProxyMode = "Manual SOCKS5";
+            ManualProxy = value;
+        }
+    }
+
+    private static string ReadSystemProxyDescription()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Internet Settings");
+            var enabled = Convert.ToInt32(key?.GetValue("ProxyEnable") ?? 0) != 0;
+            var value = key?.GetValue("ProxyServer")?.ToString()?.Trim();
+            if (!enabled || string.IsNullOrWhiteSpace(value)) return "Windows system proxy is off";
+            var endpoint = SystemSocksEndpoint(value);
+            return endpoint is null
+                ? $"Windows proxy: {value} (no SOCKS endpoint)"
+                : $"Windows SOCKS: {endpoint}";
+        }
+        catch
+        {
+            return "Windows system proxy is unavailable";
+        }
+    }
+
+    private static string? SystemSocksEndpoint(string value)
+    {
+        if (!value.Contains('=')) return value;
+        foreach (var part in value.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var split = part.IndexOf('=');
+            if (split <= 0) continue;
+            var scheme = part[..split].Trim();
+            if (scheme.Equals("socks", StringComparison.OrdinalIgnoreCase) ||
+                scheme.Equals("socks5", StringComparison.OrdinalIgnoreCase))
+                return part[(split + 1)..].Trim();
+        }
+        return null;
     }
 
     public bool SetAutostart(bool enabled)
