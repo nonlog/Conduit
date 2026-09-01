@@ -54,6 +54,9 @@ const GROUP: &str = "conduit";
 /// property this project actually cares about; a burst of photos/screenshots costs you the
 /// earlier toast. The value stays `photo` for compatibility with an already-visible old toast.
 const CAPTURE_TAG: &str = "photo";
+/// Explorer/CLI permits one outbound file at a time, so one fixed tag is both sufficient and
+/// desirable: every progress event updates the same Action Center row instead of creating a stack.
+const TRANSFER_TAG: &str = "file-send";
 
 /// How many contact avatars are kept on disk.
 ///
@@ -184,6 +187,22 @@ pub enum Cmd {
     /// A file the phone shared, already written to Downloads. Clicking opens the folder.
     File {
         path: PathBuf,
+    },
+    /// Outbound Explorer/CLI transfer feedback is owned by this already-resident COM thread.
+    /// The helper process only streams the request/result and never has to initialize WinRT.
+    TransferStart {
+        name: String,
+        total: u64,
+    },
+    TransferProgress {
+        name: String,
+        transferred: u64,
+        total: u64,
+        waiting_for_phone: bool,
+    },
+    TransferResult {
+        name: String,
+        success: bool,
     },
     /// A deliberate http/https page share from the phone. The shell handles protocol activation;
     /// no Chrome internals, profile database or extra resident callback is involved.
@@ -512,6 +531,16 @@ fn pump(
             Cmd::Photo { path } => show_capture(notifier, &path, &mut staged, false),
             Cmd::Screenshot { path } => show_capture(notifier, &path, &mut staged, true),
             Cmd::File { path } => show_file(notifier, &path),
+            Cmd::TransferStart { name, total } => show_transfer(notifier, &name, total),
+            Cmd::TransferProgress {
+                name,
+                transferred,
+                total,
+                waiting_for_phone,
+            } => update_transfer(notifier, &name, transferred, total, waiting_for_phone),
+            Cmd::TransferResult { name, success } => {
+                update_transfer_result(notifier, &name, success)
+            }
             Cmd::SharedUrl { url, title, source } => {
                 show_shared_url(notifier, &url, &title, &source)
             }
@@ -900,6 +929,129 @@ fn file_xml(path: &Path) -> String {
     )
 }
 
+fn transfer_xml() -> &'static str {
+    r#"<toast duration="long">
+         <visual>
+           <binding template="ToastGeneric">
+             <text>Send with Conduit</text>
+             <text>{transferName}</text>
+             <progress title="{transferTitle}"
+                       value="{transferValue}"
+                       valueStringOverride="{transferPercent}"
+                       status="{transferStatus}"/>
+           </binding>
+         </visual>
+       </toast>"#
+}
+
+fn transfer_data(
+    name: &str,
+    transferred: u64,
+    total: u64,
+    title: &str,
+    status: &str,
+) -> Result<NotificationData> {
+    let data = NotificationData::new()?;
+    let values = data.Values()?;
+    let total = total.max(1);
+    let transferred = transferred.min(total);
+    let percent = transferred.saturating_mul(100) / total;
+    values.Insert(&HSTRING::from("transferName"), &HSTRING::from(name))?;
+    values.Insert(&HSTRING::from("transferTitle"), &HSTRING::from(title))?;
+    values.Insert(
+        &HSTRING::from("transferValue"),
+        &HSTRING::from(format!("{:.4}", transferred as f64 / total as f64)),
+    )?;
+    values.Insert(
+        &HSTRING::from("transferPercent"),
+        &HSTRING::from(format!("{percent}%")),
+    )?;
+    values.Insert(&HSTRING::from("transferStatus"), &HSTRING::from(status))?;
+    data.SetSequenceNumber(0)?;
+    Ok(data)
+}
+
+fn transfer_result_data(name: &str, success: bool) -> Result<NotificationData> {
+    let data = NotificationData::new()?;
+    let values = data.Values()?;
+    values.Insert(&HSTRING::from("transferName"), &HSTRING::from(name))?;
+    values.Insert(
+        &HSTRING::from("transferTitle"),
+        &HSTRING::from(if success {
+            "Sent to phone"
+        } else {
+            "Couldn’t send to phone"
+        }),
+    )?;
+    values.Insert(&HSTRING::from("transferValue"), &HSTRING::from("1"))?;
+    values.Insert(
+        &HSTRING::from("transferPercent"),
+        &HSTRING::from(if success { "100%" } else { "Failed" }),
+    )?;
+    values.Insert(
+        &HSTRING::from("transferStatus"),
+        &HSTRING::from(if success { "Complete" } else { "Failed" }),
+    )?;
+    data.SetSequenceNumber(0)?;
+    Ok(data)
+}
+
+fn show_transfer(notifier: &ToastNotifier, name: &str, total: u64) -> Result<()> {
+    let xml = XmlDocument::new()?;
+    xml.LoadXml(&HSTRING::from(transfer_xml()))?;
+    let toast = ToastNotification::CreateToastNotification(&xml)?;
+    toast.SetTag(&HSTRING::from(TRANSFER_TAG))?;
+    toast.SetGroup(&HSTRING::from(GROUP))?;
+    toast.SetData(&transfer_data(
+        name,
+        0,
+        total,
+        "Sending to phone",
+        "Preparing",
+    )?)?;
+    toast.SetSuppressPopup(false)?;
+    notifier.Show(&toast)?;
+    debug!(name, total, "outbound transfer toast shown");
+    Ok(())
+}
+
+fn update_transfer(
+    notifier: &ToastNotifier,
+    name: &str,
+    transferred: u64,
+    total: u64,
+    waiting_for_phone: bool,
+) -> Result<()> {
+    let status = if waiting_for_phone {
+        "Waiting for phone"
+    } else {
+        "Sending"
+    };
+    let outcome = notifier.UpdateWithTagAndGroup(
+        &transfer_data(name, transferred, total, "Sending to phone", status)?,
+        &HSTRING::from(TRANSFER_TAG),
+        &HSTRING::from(GROUP),
+    )?;
+    debug!(
+        name,
+        transferred,
+        total,
+        ?outcome,
+        "outbound transfer toast updated"
+    );
+    Ok(())
+}
+
+fn update_transfer_result(notifier: &ToastNotifier, name: &str, success: bool) -> Result<()> {
+    let outcome = notifier.UpdateWithTagAndGroup(
+        &transfer_result_data(name, success)?,
+        &HSTRING::from(TRANSFER_TAG),
+        &HSTRING::from(GROUP),
+    )?;
+    debug!(name, success, ?outcome, "outbound transfer toast completed");
+    Ok(())
+}
+
 fn update(
     notifier: &ToastNotifier,
     key: &str,
@@ -990,6 +1142,34 @@ fn register_aumid(identity_icon: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outbound_transfer_markup_parses_and_uses_one_stable_tag() -> Result<()> {
+        let xml = XmlDocument::new()?;
+        xml.LoadXml(&HSTRING::from(transfer_xml()))?;
+        let markup = xml.GetXml()?.to_string();
+        assert!(markup.contains("Send with Conduit"));
+        assert!(markup.contains("{transferValue}"));
+        assert_eq!(TRANSFER_TAG, "file-send");
+        Ok(())
+    }
+
+    #[test]
+    fn outbound_transfer_data_bounds_percent_at_one_hundred() -> Result<()> {
+        let data = transfer_data("x.bin", 2048, 1024, "Sending to phone", "Sending")?;
+        let values = data.Values()?;
+        assert_eq!(
+            values
+                .Lookup(&HSTRING::from("transferPercent"))?
+                .to_string(),
+            "100%"
+        );
+        assert_eq!(
+            values.Lookup(&HSTRING::from("transferValue"))?.to_string(),
+            "1.0000"
+        );
+        Ok(())
+    }
 
     #[test]
     fn tags_fit_the_platform_limit_and_stay_stable() {

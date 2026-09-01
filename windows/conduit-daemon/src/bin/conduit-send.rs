@@ -8,32 +8,15 @@ use std::thread;
 use std::time::Duration;
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-const AUMID: &str = "Conduit.Desktop";
-const TRANSFER_TAG: &str = "file-send";
-const TRANSFER_GROUP: &str = "transfer";
 
 fn main() -> ExitCode {
-    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
-    use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
-
-    unsafe {
-        let _ = SetCurrentProcessExplicitAppUserModelID(&windows::core::HSTRING::from(AUMID));
-    }
-    // Windows Runtime activation factories are cached by the windows crate. Keep one COM apartment
-    // alive for the entire short-lived helper rather than tearing it down after every progress
-    // update; repeated CoInitialize/CoUninitialize cycles can invalidate cached WinRT state.
-    let com_initialized = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
-    let result = match run() {
+    match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
-            show_failure(&message);
+            show_in_control_ui(&message);
             ExitCode::FAILURE
         }
-    };
-    if com_initialized {
-        unsafe { CoUninitialize() };
     }
-    result
 }
 
 fn run() -> Result<(), String> {
@@ -48,21 +31,10 @@ fn run() -> Result<(), String> {
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| file.display().to_string());
-    let _ = show_transfer_toast(&name, 0, "Preparing", false);
-
     let daemon = std::env::current_exe()
         .map_err(|e| format!("Could not locate Conduit: {e}"))?
         .with_file_name("conduit-daemon.exe");
-    let mut last_shown = 0u32;
-    let mut progress = |transferred: u64, total: u64| {
-        let Some(percent) = transfer_percent(transferred, total) else {
-            return;
-        };
-        if percent == 100 || percent >= last_shown.saturating_add(5) {
-            last_shown = percent;
-            let _ = show_transfer_toast(&name, percent, "Sending", true);
-        }
-    };
+    let mut progress = |_: u64, _: u64| {};
     let mut error = invoke_send(&daemon, &file, &mut progress).err();
 
     // Explorer can invoke this helper before the sign-in daemon has finished creating its
@@ -94,10 +66,7 @@ fn run() -> Result<(), String> {
     }
 
     match error {
-        None => {
-            let _ = show_transfer_toast(&name, 100, "Sent", true);
-            Ok(())
-        }
+        None => Ok(()),
         Some(reason) => Err(send_error(&file, &reason)),
     }
 }
@@ -157,13 +126,6 @@ fn parse_progress_line(line: &str) -> Option<(u64, u64)> {
     (fields.next().is_none()).then_some((transferred, total))
 }
 
-fn transfer_percent(transferred: u64, total: u64) -> Option<u32> {
-    if total == 0 {
-        return None;
-    }
-    Some(((transferred.saturating_mul(100) / total).min(100)) as u32)
-}
-
 fn clean_error(raw: &str) -> String {
     let mut value = raw.trim().to_string();
     if let Some(rest) = value.strip_prefix("Error: ") {
@@ -186,13 +148,6 @@ fn send_error(file: &Path, reason: &str) -> String {
     format!("Couldn’t send {name}.\n\n{reason}")
 }
 
-fn show_failure(message: &str) {
-    if show_failure_toast(message).is_ok() {
-        return;
-    }
-    show_in_control_ui(message);
-}
-
 fn show_in_control_ui(message: &str) {
     let Ok(ui) = std::env::current_exe().map(|path| path.with_file_name("Conduit.exe")) else {
         return;
@@ -205,54 +160,6 @@ fn show_in_control_ui(message: &str) {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn();
-}
-
-fn show_transfer_toast(
-    name: &str,
-    percent: u32,
-    status: &str,
-    suppress_popup: bool,
-) -> windows::core::Result<()> {
-    let value = (percent.min(100) as f64) / 100.0;
-    let markup = format!(
-        r#"<toast duration="long"><visual><binding template="ToastGeneric"><text>Send with Conduit</text><text>{}</text><progress title="Sending to phone" value="{value:.3}" valueStringOverride="{}%" status="{}"/></binding></visual></toast>"#,
-        escape_xml(name),
-        percent.min(100),
-        escape_xml(status),
-    );
-    show_tagged_toast(&markup, suppress_popup)
-}
-
-fn show_failure_toast(message: &str) -> windows::core::Result<()> {
-    let markup = format!(
-        r#"<toast><visual><binding template="ToastGeneric"><text>Couldn’t send file</text><text>{}</text></binding></visual></toast>"#,
-        escape_xml(message)
-    );
-    show_tagged_toast(&markup, false)
-}
-
-fn show_tagged_toast(markup: &str, suppress_popup: bool) -> windows::core::Result<()> {
-    use windows::core::HSTRING;
-    use windows::Data::Xml::Dom::XmlDocument;
-    use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
-
-    let xml = XmlDocument::new()?;
-    xml.LoadXml(&HSTRING::from(markup))?;
-    let toast = ToastNotification::CreateToastNotification(&xml)?;
-    toast.SetTag(&HSTRING::from(TRANSFER_TAG))?;
-    toast.SetGroup(&HSTRING::from(TRANSFER_GROUP))?;
-    toast.SetSuppressPopup(suppress_popup)?;
-    let notifier = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(AUMID))?;
-    notifier.Show(&toast)
-}
-
-fn escape_xml(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
 }
 
 #[cfg(test)]
@@ -281,12 +188,9 @@ mod tests {
     }
 
     #[test]
-    fn progress_lines_are_strict_and_percent_is_bounded() {
+    fn progress_lines_are_strict() {
         assert_eq!(parse_progress_line("PROGRESS 512 1024"), Some((512, 1024)));
         assert_eq!(parse_progress_line("PROGRESS 1"), None);
         assert_eq!(parse_progress_line("sent 1 2"), None);
-        assert_eq!(transfer_percent(512, 1024), Some(50));
-        assert_eq!(transfer_percent(2048, 1024), Some(100));
-        assert_eq!(transfer_percent(1, 0), None);
     }
 }

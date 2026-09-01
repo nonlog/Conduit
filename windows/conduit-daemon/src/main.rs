@@ -737,14 +737,45 @@ async fn serve(
                     Ok(outbound_file) => {
                         let name = outbound_file.name().to_string();
                         let transfer_id = outbound_file.transfer_id().to_vec();
+                        let total_bytes = outbound_file.total_bytes();
+                        if let Some(toasts) = toasts {
+                            toasts.post(toast::Cmd::TransferStart {
+                                name: name.clone(),
+                                total: total_bytes,
+                            });
+                        }
+                        let mut last_toast_percent = 0u64;
                         match outbound_file
                             .send(&mut session, &mut stream, |transferred, total| {
                                 let _ = progress.send(control::TransferProgress { transferred, total });
+                                if transferred == 0 || transferred >= total {
+                                    return;
+                                }
+                                let percent = transferred.saturating_mul(100) / total.max(1);
+                                if percent >= last_toast_percent.saturating_add(5) {
+                                    last_toast_percent = percent;
+                                    if let Some(toasts) = toasts {
+                                        toasts.post(toast::Cmd::TransferProgress {
+                                            name: name.clone(),
+                                            transferred,
+                                            total,
+                                            waiting_for_phone: false,
+                                        });
+                                    }
+                                }
                             })
                             .await
                         {
                             Ok(frames) => {
                                 metrics.frames_out.fetch_add(frames, Ordering::Relaxed);
+                                if let Some(toasts) = toasts {
+                                    toasts.post(toast::Cmd::TransferProgress {
+                                        name: name.clone(),
+                                        transferred: total_bytes,
+                                        total: total_bytes,
+                                        waiting_for_phone: true,
+                                    });
+                                }
                                 pending_outbound = Some(PendingOutbound {
                                     transfer_id,
                                     name,
@@ -752,6 +783,12 @@ async fn serve(
                                 });
                             }
                             Err(e) => {
+                                if let Some(toasts) = toasts {
+                                    toasts.post(toast::Cmd::TransferResult {
+                                        name: name.clone(),
+                                        success: false,
+                                    });
+                                }
                                 let message = format!("sending {name} to the phone: {e:#}");
                                 let _ = completion.send(Err(message.clone()));
                                 return Err(e).with_context(|| format!("sending {name} to the phone"));
@@ -1062,6 +1099,12 @@ async fn serve(
                 }
                 if result.success {
                     info!(name = %pending.name, "phone published file");
+                    if let Some(toasts) = toasts {
+                        toasts.post(toast::Cmd::TransferResult {
+                            name: pending.name.clone(),
+                            success: true,
+                        });
+                    }
                     let _ = pending.completion.send(Ok(()));
                 } else {
                     let reason = if result.error.is_empty() {
@@ -1070,6 +1113,12 @@ async fn serve(
                         result.error
                     };
                     warn!(name = %pending.name, error = %reason, "phone refused file");
+                    if let Some(toasts) = toasts {
+                        toasts.post(toast::Cmd::TransferResult {
+                            name: pending.name.clone(),
+                            success: false,
+                        });
+                    }
                     let _ = pending.completion.send(Err(reason));
                 }
             }

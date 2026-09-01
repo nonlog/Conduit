@@ -103,6 +103,10 @@ impl Outbound {
         &self.offer.transfer_id
     }
 
+    pub fn total_bytes(&self) -> u64 {
+        self.offer.total_bytes
+    }
+
     /// Sends the offer and every chunk, returning the number of encrypted frames written.
     /// Progress is emitted only when the integer percentage changes, so a 512 MiB file still
     /// produces at most 101 local UI updates rather than one IPC event per 32 KiB chunk.
