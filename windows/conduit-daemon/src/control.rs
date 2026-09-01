@@ -9,7 +9,7 @@ use anyhow::{bail, Context, Result};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::windows::named_pipe::{
     ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions,
 };
@@ -27,9 +27,16 @@ const LOCAL_RESULT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Begins with NUL, which a valid Win32 path cannot contain, so old path-only clients remain valid.
 const RELOAD_COMMAND: &str = "\0reload\0";
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TransferProgress {
+    pub transferred: u64,
+    pub total: u64,
+}
+
 pub struct SendRequest {
     pub path: PathBuf,
     pub completion: oneshot::Sender<std::result::Result<(), String>>,
+    pub progress: mpsc::UnboundedSender<TransferProgress>,
 }
 
 pub struct ReloadRequest {
@@ -92,19 +99,49 @@ async fn handle(
 
     let outcome: Result<PathBuf> = async {
         let path = file::validate_outbound(Path::new(&request))?;
-        let (completion, done) = oneshot::channel();
+        let (completion, mut done) = oneshot::channel();
+        let (progress, mut progress_rx) = mpsc::unbounded_channel();
         send_tx
             .try_send(SendRequest {
                 path: path.clone(),
                 completion,
+                progress,
             })
             .map_err(|e| anyhow::anyhow!("outbound file queue is unavailable: {e}"))?;
 
-        match tokio::time::timeout(REMOTE_RESULT_TIMEOUT, done).await {
-            Ok(Ok(Ok(()))) => Ok(path),
-            Ok(Ok(Err(message))) => bail!("phone did not publish the file: {message}"),
-            Ok(Err(_)) => bail!("the Conduit session ended before the phone confirmed the file"),
-            Err(_) => bail!("timed out waiting for the phone to publish the file"),
+        let deadline = tokio::time::Instant::now() + REMOTE_RESULT_TIMEOUT;
+        let mut progress_open = true;
+        let mut client_open = true;
+        loop {
+            tokio::select! {
+                update = progress_rx.recv(), if progress_open => {
+                    match update {
+                        Some(update) if client_open => {
+                            let line = format!(
+                                "PROGRESS {} {}\n",
+                                update.transferred, update.total
+                            );
+                            if pipe.write_all(line.as_bytes()).await.is_err() {
+                                // Explorer can disappear without cancelling a transfer already accepted by
+                                // the daemon. Keep the oneshot alive so the transfer remains transactional.
+                                client_open = false;
+                            }
+                        }
+                        Some(_) => {}
+                        None => progress_open = false,
+                    }
+                }
+                result = &mut done => {
+                    break match result {
+                        Ok(Ok(())) => Ok(path),
+                        Ok(Err(message)) => bail!("phone did not publish the file: {message}"),
+                        Err(_) => bail!("the Conduit session ended before the phone confirmed the file"),
+                    };
+                }
+                _ = tokio::time::sleep_until(deadline) => {
+                    bail!("timed out waiting for the phone to publish the file");
+                }
+            }
         }
     }
     .await;
@@ -136,6 +173,13 @@ async fn read_request(pipe: &mut NamedPipeServer) -> Result<String> {
 /// CLI side of `conduit-daemon.exe send <path>`. Success means the upgraded phone published the
 /// Downloads row, not merely that the resident daemon accepted the local path.
 pub async fn queue(path: &Path) -> Result<PathBuf> {
+    queue_with_progress(path, |_, _| {}).await
+}
+
+pub async fn queue_with_progress<F>(path: &Path, mut on_progress: F) -> Result<PathBuf>
+where
+    F: FnMut(u64, u64),
+{
     let path = file::validate_outbound(path)?;
     let text = path
         .to_str()
@@ -146,23 +190,35 @@ pub async fn queue(path: &Path) -> Result<PathBuf> {
     }
 
     let mut client = open_client().await?;
-
     client.write_u32(bytes.len() as u32).await?;
     client.write_all(bytes).await?;
-    let mut reply = Vec::new();
-    tokio::time::timeout(
-        REMOTE_RESULT_TIMEOUT + Duration::from_secs(5),
-        client.read_to_end(&mut reply),
-    )
-    .await
-    .context("timed out waiting for the resident Conduit daemon")??;
-    let reply = String::from_utf8(reply).context("control response is not UTF-8")?;
-    if reply == "OK\n" {
-        Ok(path)
-    } else if let Some(error) = reply.strip_prefix("ERR ") {
-        bail!("{}", error.trim_end());
-    } else {
-        bail!("unexpected local control response {reply:?}");
+
+    let mut lines = BufReader::new(client).lines();
+    loop {
+        let line = tokio::time::timeout(
+            REMOTE_RESULT_TIMEOUT + Duration::from_secs(5),
+            lines.next_line(),
+        )
+        .await
+        .context("timed out waiting for the resident Conduit daemon")??
+        .context("resident Conduit daemon closed the control pipe without a result")?;
+
+        if line == "OK" {
+            return Ok(path);
+        }
+        if let Some(error) = line.strip_prefix("ERR ") {
+            bail!("{}", error.trim_end());
+        }
+        if let Some(rest) = line.strip_prefix("PROGRESS ") {
+            let mut fields = rest.split_whitespace();
+            let transferred = fields.next().and_then(|value| value.parse::<u64>().ok());
+            let total = fields.next().and_then(|value| value.parse::<u64>().ok());
+            if let (Some(transferred), Some(total)) = (transferred, total) {
+                on_progress(transferred, total);
+                continue;
+            }
+        }
+        bail!("unexpected local control response {line:?}");
     }
 }
 

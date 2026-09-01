@@ -9,8 +9,7 @@ const fluent = path.join(assets, 'fluent');
 
 const brandSizes = [16, 20, 24, 28, 32, 34, 40, 43, 44, 48, 51, 55, 60, 64, 66, 68, 77, 88, 96, 128, 256];
 const traySizes = [16, 20, 24, 28, 32, 40, 48, 64];
-const start = '#6E5BD6';
-const end = '#2F6FE0';
+const brandGlyph = '#5B5BD6';
 const darkGlyph = '#202020';
 const lightGlyph = '#F6F6F6';
 
@@ -35,13 +34,13 @@ function traySource(size) {
 
 function brandSvg(size) {
   const source = brandSource(size);
-  const radius = (source.width * 0.22).toFixed(3);
-  const scale = size <= 20 ? 0.86 : 0.82;
+  // Keep the mark transparent and monoline/monochrome like Sefirah instead of placing it in a
+  // rounded app tile. Small frames use the matching Fluent 16/20px path so Explorer, the taskbar
+  // and notification attribution never have to downscale the 24px geometry.
+  const scale = size <= 20 ? 0.90 : 0.86;
   const pad = (source.width * (1 - scale) / 2).toFixed(3);
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${source.width}" height="${source.height}" viewBox="0 0 ${source.width} ${source.height}">
-  <defs><linearGradient id="brand" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${start}"/><stop offset="1" stop-color="${end}"/></linearGradient></defs>
-  <rect width="${source.width}" height="${source.height}" rx="${radius}" fill="url(#brand)"/>
-  <g transform="translate(${pad} ${pad}) scale(${scale})"><path d="${source.d}" fill="#FFFFFF"/></g>
+  <g transform="translate(${pad} ${pad}) scale(${scale})"><path d="${source.d}" fill="${brandGlyph}"/></g>
 </svg>`;
 }
 

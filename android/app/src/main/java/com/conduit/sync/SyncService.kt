@@ -18,7 +18,6 @@ import android.os.Looper
 import android.os.SystemClock
 import android.os.Build
 import android.util.Log
-import android.widget.Toast
 import com.conduit.sync.proto.NotifAction
 import java.net.InetSocketAddress
 import java.util.ArrayDeque
@@ -331,12 +330,7 @@ class SyncService : Service() {
                     progressGate(direction).reset()
                     main.post {
                         FileTransfers.clear(direction)
-                        hideTransferNotification(direction)
-                        val message = when (direction) {
-                            FileTransferDirection.ToDesktop -> "Sent $name"
-                            FileTransferDirection.ToPhone -> "Received $name"
-                        }
-                        Toast.makeText(this@SyncService, message, Toast.LENGTH_LONG).show()
+                        showTransferResultNotification(direction, name, success = true)
                     }
                 }
 
@@ -344,7 +338,7 @@ class SyncService : Service() {
                     progressGate(direction).reset()
                     main.post {
                         FileTransfers.clear(direction)
-                        hideTransferNotification(direction)
+                        showTransferResultNotification(direction, name, success = false)
                     }
                 }
 
@@ -873,6 +867,32 @@ class SyncService : Service() {
             .setProgress(100, transfer.percent, false)
             .setOnlyAlertOnce(true)
             .setOngoing(true)
+            .build()
+        manager.notify(transferNotificationId(direction), notice)
+    }
+
+    private fun showTransferResultNotification(
+        direction: FileTransferDirection,
+        name: String,
+        success: Boolean,
+    ) {
+        val manager = getSystemService(NotificationManager::class.java)
+        val peer = knownPeerName ?: LinkStatus.peerName ?: "desktop"
+        val receiving = direction == FileTransferDirection.ToPhone
+        val title = when {
+            success && receiving -> "Received from $peer"
+            success -> "Sent to $peer"
+            receiving -> "Could not receive from $peer"
+            else -> "Could not send to $peer"
+        }
+        val notice = Notification.Builder(this, TRANSFER_CHANNEL)
+            .setSmallIcon(if (receiving) R.drawable.ic_stat_download else R.drawable.ic_stat_upload)
+            .setContentTitle(title)
+            .setContentText(name)
+            .setOnlyAlertOnce(true)
+            .setOngoing(false)
+            .setAutoCancel(true)
+            .setTimeoutAfter(5_000L)
             .build()
         manager.notify(transferNotificationId(direction), notice)
     }

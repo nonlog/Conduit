@@ -242,13 +242,26 @@
                                                   HorizontalScrollMode="Disabled">
                                         <StackPanel Spacing="4" HorizontalAlignment="Stretch">
                                             <TextBlock Text="General" Margin="0,0,0,8" FontSize="28" FontWeight="SemiBold" />
-                                            <wuc:SettingsCard Header="Relay endpoints" Description="One endpoint per line or separate them with semicolons">
+                                            <wuc:SettingsCard Header="Relay points" Description="Managed Conduit relays; LAN remains preferred when available">
                                                 <wuc:SettingsCard.HeaderIcon><FontIcon Glyph="&#xE774;" /></wuc:SettingsCard.HeaderIcon>
-                                                <TextBox MinWidth="280" MaxWidth="360" Text="{Binding RelayEndpoints, Mode=TwoWay}" />
+                                                <StackPanel MinWidth="330" MaxWidth="410" Spacing="2">
+                                                    <CheckBox Content="US  ·  conduit-us.414222.xyz" IsChecked="{Binding RelayUs, Mode=TwoWay}" />
+                                                    <CheckBox Content="WA  ·  conduit-wa.414222.xyz" IsChecked="{Binding RelayWa, Mode=TwoWay}" />
+                                                    <CheckBox Content="TYO  ·  conduit-tyo.414222.xyz" IsChecked="{Binding RelayTyo, Mode=TwoWay}" />
+                                                    <CheckBox Content="JP  ·  conduit-jp.414222.xyz" IsChecked="{Binding RelayJp, Mode=TwoWay}" />
+                                                    <TextBlock Text="{Binding RelaySummary}" Margin="4,4,0,0" FontSize="12"
+                                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                </StackPanel>
                                             </wuc:SettingsCard>
-                                            <wuc:SettingsCard Header="SOCKS5 proxy" Description="Relay-only proxy; LAN sessions stay direct">
+                                            <wuc:SettingsCard Header="Relay proxy" Description="System proxy, a manual SOCKS5 endpoint, or direct relay access">
                                                 <wuc:SettingsCard.HeaderIcon><FontIcon Glyph="&#xE968;" /></wuc:SettingsCard.HeaderIcon>
-                                                <TextBox MinWidth="280" MaxWidth="360" Text="{Binding Proxy, Mode=TwoWay}" />
+                                                <StackPanel MinWidth="330" MaxWidth="410" Spacing="8">
+                                                    <ComboBox ItemsSource="{Binding ProxyModes}" SelectedItem="{Binding ProxyMode, Mode=TwoWay}" HorizontalAlignment="Stretch" />
+                                                    <TextBox Text="{Binding ManualProxy, Mode=TwoWay}" IsEnabled="{Binding ManualProxyEnabled}"
+                                                             PlaceholderText="socks5://127.0.0.1:1080" />
+                                                    <TextBlock Text="{Binding SystemProxyDescription}" FontSize="12" TextWrapping="Wrap"
+                                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                </StackPanel>
                                             </wuc:SettingsCard>
                                             <wuc:SettingsCard Header="Start at sign-in" Description="Start the background Conduit daemon when Windows signs in">
                                                 <wuc:SettingsCard.HeaderIcon><FontIcon Glyph="&#xE7E8;" /></wuc:SettingsCard.HeaderIcon>

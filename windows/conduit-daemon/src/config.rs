@@ -67,20 +67,78 @@ impl Config {
                 None => std::env::var("CONDUIT_RELAY").unwrap_or_else(|_| default.to_string()),
             },
         };
-        split_relays(&source)
+        let relays = split_relays(&source);
+        if legacy_default_relays(&relays) {
+            split_relays(default)
+        } else {
+            relays
+        }
     }
 
     pub fn resolved_proxy(&self) -> Option<String> {
         let value = std::env::var("CONDUIT_RELAY_PROXY")
             .ok()
             .or_else(|| self.relay_proxy.clone())?;
-        let value = value.trim().to_owned();
-        (!value.is_empty()).then_some(value)
+        let value = value.trim();
+        if value.is_empty() {
+            None
+        } else if value.eq_ignore_ascii_case("system") {
+            system_socks5_proxy()
+        } else {
+            Some(value.to_owned())
+        }
     }
 
     pub fn show_tray_icon(&self) -> bool {
         self.tray_icon.unwrap_or(true)
     }
+}
+
+fn legacy_default_relays(relays: &[String]) -> bool {
+    const LEGACY: [&str; 3] = [
+        "us.414222.xyz:41113",
+        "tyo.414222.xyz:41113",
+        "wa.414222.xyz:41113",
+    ];
+    relays.len() == LEGACY.len()
+        && LEGACY
+            .iter()
+            .all(|endpoint| relays.iter().any(|value| value.eq_ignore_ascii_case(endpoint)))
+}
+
+fn system_socks5_proxy() -> Option<String> {
+    let key = windows_registry::CURRENT_USER
+        .open(r"Software\Microsoft\Windows\CurrentVersion\Internet Settings")
+        .ok()?;
+    if key.get_u32("ProxyEnable").ok().unwrap_or(0) == 0 {
+        return None;
+    }
+    let server = key.get_string("ProxyServer").ok()?;
+    parse_system_proxy_server(&server)
+}
+
+fn parse_system_proxy_server(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let endpoint = if value.contains('=') {
+        value.split(';').find_map(|part| {
+            let (scheme, endpoint) = part.trim().split_once('=')?;
+            matches!(scheme.trim().to_ascii_lowercase().as_str(), "socks" | "socks5")
+                .then_some(endpoint.trim())
+        })?
+    } else {
+        value
+    };
+    if endpoint.is_empty() {
+        return None;
+    }
+    Some(if endpoint.starts_with("socks5://") {
+        endpoint.to_owned()
+    } else {
+        format!("socks5://{endpoint}")
+    })
 }
 
 fn parse(text: &str) -> Result<Config> {
@@ -159,5 +217,40 @@ mod tests {
     #[test]
     fn relay_list_is_ordered_and_deduplicated() {
         assert_eq!(split_relays(" wa:1;tyo:2, wa:1 "), vec!["wa:1", "tyo:2"]);
+    }
+
+    #[test]
+    fn legacy_three_node_fleet_migrates_to_the_managed_default() {
+        let config = Config {
+            relays: Some(
+                "wa.414222.xyz:41113;us.414222.xyz:41113;tyo.414222.xyz:41113".into(),
+            ),
+            ..Config::default()
+        };
+        assert_eq!(
+            config.resolved_relays(
+                "conduit-us.414222.xyz:41113;conduit-wa.414222.xyz:41113;conduit-tyo.414222.xyz:41113;conduit-jp.414222.xyz:41113"
+            ),
+            vec![
+                "conduit-us.414222.xyz:41113",
+                "conduit-wa.414222.xyz:41113",
+                "conduit-tyo.414222.xyz:41113",
+                "conduit-jp.414222.xyz:41113",
+            ]
+        );
+    }
+
+    #[test]
+    fn windows_proxy_strings_choose_socks_without_guessing_http_ports() {
+        assert_eq!(
+            parse_system_proxy_server("127.0.0.1:7890").as_deref(),
+            Some("socks5://127.0.0.1:7890")
+        );
+        assert_eq!(
+            parse_system_proxy_server("http=127.0.0.1:8080;socks=127.0.0.1:1080").as_deref(),
+            Some("socks5://127.0.0.1:1080")
+        );
+        assert_eq!(parse_system_proxy_server("http=127.0.0.1:8080"), None);
+        assert_eq!(parse_system_proxy_server(""), None);
     }
 }

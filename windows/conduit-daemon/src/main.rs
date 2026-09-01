@@ -39,7 +39,7 @@ use wire::{pb, Session};
 const PORT: u16 = 41112;
 /// Production Relay fleet. Windows parks one responder at each node; Android still keeps exactly
 /// one active Relay/session and switches only on natural reconnect/failure events.
-const DEFAULT_RELAYS: &str = "us.414222.xyz:41113;tyo.414222.xyz:41113;wa.414222.xyz:41113";
+const DEFAULT_RELAYS: &str = "conduit-us.414222.xyz:41113;conduit-wa.414222.xyz:41113;conduit-tyo.414222.xyz:41113;conduit-jp.414222.xyz:41113";
 /// ponytail: flat retry, no escalation. The desktop is on mains power and the relay is
 /// ours, so there is nothing to be polite to; add backoff if it ever rate-limits.
 const RELAY_RETRY: Duration = Duration::from_secs(15);
@@ -162,11 +162,14 @@ async fn main() -> Result<()> {
             if args.next().is_some() {
                 bail!("usage: conduit-daemon send <file>");
             }
-            let path = control::queue(&PathBuf::from(path)).await?;
-            // A GUI-subsystem command launched from Explorer may have no stdout handle. `println!`
-            // panics on that write failure even after the phone has confirmed publication, which used to
-            // turn a successful transfer into a false failure dialog. CLI output is best-effort only.
-            let _ = writeln!(std::io::stdout(), "Sent to phone: {}", path.display());
+            let mut stdout = std::io::stdout();
+            let path = control::queue_with_progress(&PathBuf::from(path), |transferred, total| {
+                let _ = writeln!(stdout, "PROGRESS {transferred} {total}");
+            })
+            .await?;
+            // A GUI-subsystem command launched from Explorer may have no stdout handle. Output is
+            // best-effort only; publication success belongs to the resident daemon/phone handshake.
+            let _ = writeln!(stdout, "Sent to phone: {}", path.display());
             return Ok(());
         }
         if command == "autostart" {
@@ -726,7 +729,7 @@ async fn serve(
                 let Some(request) = local_file else {
                     bail!("local outbound file queue closed")
                 };
-                let path = request.path;
+                let control::SendRequest { path, completion, progress } = request;
                 // Refuse a bad/missing local path before FILE_OFFER reaches the phone. Once an
                 // offer is on the wire, a read/send error ends this session so Android drops its
                 // pending MediaStore row rather than inheriting a partial into the next session.
@@ -734,25 +737,30 @@ async fn serve(
                     Ok(outbound_file) => {
                         let name = outbound_file.name().to_string();
                         let transfer_id = outbound_file.transfer_id().to_vec();
-                        match outbound_file.send(&mut session, &mut stream).await {
+                        match outbound_file
+                            .send(&mut session, &mut stream, |transferred, total| {
+                                let _ = progress.send(control::TransferProgress { transferred, total });
+                            })
+                            .await
+                        {
                             Ok(frames) => {
                                 metrics.frames_out.fetch_add(frames, Ordering::Relaxed);
                                 pending_outbound = Some(PendingOutbound {
                                     transfer_id,
                                     name,
-                                    completion: request.completion,
+                                    completion,
                                 });
                             }
                             Err(e) => {
                                 let message = format!("sending {name} to the phone: {e:#}");
-                                let _ = request.completion.send(Err(message.clone()));
+                                let _ = completion.send(Err(message.clone()));
                                 return Err(e).with_context(|| format!("sending {name} to the phone"));
                             }
                         }
                     }
                     Err(e) => {
                         let message = format!("opening {}: {e:#}", path.display());
-                        let _ = request.completion.send(Err(message));
+                        let _ = completion.send(Err(message));
                         warn!(path = %path.display(), error = %e, "local file was not sent");
                     }
                 }
