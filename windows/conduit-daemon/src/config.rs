@@ -101,9 +101,11 @@ fn legacy_default_relays(relays: &[String]) -> bool {
         "wa.414222.xyz:41113",
     ];
     relays.len() == LEGACY.len()
-        && LEGACY
-            .iter()
-            .all(|endpoint| relays.iter().any(|value| value.eq_ignore_ascii_case(endpoint)))
+        && LEGACY.iter().all(|endpoint| {
+            relays
+                .iter()
+                .any(|value| value.eq_ignore_ascii_case(endpoint))
+        })
 }
 
 fn system_socks5_proxy() -> Option<String> {
@@ -125,8 +127,11 @@ fn parse_system_proxy_server(value: &str) -> Option<String> {
     let endpoint = if value.contains('=') {
         value.split(';').find_map(|part| {
             let (scheme, endpoint) = part.trim().split_once('=')?;
-            matches!(scheme.trim().to_ascii_lowercase().as_str(), "socks" | "socks5")
-                .then_some(endpoint.trim())
+            matches!(
+                scheme.trim().to_ascii_lowercase().as_str(),
+                "socks" | "socks5"
+            )
+            .then_some(endpoint.trim())
         })?
     } else {
         value
@@ -222,9 +227,7 @@ mod tests {
     #[test]
     fn legacy_three_node_fleet_migrates_to_the_managed_default() {
         let config = Config {
-            relays: Some(
-                "wa.414222.xyz:41113;us.414222.xyz:41113;tyo.414222.xyz:41113".into(),
-            ),
+            relays: Some("wa.414222.xyz:41113;us.414222.xyz:41113;tyo.414222.xyz:41113".into()),
             ..Config::default()
         };
         assert_eq!(
