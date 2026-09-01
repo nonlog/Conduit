@@ -50,8 +50,18 @@ foreach ($name in $requiredIconAssets) {
 $hadAutostart = $null -ne (Get-ItemProperty -Path $runKey -Name Conduit -ErrorAction SilentlyContinue).Conduit
 $hadExplorerIntegration = Test-Path -LiteralPath $explorerVerbKey
 
-Get-Process conduit-daemon -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-Get-Process Conduit -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+$running = @(Get-Process conduit-daemon, Conduit -ErrorAction SilentlyContinue)
+if ($running.Count -gt 0) {
+    $running | Stop-Process -Force -ErrorAction SilentlyContinue
+    # Stop-Process requests termination but the executable image can stay mapped for a short
+    # moment. Wait for actual process exit before replacing binaries so an update never races the
+    # final file-handle release on a busy desktop.
+    $running | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
+    $stuck = @($running | Where-Object { -not $_.HasExited })
+    if ($stuck.Count -gt 0) {
+        throw "Conduit processes did not exit before update: $($stuck.Id -join ', ')"
+    }
+}
 New-Item -ItemType Directory -Force -Path $installDir, $programs | Out-Null
 foreach ($name in $required) {
     $from = (Resolve-Path (Join-Path $source $name)).Path
