@@ -82,6 +82,9 @@ enum class LinkState(val label: String) {
     Connected("Linked"),
 }
 
+/** Discovery and retry are still an active user request and therefore must remain stoppable. */
+internal fun isLinkRequestedState(state: LinkState): Boolean = state != LinkState.Idle
+
 /**
  * The screen's whole state. Snapshot state rather than a flow because writes come from
  * [Link]'s threads and Compose already handles that; a repository layer for four
@@ -442,7 +445,10 @@ private fun SefirahDeviceCard(
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
-    val linked = state == LinkState.Connected
+    // A user-requested link stays "on" while discovery/retry is in progress. Treating only the
+    // fully connected state as active made the toggle call Connect again while the UI said
+    // "Looking for the desktop", leaving no way to stop an unavailable desktop search.
+    val linkRequested = isLinkRequestedState(state)
     Card(modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large, colors = CardDefaults.cardColors()) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(16.dp),
@@ -478,8 +484,8 @@ private fun SefirahDeviceCard(
                 }
             }
             FilledIconToggleButton(
-                checked = linked,
-                onCheckedChange = { if (linked) onDisconnect() else onConnect() },
+                checked = linkRequested,
+                onCheckedChange = { if (linkRequested) onDisconnect() else onConnect() },
                 colors = IconButtonDefaults.filledIconToggleButtonColors(
                     containerColor = MaterialTheme.colorScheme.surfaceVariant,
                     contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -489,7 +495,7 @@ private fun SefirahDeviceCard(
             ) {
                 Icon(
                     painter = painterResource(R.drawable.ic_sync),
-                    contentDescription = if (linked) "Disconnect" else "Connect",
+                    contentDescription = if (linkRequested) "Disconnect" else "Connect",
                 )
             }
         }

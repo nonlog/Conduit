@@ -55,28 +55,27 @@
                         </Border>
                     </Border>
 
-                    <StackPanel Grid.Column="1" VerticalAlignment="Bottom" Spacing="4">
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="3">
                         <TextBlock Text="{Binding DeviceName}" FontWeight="SemiBold" FontSize="17" TextTrimming="CharacterEllipsis" />
-                        <StackPanel Orientation="Horizontal" Spacing="6">
-                            <FontIcon Glyph="{Binding ConnectionGlyph}" FontSize="14" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                            <TextBlock Text="{Binding ConnectionRoute}" FontSize="12"
-                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
-                        </StackPanel>
+                        <TextBlock Text="{Binding ConnectionRoute}" FontSize="12"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" />
 
-                        <Grid Margin="0,6,0,0">
+                        <Grid Margin="0,5,0,0" ColumnSpacing="7">
                             <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
                                 <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="38" />
+                                <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
-                            <Border Grid.Column="0" Padding="12,6" CornerRadius="4,0,0,4"
-                                    Background="{ThemeResource ControlFillColorDefaultBrush}"
-                                    BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}"
-                                    BorderThickness="1,1,0,1">
-                                <TextBlock Text="{Binding ConnectionState}" VerticalAlignment="Center" />
-                            </Border>
-                            <Button Grid.Column="1" Padding="0" CornerRadius="0,4,4,0" Click="Refresh_Click"
-                                    ToolTipService.ToolTip="Refresh status">
-                                <FontIcon Glyph="&#xE72C;" FontSize="14" />
+                            <FontIcon Grid.Column="0" Glyph="{Binding ConnectionGlyph}" FontSize="12"
+                                      Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                      VerticalAlignment="Center" />
+                            <TextBlock Grid.Column="1" Text="{Binding ConnectionState}" FontSize="12"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                       VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                            <Button Grid.Column="2" Width="28" Height="28" Padding="0"
+                                    Background="Transparent" BorderThickness="0" CornerRadius="4"
+                                    Click="Refresh_Click" ToolTipService.ToolTip="Refresh status">
+                                <FontIcon Glyph="&#xE72C;" FontSize="13" />
                             </Button>
                         </Grid>
                     </StackPanel>

@@ -46,7 +46,7 @@ $assetsDir = Join-Path $stage 'assets'
 New-Item -ItemType Directory -Force -Path $toolsDir, $assetsDir | Out-Null
 Copy-Item -LiteralPath (Join-Path $repoRoot 'windows\conduit-daemon\tools\install-windows.ps1') -Destination $toolsDir -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'windows\conduit-daemon\tools\uninstall-windows.ps1') -Destination $toolsDir -Force
-foreach ($name in @('conduit-icon.ico', 'conduit-icon.png', 'conduit-icon-light.ico', 'conduit-icon-light.png', 'conduit-icon-dark.ico', 'conduit-icon-dark.png')) {
+foreach ($name in @('conduit-icon.ico', 'conduit-icon.png', 'conduit-icon-light.ico', 'conduit-icon-light.png', 'conduit-icon-dark.ico', 'conduit-icon-dark.png', 'conduit-explorer-light.ico', 'conduit-explorer-dark.ico')) {
     Copy-Item -LiteralPath (Join-Path $repoRoot "windows\conduit-daemon\assets\$name") -Destination $assetsDir -Force
 }
 Copy-Item -LiteralPath (Join-Path $repoRoot 'README.md') -Destination $stage -Force

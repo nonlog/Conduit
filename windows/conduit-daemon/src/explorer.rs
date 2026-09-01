@@ -82,6 +82,17 @@ fn themed_icon(exe: &std::path::Path) -> std::path::PathBuf {
         .and_then(|key| key.get_u32("SystemUsesLightTheme").ok())
         .unwrap_or(1)
         != 0;
+    // Explorer's modern context menu has a smaller visual slot than the taskbar/notification
+    // surfaces. Prefer the dedicated filled Fluent asset there so the mark reads at the same
+    // apparent size as neighbouring shell commands without changing Conduit's app/tray identity.
+    let explorer = exe.with_file_name(if light {
+        "conduit-explorer-light.ico"
+    } else {
+        "conduit-explorer-dark.ico"
+    });
+    if explorer.is_file() {
+        return explorer;
+    }
     let themed = exe.with_file_name(if light {
         "conduit-icon-light.ico"
     } else {

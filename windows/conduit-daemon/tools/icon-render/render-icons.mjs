@@ -12,6 +12,10 @@ const fluent = path.join(assets, 'fluent');
 // 125%, 150%, 175%, 200%, and 250% scaling never turns a neighbouring bitmap into a soft icon.
 const brandSizes = [16, 20, 24, 30, 32, 36, 40, 48, 60, 64, 72, 80, 96, 256];
 const traySizes = [16, 20, 24, 32, 40, 48, 64];
+// Explorer's compact context menu gives the glyph a small fixed slot. A filled Fluent source has
+// the same phone/desktop silhouette but carries more optical weight there without making the app,
+// taskbar, notification, or tray icon oversized.
+const explorerSizes = [16, 20, 24, 32, 40, 48];
 const darkGlyph = '#000000';
 const lightGlyph = '#FFFFFF';
 
@@ -37,6 +41,13 @@ function glyphSvg(size, color) {
   // transform moved the native 20 px tray strokes off the pixel grid at 125% DPI and made the icon
   // visibly fuzzy. Resvg now rasterises the original Fluent geometry directly at the requested
   // Windows target size.
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${source.width}" height="${source.height}" viewBox="0 0 ${source.width} ${source.height}">
+  <path d="${source.d}" fill="${color}"/>
+</svg>`;
+}
+
+function explorerGlyphSvg(color) {
+  const source = parseSource(path.join(fluent, 'ic_fluent_phone_desktop_24_filled.svg'));
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${source.width}" height="${source.height}" viewBox="0 0 ${source.width} ${source.height}">
   <path d="${source.d}" fill="${color}"/>
 </svg>`;
@@ -88,6 +99,11 @@ const trayDark = traySizes.map((size) => ({ size, png: render(glyphSvg(size, lig
 writeIco(path.join(assets, 'conduit-tray-light.ico'), trayLight);
 writeIco(path.join(assets, 'conduit-tray-dark.ico'), trayDark);
 
+const explorerLight = explorerSizes.map((size) => ({ size, png: render(explorerGlyphSvg(darkGlyph), size) }));
+const explorerDark = explorerSizes.map((size) => ({ size, png: render(explorerGlyphSvg(lightGlyph), size) }));
+writeIco(path.join(assets, 'conduit-explorer-light.ico'), explorerLight);
+writeIco(path.join(assets, 'conduit-explorer-dark.ico'), explorerDark);
+
 for (const name of [
   'conduit-icon.png',
   'conduit-icon.ico',
@@ -97,6 +113,8 @@ for (const name of [
   'conduit-icon-dark.ico',
   'conduit-tray-light.ico',
   'conduit-tray-dark.ico',
+  'conduit-explorer-light.ico',
+  'conduit-explorer-dark.ico',
 ]) {
   console.log(path.join(assets, name));
 }

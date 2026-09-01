@@ -6,6 +6,14 @@ import org.junit.Test
 
 class UiModelTest {
     @Test
+    fun reconnectingAndDiscoveringRemainUserStoppable() {
+        assertTrue(!isLinkRequestedState(LinkState.Idle))
+        assertTrue(isLinkRequestedState(LinkState.Discovering))
+        assertTrue(isLinkRequestedState(LinkState.Retrying))
+        assertTrue(isLinkRequestedState(LinkState.Connected))
+    }
+
+    @Test
     fun historySearchMatchesTextAndDirectionCaseInsensitively() {
         val entries = listOf(
             HistoryEntry(Direction.Sent, "Alpha clipboard", 3L),

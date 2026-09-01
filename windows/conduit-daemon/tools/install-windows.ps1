@@ -37,7 +37,9 @@ foreach ($name in $required) {
 }
 
 $assetDir = Join-Path $PSScriptRoot '..\assets'
-foreach ($name in @('conduit-icon.ico', 'conduit-icon.png', 'conduit-icon-light.ico', 'conduit-icon-light.png', 'conduit-icon-dark.ico', 'conduit-icon-dark.png')) {
+$requiredIconAssets = @('conduit-icon.ico', 'conduit-icon.png', 'conduit-icon-light.ico', 'conduit-icon-light.png', 'conduit-icon-dark.ico', 'conduit-icon-dark.png')
+$optionalIconAssets = @('conduit-explorer-light.ico', 'conduit-explorer-dark.ico')
+foreach ($name in $requiredIconAssets) {
     if (-not (Test-Path (Join-Path $assetDir $name))) {
         throw "Missing icon asset $name"
     }
@@ -62,7 +64,9 @@ if (-not [string]::Equals((Resolve-Path $controlSource).Path, (Join-Path $instal
     Copy-Item -Force $controlSource (Join-Path $installDir 'Conduit.exe')
 }
 Remove-Item (Join-Path $installDir 'conduit-control.exe') -Force -ErrorAction SilentlyContinue
-foreach ($name in @('conduit-icon.ico', 'conduit-icon.png', 'conduit-icon-light.ico', 'conduit-icon-light.png', 'conduit-icon-dark.ico', 'conduit-icon-dark.png')) {
+foreach ($name in @($requiredIconAssets + $optionalIconAssets)) {
+    $candidate = Join-Path $assetDir $name
+    if (-not (Test-Path $candidate)) { continue }
     $from = (Resolve-Path (Join-Path $assetDir $name)).Path
     $to = Join-Path $installDir $name
     if (-not [string]::Equals($from, $to, [StringComparison]::OrdinalIgnoreCase)) {
