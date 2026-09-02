@@ -43,6 +43,8 @@ class LinkTileService : TileService() {
         tile.state = if (linkRequested) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
         tile.subtitle = when {
             LinkStatus.state == LinkState.Connected -> "Linked to $peer"
+            LinkStatus.state == LinkState.Waiting -> "Waiting for $peer"
+            LinkStatus.state == LinkState.Retrying -> "Reconnecting to $peer"
             linkRequested -> "Connecting to $peer"
             else -> "Not linked"
         }

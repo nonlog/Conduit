@@ -318,7 +318,7 @@ class SyncService : Service() {
                                 scheduleRetry()
                             }
                         }
-                        LinkState.Discovering, LinkState.Retrying -> {}
+                        LinkState.Discovering, LinkState.Waiting, LinkState.Retrying -> {}
                     }
                 }
 

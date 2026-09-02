@@ -9,6 +9,7 @@ class UiModelTest {
     fun reconnectingAndDiscoveringRemainUserStoppable() {
         assertTrue(!isLinkRequestedState(LinkState.Idle))
         assertTrue(isLinkRequestedState(LinkState.Discovering))
+        assertTrue(isLinkRequestedState(LinkState.Waiting))
         assertTrue(isLinkRequestedState(LinkState.Retrying))
         assertTrue(isLinkRequestedState(LinkState.Connected))
     }

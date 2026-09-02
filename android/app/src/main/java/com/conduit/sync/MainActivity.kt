@@ -77,6 +77,9 @@ enum class LinkState(val label: String) {
     Idle("Not linked"),
     Discovering("Looking for the desktop"),
 
+    /** Relay is reachable and this socket is parked without polling until the desktop appears. */
+    Waiting("Waiting for the desktop"),
+
     /** Down, with an attempt already scheduled. See `SyncService.scheduleRetry`. */
     Retrying("Reconnecting"),
     Connected("Linked"),

@@ -29,16 +29,24 @@ private const val TAG = "conduit.link"
 private const val READ_DEADLINE_MS = 150_000
 
 /**
- * The relay path's deadline, following the desktop's slower keepalive there. A ping a
- * minute is free on Wi-Fi and a radio wake a minute on cellular, so the desktop pings
- * every 240 s over the relay and this is the 2.5x that follows. The cost is that a
- * tunnel dying without a FIN goes unnoticed for up to ten minutes; the benefit is that
- * an idle phone on mobile data wakes its radio four times an hour instead of sixty.
- *
- * It doubles as the parking deadline: a phone that reaches the relay before the desktop
- * sits in exactly this blocked read until it is spliced.
+ * Once Noise is up, the relay path follows the desktop's slower keepalive. The desktop
+ * pings every 240 s over the relay and this is the 2.5x read deadline that detects a
+ * genuinely dead established tunnel without minute-by-minute radio wakes.
  */
 private const val RELAY_READ_DEADLINE_MS = 600_000
+
+/**
+ * Before the desktop arrives, an explicit-role relay waiter has no userspace deadline.
+ * The relay is deliberately designed to park a waiter for hours and uses kernel TCP
+ * keepalive to reap dead sockets and refresh NAT. A ten-minute Android read timeout here
+ * used to tear down a healthy parked socket and start the whole discovery/relay cycle
+ * again even though nothing had changed. Socket.setSoTimeout(0) means block indefinitely;
+ * network changes and an explicit disconnect still close the socket immediately.
+ */
+private const val RELAY_PARK_READ_DEADLINE_MS = 0
+
+internal fun initialReadDeadlineMs(rendezvous: String?): Int =
+    if (rendezvous == null) READ_DEADLINE_MS else RELAY_PARK_READ_DEADLINE_MS
 
 private const val CONNECT_TIMEOUT_MS = 5_000
 private const val JOIN_TIMEOUT_MS = 2_000L
@@ -416,9 +424,10 @@ class Link(
                 socket = sock
                 sock.tcpNoDelay = true
                 sock.keepAlive = true
-                // A deadline, not a poll: the kernel wakes nobody until it expires.
-                sock.soTimeout =
-                    if (rendezvous == null) READ_DEADLINE_MS else RELAY_READ_DEADLINE_MS
+                // Direct sessions need a read deadline immediately. Relay sessions first
+                // enter a passive parked state; their established-session deadline is applied
+                // only after Noise completes.
+                sock.soTimeout = initialReadDeadlineMs(rendezvous)
                 // The relay arrives as a hostname, and resolving it blocks. This is the
                 // one thread here that is allowed to, so it is resolved here rather than
                 // on the connectivity callback that asked for the dial. Some Android VPNs
@@ -455,11 +464,13 @@ class Link(
                         flush()
                     }
                     Log.i(TAG, "session $count parked at $target as ${rendezvous.take(12)}")
+                    events.onState(LinkState.Waiting, null)
                 }
 
                 val live = WireSession.handshake(
                     sock.getInputStream(), sock.getOutputStream(), privateKey, initiator = true,
                 )
+                if (rendezvous != null) sock.soTimeout = RELAY_READ_DEADLINE_MS
                 session = live
                 established = true
                 val peer = Identity.fingerprint(live.peerStatic)
