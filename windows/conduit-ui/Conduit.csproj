@@ -14,7 +14,6 @@
     <UnoFeatures>
       Toolkit;
       Mvvm;
-      SkiaRenderer;
     </UnoFeatures>
     <Platforms>x64</Platforms>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>

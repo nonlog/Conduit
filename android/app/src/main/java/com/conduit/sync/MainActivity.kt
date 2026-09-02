@@ -432,7 +432,7 @@ private fun SettingsTab(
         item { HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp)) }
         item {
             PreferenceRow(
-                icon = R.drawable.ic_phone_desktop,
+                icon = R.drawable.ic_brand_sync,
                 title = "Conduit",
                 subtitle = "Connected-device sync",
             )
@@ -464,7 +464,7 @@ private fun SefirahDeviceCard(
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
-                        painter = painterResource(R.drawable.ic_phone_desktop),
+                        painter = painterResource(R.drawable.ic_brand_sync),
                         contentDescription = null,
                         modifier = Modifier.size(36.dp),
                         tint = MaterialTheme.colorScheme.primary,
