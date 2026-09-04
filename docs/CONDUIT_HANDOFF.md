@@ -639,7 +639,7 @@ Follow `docs/development.md` for Scoop-first tool installation and safe Android 
 
 - **Android companion UI overhaul (`MainActivity.kt`):**
   - Followed Sefirah & Material 3 guidelines (`MASTER.md`). Replaced the dual `<=>` icon ambiguity with a dedicated PC/desktop monitor vector asset (`ic_desktop.xml`) on the device card.
-  - Fixed severe layout squeezing bug where the connection route pill (`Relay · WA`) was forced into a vertical single-character wrap beside long state labels. Redesigned `SefirahDeviceCard` with a 3-tier vertical hierarchy: Desktop Name (19sp bold) -> Connection state with colored status dot (🟢 Linked / 🟡 Reconnecting / ⚪ Idle) -> Independent route chip (`⚡ LAN Direct` / `🌐 Relay · WA`).
+  - Fixed severe layout squeezing bug where the connection route pill (`Relay · WA`) was forced into a vertical single-character wrap beside long state labels. Redesigned `SefirahDeviceCard` with a 3-tier vertical hierarchy: Desktop Name (19sp bold) -> Connection state with colored status dot (ð¢ Linked / ð¡ Reconnecting / ⚪ Idle) -> Independent route chip (`⚡ LAN Direct` / `ð Relay · WA`).
   - Added dedicated `ic_photo.xml` vector icon, replacing the accidental use of `ic_share_target.xml` whose 108x108 background rectangle had rendered as an opaque tinted black square under Compose.
   - When linked, `SefirahDeviceCard` directly exposes `Send files` and `Send photo` action buttons without requiring a separate redundant middle card or navigating to system share sheets.
   - Grouped settings into clean Material 3 surface containers for Sync & Privacy and About.
@@ -654,3 +654,10 @@ Follow `docs/development.md` for Scoop-first tool installation and safe Android 
   - Review fixes remove clipboard actions that could copy only the bounded history preview, apply the existing 16-file sender-queue cap and a fresh connection check to the in-app Android picker, and make Windows drag-and-drop send every dropped file sequentially instead of silently ignoring files after the first.
   - Merge/deployment is gated on a clean GitHub Actions run for the reviewed head. Runtime installation on Log uses only that GitHub-built artifact; no Log-local build output is authoritative.
 
+
+## 2026-09-04 Tray tooltip repair & v0.1.1 Scoop rollout
+
+- **Tray icon blank banner root cause:** In `tray.rs`, using `NOTIFYICON_VERSION_4` causes Windows Vista and later to suppress standard `szTip` tooltips into a blank banner placeholder unless `NIF_SHOWTIP` (0x80) is explicitly specified in `uFlags`. Added `NIF_SHOWTIP` to `windows_sys::Win32::UI::Shell` imports and `data.uFlags`.
+- **Version 0.1.1 tag & release:** Bumped version to `0.1.1` in `Cargo.toml`, `android/app/build.gradle.kts` and `Conduit.csproj`. Pushed tag `v0.1.1` to GitHub, successfully triggering the GitHub Actions build and release workflow.
+- **Excavator workflow & www bucket update:** Triggered the `Excavator` workflow in `nonlog/scoop-www` via workflow dispatch. It autoupdated `bucket/conduit.json` to version `0.1.1` with SHA-256 `37e45a021f356ef1b0ac9977d12d74a59e01a833efa00386df0ddc162a9dd71c`.
+- **Desktop client deployment:** Upgraded the installed desktop companion via `scoop update conduit` to `0.1.1`. The new resident daemon (PID 7236) is running and the tray tooltip displays "Conduit" cleanly.
