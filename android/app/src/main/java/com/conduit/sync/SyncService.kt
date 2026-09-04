@@ -700,8 +700,8 @@ class SyncService : Service() {
      * Parks at the relay under the desktop's device id.
      *
      * Unresolved on purpose: DNS blocks, and [Link]'s reader thread is the one thread
-     * here allowed to block. Without a remembered peer there is no rendezvous to present,
-     * which is why pairing has to happen once on a LAN.
+     * here allowed to block. Normal Relay reconnect still requires the remembered desktop id;
+     * first/replacement pairing uses a separate two-minute code-derived Relay rendezvous.
      */
     private fun dialRelay() {
         val peer = knownPeer
