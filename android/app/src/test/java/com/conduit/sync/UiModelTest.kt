@@ -11,6 +11,7 @@ class UiModelTest {
         assertTrue(isLinkRequestedState(LinkState.Discovering))
         assertTrue(isLinkRequestedState(LinkState.Waiting))
         assertTrue(isLinkRequestedState(LinkState.Retrying))
+        assertTrue(isLinkRequestedState(LinkState.Pairing))
         assertTrue(isLinkRequestedState(LinkState.Connected))
     }
 

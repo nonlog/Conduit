@@ -70,6 +70,11 @@ internal fun retryCeilingMs(nowUptimeMs: Long, recoveryUntilUptimeMs: Long): Lon
 /** Sent by the UI. A disconnect has to be remembered, or START_STICKY undoes the user's tap. */
 const val ACTION_CONNECT = "com.conduit.sync.CONNECT"
 const val ACTION_DISCONNECT = "com.conduit.sync.DISCONNECT"
+const val ACTION_PAIR = "com.conduit.sync.PAIR"
+const val ACTION_CANCEL_PAIR = "com.conduit.sync.CANCEL_PAIR"
+const val ACTION_FORGET = "com.conduit.sync.FORGET"
+
+private const val PAIRING_WINDOW_MS = 120_000L
 
 /** Sent by [ShareActivity]: URIs in the intent's ClipData, or text in EXTRA_TEXT. */
 const val ACTION_SHARE = "com.conduit.sync.SHARE"
@@ -110,6 +115,7 @@ class SyncService : Service() {
     private lateinit var connectivity: ConnectivityManager
     private lateinit var wallpaperManager: WallpaperManager
     private lateinit var relayQuality: RelayQualityStore
+    private lateinit var localDeviceId: String
     private lateinit var localDeviceName: String
     private var relayEndpoints: List<RelayEndpoint> = emptyList()
     private val main = Handler(Looper.getMainLooper())
@@ -146,6 +152,24 @@ class SyncService : Service() {
     /** Its name, so republishing the share-sheet shortcut happens on a rename and not per session. */
     @Volatile private var knownPeerName: String? = null
 
+    /** Explicit, user-opened LAN pairing window. Uptime excludes deep sleep and never wakes it. */
+    @Volatile private var pairingUntilUptimeMs = 0L
+    private val pairingTimeout = Runnable {
+        if (pairingUntilUptimeMs == 0L) return@Runnable
+        pairingUntilUptimeMs = 0L
+        LinkStatus.pairing = false
+        Log.i(TAG, "pairing window expired")
+        if (knownPeer != null && Settings.linkWanted && networkUp) {
+            redial()
+        } else if (knownPeer == null) {
+            Settings.linkWanted = false
+            LinkStatus.state = LinkState.Idle
+            LinkStatus.path = null
+            hideLinkNotification()
+            stopSelf()
+        }
+    }
+
     /** Set in [onDestroy] so a retry already in flight cannot touch a closed [Link]. */
     @Volatile private var destroyed = false
 
@@ -161,7 +185,7 @@ class SyncService : Service() {
      */
     private var recoveryUntilUptimeMs = 0L
     private val retry = Runnable {
-        if (destroyed || !Settings.linkWanted) return@Runnable
+        if (destroyed || !Settings.linkWanted || pairingActive()) return@Runnable
         Log.i(TAG, "retrying the link")
         redial()
     }
@@ -195,7 +219,7 @@ class SyncService : Service() {
             // that just failed, so it starts from the floor instead of serving out a
             // backoff earned on a network that no longer exists.
             cancelRetry()
-            redial(net)
+            if (pairingActive()) searchPairingLan(net) else redial(net)
         }
 
         override fun onLost(net: Network) {
@@ -212,15 +236,18 @@ class SyncService : Service() {
     override fun onCreate() {
         super.onCreate()
         val identity = Identity.loadOrCreate(filesDir)
+        localDeviceId = Identity.deviceId(identity.public)
         LinkStatus.fingerprint = Identity.fingerprint(identity.public)
-        Log.i(TAG, "identity ${Identity.deviceId(identity.public)}")
+        Log.i(TAG, "identity $localDeviceId")
 
         clipboard = getSystemService(ClipboardManager::class.java)
         connectivity = getSystemService(ConnectivityManager::class.java)
         wallpaperManager = getSystemService(WallpaperManager::class.java)
         knownPeer = Identity.peer(filesDir)
         knownPeerName = Identity.peerName(filesDir)
+        LinkStatus.pairedDeviceId = knownPeer
         LinkStatus.peerName = knownPeerName
+        LinkStatus.pairing = false
         // Refresh the shortcut once per service process so an app update can change its icon even
         // when the paired desktop name did not change.
         knownPeerName?.let { ShareTarget.publish(this, it) }
@@ -240,6 +267,7 @@ class SyncService : Service() {
 
         link = Link(
             identity.private,
+            localDeviceId,
             localDeviceName,
             object : Link.Events {
                 override fun onState(state: LinkState, peer: String?) {
@@ -318,7 +346,7 @@ class SyncService : Service() {
                                 scheduleRetry()
                             }
                         }
-                        LinkState.Discovering, LinkState.Waiting, LinkState.Retrying -> {}
+                        LinkState.Discovering, LinkState.Waiting, LinkState.Retrying, LinkState.Pairing -> {}
                     }
                 }
 
@@ -373,6 +401,26 @@ class SyncService : Service() {
                     main.post { NotificationRelay.perform(action) }
                 }
 
+                override fun authorizePeer(
+                    deviceId: String,
+                    viaRelay: Boolean,
+                    remotePairing: Boolean,
+                ): Boolean {
+                    if (pairingActive()) {
+                        // Pairing/replacement is deliberately LAN-only and mutual: both users must
+                        // have opened the short pairing window. This also prevents the old trusted
+                        // desktop from immediately consuming a "Pair new" attempt by reconnecting.
+                        return !viaRelay && remotePairing
+                    }
+                    return deviceId == knownPeer
+                }
+
+                override fun pairingRequested(): Boolean = pairingActive()
+
+                override fun onPeerForgotten() {
+                    main.post { forgetPeer(remote = true) }
+                }
+
                 override fun onPeer(deviceId: String) = rememberPeer(deviceId)
 
                 override fun onPeerName(name: String) = rememberPeerName(name)
@@ -394,7 +442,15 @@ class SyncService : Service() {
         discovery = Discovery(
             this,
             onFound = { address -> link.connect(address) },
-            onEmpty = { dialRelay() },
+            onEmpty = {
+                if (pairingActive()) {
+                    LinkStatus.state = LinkState.Pairing
+                    LinkStatus.path = "LAN · No desktop found"
+                    hideLinkNotification()
+                } else {
+                    dialRelay()
+                }
+            },
         )
         photos = Photos(this, link).apply { start() }
         screenshots = Screenshots(this, link).apply { start() }
@@ -407,9 +463,19 @@ class SyncService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_DISCONNECT) {
-            stopLink()
-            return START_NOT_STICKY
+        when (intent?.action) {
+            ACTION_DISCONNECT -> {
+                stopLink()
+                return START_NOT_STICKY
+            }
+            ACTION_FORGET -> {
+                forgetPeer(remote = false)
+                return START_NOT_STICKY
+            }
+            ACTION_CANCEL_PAIR -> {
+                cancelPairing(resumeOldPeer = true)
+                return START_STICKY
+            }
         }
         // Android requires a service launched by startForegroundService() to enter foreground
         // quickly. This is only a short-lived connecting notification; the persistent one is
@@ -422,6 +488,7 @@ class SyncService : Service() {
         //       --es host 127.0.0.1
         val host = intent?.getStringExtra("host")
         when {
+            intent?.action == ACTION_PAIR -> beginPairing()
             intent?.action == ACTION_ACCESSIBILITY_CLIP -> onAccessibilityClip(intent)
             intent?.action == ACTION_SHARE -> onShare(intent)
             host != null -> {
@@ -454,6 +521,7 @@ class SyncService : Service() {
         // retry cannot fire against a [Link] that close() is about to spend.
         destroyed = true
         main.removeCallbacks(retry)
+        main.removeCallbacks(pairingTimeout)
         main.removeCallbacks(wallpaperRefresh)
         if (::wallpaperManager.isInitialized) wallpaperManager.removeOnColorsChangedListener(wallpaperListener)
         // Cleared next, so the notification relay stops handing frames to a link that
@@ -472,6 +540,7 @@ class SyncService : Service() {
         LinkStatus.state = LinkState.Idle
         LinkStatus.peer = null
         LinkStatus.path = null
+        LinkStatus.pairing = false
         clearRelayPlan()
         super.onDestroy()
     }
@@ -504,6 +573,18 @@ class SyncService : Service() {
             Log.i(TAG, "link down with no network, waiting for one")
             return@post
         }
+        if (pairingActive()) {
+            LinkStatus.state = LinkState.Pairing
+            hideLinkNotification()
+            return@post
+        }
+        if (knownPeer == null) {
+            Log.i(TAG, "no paired desktop and pairing is closed; not retrying")
+            LinkStatus.state = LinkState.Idle
+            LinkStatus.path = null
+            hideLinkNotification()
+            return@post
+        }
         LinkStatus.state = LinkState.Retrying
         hideLinkNotification()
         val ceiling = retryCeilingMs(SystemClock.uptimeMillis(), recoveryUntilUptimeMs)
@@ -526,6 +607,9 @@ class SyncService : Service() {
     private fun stopLink() {
         Log.i(TAG, "user asked for a disconnect")
         Settings.linkWanted = false
+        pairingUntilUptimeMs = 0L
+        LinkStatus.pairing = false
+        main.removeCallbacks(pairingTimeout)
         main.removeCallbacks(retry)
         retryMs = RETRY_MIN_MS
         recoveryUntilUptimeMs = 0L
@@ -553,6 +637,17 @@ class SyncService : Service() {
     private fun redial(net: Network? = null) {
         if (!Settings.linkWanted) {
             Log.i(TAG, "not dialling; the user turned the link off")
+            return
+        }
+        if (pairingActive()) {
+            searchPairingLan(net)
+            return
+        }
+        if (knownPeer == null) {
+            Log.i(TAG, "not dialling; no desktop is paired")
+            LinkStatus.state = LinkState.Idle
+            LinkStatus.path = null
+            hideLinkNotification()
             return
         }
         val caps = connectivity.getNetworkCapabilities(net ?: connectivity.activeNetwork)
@@ -652,13 +747,89 @@ class SyncService : Service() {
         return "other"
     }
 
-    /** First handshake with a given desktop is the only one that writes. */
+    private fun pairingActive(): Boolean =
+        pairingUntilUptimeMs > SystemClock.uptimeMillis()
+
+    private fun beginPairing() {
+        Settings.linkWanted = true
+        pairingUntilUptimeMs = SystemClock.uptimeMillis() + PAIRING_WINDOW_MS
+        LinkStatus.pairing = true
+        LinkStatus.state = LinkState.Pairing
+        LinkStatus.path = "LAN · Pairing"
+        main.removeCallbacks(pairingTimeout)
+        main.postDelayed(pairingTimeout, PAIRING_WINDOW_MS)
+        main.removeCallbacks(retry)
+        retryMs = RETRY_MIN_MS
+        clearRelayPlan()
+        discovery.stop()
+        link.disconnect()
+        Log.i(TAG, "pairing opened for ${PAIRING_WINDOW_MS / 1000}s")
+        searchPairingLan()
+    }
+
+    private fun searchPairingLan(net: Network? = null) {
+        if (!pairingActive()) return
+        val caps = connectivity.getNetworkCapabilities(net ?: connectivity.activeNetwork)
+        val lan = caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true ||
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true
+        LinkStatus.state = LinkState.Pairing
+        if (!lan) {
+            LinkStatus.path = "Same Wi-Fi required"
+            hideLinkNotification()
+            return
+        }
+        LinkStatus.path = "LAN · Pairing"
+        Log.i(TAG, "pairing window active; running one mDNS burst")
+        discovery.burst()
+    }
+
+    private fun cancelPairing(resumeOldPeer: Boolean) {
+        pairingUntilUptimeMs = 0L
+        LinkStatus.pairing = false
+        main.removeCallbacks(pairingTimeout)
+        discovery.stop()
+        if (resumeOldPeer && knownPeer != null && Settings.linkWanted && networkUp) {
+            redial()
+        }
+    }
+
+    private fun forgetPeer(remote: Boolean) {
+        Log.i(TAG, if (remote) "desktop requested unpair" else "user forgot the paired desktop")
+        pairingUntilUptimeMs = 0L
+        LinkStatus.pairing = false
+        main.removeCallbacks(pairingTimeout)
+        main.removeCallbacks(retry)
+        discovery.stop()
+        clearRelayPlan()
+        Settings.linkWanted = false
+        knownPeer = null
+        knownPeerName = null
+        Identity.forgetPeer(filesDir)
+        ShareTarget.clear(this)
+        LinkStatus.pairedDeviceId = null
+        LinkStatus.peerName = null
+        LinkStatus.peer = null
+        LinkStatus.state = LinkState.Idle
+        LinkStatus.path = null
+        FileTransfers.clearAll()
+        hideAllTransferNotifications()
+        hideLinkNotification()
+        if (!remote) link.forgetPeer()
+        LinkTileService.refresh(this)
+        stopSelf()
+    }
+
+    /** Persists a peer only after the desktop returned its authenticated pairing hello. */
     private fun rememberPeer(deviceId: String) {
-        if (deviceId == knownPeer) return
+        val changed = deviceId != knownPeer
         knownPeer = deviceId
-        runCatching { Identity.rememberPeer(filesDir, deviceId) }
-            .onSuccess { Log.i(TAG, "paired with $deviceId, relay rendezvous stored") }
-            .onFailure { Log.w(TAG, "could not store the peer id; relay stays unavailable", it) }
+        LinkStatus.pairedDeviceId = deviceId
+        if (changed) {
+            runCatching { Identity.rememberPeer(filesDir, deviceId) }
+                .onSuccess { Log.i(TAG, "paired with $deviceId, relay rendezvous stored") }
+                .onFailure { Log.w(TAG, "could not store the peer id; relay stays unavailable", it) }
+        }
+        cancelPairing(resumeOldPeer = false)
     }
 
     /**

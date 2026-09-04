@@ -74,6 +74,12 @@ object Identity {
         .getOrNull()
         ?.takeIf { it.length == ID_LEN }
 
+    /** Forget only the paired desktop. The phone's own identity deliberately survives. */
+    fun forgetPeer(dir: File) {
+        runCatching { File(dir, PEER_FILE).delete() }
+        runCatching { File(dir, PEER_NAME_FILE).delete() }
+    }
+
     /** Best effort: a name that will not store costs a share-sheet label, nothing more. */
     fun rememberPeerName(dir: File, name: String) {
         runCatching { File(dir, PEER_NAME_FILE).writeText(name) }

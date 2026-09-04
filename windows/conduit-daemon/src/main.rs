@@ -16,6 +16,7 @@ mod explorer;
 mod file;
 mod image;
 mod notification_history;
+mod pairing;
 mod shared_links;
 mod status;
 mod toast;
@@ -223,6 +224,48 @@ async fn main() -> Result<()> {
             }
             return Ok(());
         }
+        if command == "pair" {
+            let dir = config_dir()?;
+            std::fs::create_dir_all(&dir)?;
+            let action = args
+                .next()
+                .context("usage: conduit-daemon pair <status|start|cancel|forget>")?;
+            if args.next().is_some() {
+                bail!("usage: conduit-daemon pair <status|start|cancel|forget>");
+            }
+            match action.to_string_lossy().as_ref() {
+                "status" => {
+                    let state = pairing::state(&dir);
+                    println!("paired={}", state.device_id.is_some());
+                    println!("pairing={}", state.pairing);
+                    println!("peer_id={}", state.device_id.as_deref().unwrap_or(""));
+                    println!("peer_name={}", state.device_name.as_deref().unwrap_or(""));
+                }
+                "start" => match control::pair(control::PairAction::Start).await {
+                    Ok(()) => println!("Pairing is open for {} seconds.", pairing::WINDOW.as_secs()),
+                    Err(_) => {
+                        pairing::start(&dir)?;
+                        println!("Pairing is open for {} seconds; it will apply when the daemon starts.", pairing::WINDOW.as_secs());
+                    }
+                },
+                "cancel" => match control::pair(control::PairAction::Cancel).await {
+                    Ok(()) => println!("Pairing cancelled."),
+                    Err(_) => {
+                        pairing::cancel(&dir)?;
+                        println!("Pairing cancelled.");
+                    }
+                },
+                "forget" => match control::pair(control::PairAction::Forget).await {
+                    Ok(()) => println!("Paired phone forgotten."),
+                    Err(_) => {
+                        pairing::forget(&dir)?;
+                        println!("Paired phone forgotten; no daemon is currently running.");
+                    }
+                },
+                _ => bail!("usage: conduit-daemon pair <status|start|cancel|forget>"),
+            }
+            return Ok(());
+        }
         if command == "reload" && args.next().is_none() {
             control::reload().await?;
             return Ok(());
@@ -318,7 +361,7 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         bail!(
-            "unknown command {:?}; usage: conduit-daemon [send <file> | status | autostart <install|remove|status> | explorer <install|remove|status> | config ...]",
+            "unknown command {:?}; usage: conduit-daemon [send <file> | status | pair <status|start|cancel|forget> | autostart <install|remove|status> | explorer <install|remove|status> | config ...]",
             command
         );
     }
@@ -383,8 +426,10 @@ async fn main() -> Result<()> {
     let (outbound_tx, outbound_rx) = mpsc::channel::<control::SendRequest>(16);
     let outbound = Arc::new(Mutex::new(outbound_rx));
     let (reload_tx, mut reload_rx) = mpsc::channel::<control::ReloadRequest>(4);
+    let (pair_tx, mut pair_rx) = mpsc::channel::<control::PairRequest>(4);
+    let (pair_session_tx, _) = broadcast::channel::<control::PairAction>(4);
     tokio::spawn(async move {
-        if let Err(e) = control::serve(outbound_tx, reload_tx).await {
+        if let Err(e) = control::serve(outbound_tx, reload_tx, pair_tx).await {
             warn!(error = %e, "local control pipe stopped");
         }
     });
@@ -479,6 +524,24 @@ async fn main() -> Result<()> {
                 let _ = request.completion.send(result);
                 continue;
             }
+            Some(request) = pair_rx.recv() => {
+                let result = match request.action {
+                    control::PairAction::Start => pairing::start(&dir).map(|_| ()).map_err(|e| format!("{e:#}")),
+                    control::PairAction::Cancel => pairing::cancel(&dir).map(|_| ()).map_err(|e| format!("{e:#}")),
+                    control::PairAction::Forget => {
+                        let result = pairing::forget(&dir).map(|_| ()).map_err(|e| format!("{e:#}"));
+                        if result.is_ok() {
+                            let _ = pair_session_tx.send(control::PairAction::Forget);
+                            if active.is_none() {
+                                desktop_status.disconnected();
+                            }
+                        }
+                        result
+                    }
+                };
+                let _ = request.completion.send(result);
+                continue;
+            }
             accepted = listener.accept() => {
                 let (stream, peer) = accepted?;
                 (stream, peer, "lan", None)
@@ -507,7 +570,9 @@ async fn main() -> Result<()> {
         let relay_endpoint = relay_endpoint.clone();
         let desktop_status = desktop_status.clone();
         let toast_action_tx = toast_action_tx.clone();
+        let pair_session_tx = pair_session_tx.clone();
         let data_dir = dir.clone();
+        let local_device_id = device_id.clone();
         active_path = Some(via);
         active = Some(tokio::spawn(async move {
             let _guard = SessionGuard {
@@ -518,6 +583,7 @@ async fn main() -> Result<()> {
                 stream,
                 peer,
                 &local_priv,
+                &local_device_id,
                 &metrics,
                 &bridge,
                 &outbound,
@@ -526,6 +592,7 @@ async fn main() -> Result<()> {
                 relay_endpoint.as_deref(),
                 &desktop_status,
                 &toast_action_tx,
+                &pair_session_tx,
                 &data_dir,
             )
             .await
@@ -611,6 +678,7 @@ async fn serve(
     mut stream: TcpStream,
     peer: SocketAddr,
     local_priv: &[u8],
+    local_device_id: &str,
     metrics: &Metrics,
     bridge: &Arc<clip::Bridge>,
     outbound: &Arc<Mutex<mpsc::Receiver<control::SendRequest>>>,
@@ -620,6 +688,7 @@ async fn serve(
     relay_endpoint: Option<&str>,
     desktop_status: &status::StatusFile,
     toast_action_tx: &broadcast::Sender<pb::NotifAction>,
+    pair_session_tx: &broadcast::Sender<control::PairAction>,
     data_dir: &std::path::Path,
 ) -> Result<()> {
     stream.set_nodelay(true)?;
@@ -631,35 +700,59 @@ async fn serve(
     };
 
     let mut session = Session::handshake(&mut stream, local_priv, false).await?;
-    info!(
-        %peer,
-        id = %wire::device_id(&session.peer_static),
-        via = path,
-        relay = relay_endpoint.unwrap_or("-"),
-        "session up"
-    );
-    desktop_status.linked(&wire::device_id(&session.peer_static), path, relay_endpoint);
-    // The phone has no other way to learn this machine's name. mDNS carries it, but a
-    // relay session never sees an mDNS record — and off-LAN is precisely when a phone
-    // showing "the desktop" instead of a name is least useful. Sent unprompted and
-    // unanswered: the handshake already settled who the peer is.
+    let remote_id = wire::device_id(&session.peer_static);
+    // Exchange identity/name hellos before the session becomes application-visible. This is
+    // especially important during first pairing: a Noise XX handshake proves possession of a
+    // static key, while this mutually completed hello proves the other side also accepted this
+    // session under its local pairing policy. No clipboard/file data is released before that.
     let hello = pb::PairRequest {
-        device_id: wire::device_id(&session.peer_static),
+        device_id: local_device_id.to_string(),
         device_name: advert::hostname(),
         static_pub: Vec::new(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         wallpaper_hash: wallpaper::cached_hash(data_dir),
+        pairing: pairing::state(data_dir).pairing,
     };
     session
         .send(&mut stream, pb::Kind::PairRequest, &hello.encode_to_vec())
         .await?;
     metrics.frames_out.fetch_add(1, Ordering::Relaxed);
-    // Subscribed after the handshake so the session does not replay clips copied
+
+    let first = session.recv(&mut stream).await?;
+    metrics.frames_in.fetch_add(1, Ordering::Relaxed);
+    if first.kind() != pb::Kind::PairRequest {
+        bail!("peer did not confirm pairing with its identity hello");
+    }
+    let peer_hello = pb::PairRequest::decode(&first.payload[..])?;
+    if !peer_hello.device_id.is_empty() && peer_hello.device_id != remote_id {
+        bail!("peer announced an id that does not match its Noise static key");
+    }
+    let authorization = pairing::authorize(data_dir, &remote_id, path, peer_hello.pairing)?;
+    info!(
+        %peer,
+        id = %remote_id,
+        ?authorization,
+        via = path,
+        relay = relay_endpoint.unwrap_or("-"),
+        "session authenticated"
+    );
+    pairing::confirm(data_dir, &remote_id, authorization, &peer_hello.device_name)?;
+    desktop_status.linked(&remote_id, path, relay_endpoint);
+    desktop_status.peer_name(&peer_hello.device_name);
+    info!(
+        name = %peer_hello.device_name,
+        version = %peer_hello.version,
+        id = %remote_id,
+        "peer pairing confirmed"
+    );
+
+    // Subscribed after the pairing handshake so the session does not replay clips copied
     // while it was still connecting.
     let mut clips = bridge.subscribe();
     // Same semantics for user-initiated toast actions: only the live authenticated session may
     // consume them, and broadcast deliberately has no durable queue across reconnects.
     let mut toast_actions = toast_action_tx.subscribe();
+    let mut pair_actions = pair_session_tx.subscribe();
     // At most one image in flight, and it dies with the session: a peer that vanishes
     // mid-transfer cannot leave a partial buffer behind for the next one to inherit.
     let mut incoming: Option<image::Assembly> = None;
@@ -821,6 +914,26 @@ async fn serve(
                     Err(broadcast::error::RecvError::Closed) => {
                         warn!("toast action channel closed");
                     }
+                }
+                continue;
+            }
+            action = pair_actions.recv(), if !heartbeat.awaiting_pong() => {
+                match action {
+                    Ok(control::PairAction::Forget) => {
+                        let response = pb::PairResponse { accept: false, static_pub: Vec::new() };
+                        session
+                            .send(&mut stream, pb::Kind::PairResponse, &response.encode_to_vec())
+                            .await?;
+                        metrics.frames_out.fetch_add(1, Ordering::Relaxed);
+                        bail!("local user forgot the paired phone");
+                    }
+                    Ok(_) => {}
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        if pairing::peer_id(data_dir).is_none() {
+                            bail!("paired phone was forgotten");
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {}
                 }
                 continue;
             }
@@ -1033,8 +1146,21 @@ async fn serve(
             // out of the "unhandled kind" log.
             pb::Kind::PairRequest => {
                 let hello = pb::PairRequest::decode(&envelope.payload[..])?;
+                if !hello.device_id.is_empty() && hello.device_id != remote_id {
+                    bail!("peer announced an id that does not match its Noise static key");
+                }
                 info!(name = %hello.device_name, version = %hello.version, "peer named itself");
                 desktop_status.peer_name(&hello.device_name);
+                if let Err(e) = pairing::remember_name(data_dir, &hello.device_name) {
+                    warn!(error = %e, "could not persist paired phone name");
+                }
+            }
+            pb::Kind::PairResponse => {
+                let response = pb::PairResponse::decode(&envelope.payload[..])?;
+                if !response.accept {
+                    pairing::forget(data_dir)?;
+                    bail!("paired phone removed this desktop");
+                }
             }
             // A file, same leniency as an image: a refused offer costs the transfer and
             // nothing else. The session is also carrying the clipboard, and a phone that

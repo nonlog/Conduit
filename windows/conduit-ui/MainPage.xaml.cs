@@ -11,6 +11,7 @@ namespace Conduit;
 public sealed partial class MainPage : Page
 {
     private bool _loaded;
+    private CancellationTokenSource? _pairingExpiryRefresh;
 
     public MainViewModel ViewModel { get; } = new();
 
@@ -48,6 +49,9 @@ public sealed partial class MainPage : Page
     private void MainPage_Unloaded(object sender, RoutedEventArgs e)
     {
         _loaded = false;
+        _pairingExpiryRefresh?.Cancel();
+        _pairingExpiryRefresh?.Dispose();
+        _pairingExpiryRefresh = null;
         ViewModel.Dispose();
     }
 
@@ -230,6 +234,77 @@ public sealed partial class MainPage : Page
         catch (Exception ex)
         {
             ShowInfo("Could not clear shared links", ex.Message, InfoBarSeverity.Error);
+        }
+    }
+
+    private void PairDevice_Click(object sender, RoutedEventArgs e)
+    {
+        // Expiry is timestamp-based. Refresh before deciding so a window that elapsed while the UI
+        // was open cannot turn the next Pair click into a stale Cancel operation.
+        ViewModel.RefreshAll();
+        var result = ViewModel.PairingActive ? ViewModel.CancelPairing() : ViewModel.StartPairing();
+        if (!result.Success)
+        {
+            ShowInfo("Could not update pairing", result.Detail, InfoBarSeverity.Error);
+            return;
+        }
+
+        if (ViewModel.PairingActive)
+        {
+            ShowInfo(
+                "Pairing is open",
+                "On the phone, choose Pair desktop while both devices are on the same LAN. This window closes in two minutes.",
+                InfoBarSeverity.Informational);
+            SchedulePairingExpiryRefresh();
+        }
+        else
+        {
+            _pairingExpiryRefresh?.Cancel();
+            ShowInfo("Pairing cancelled", "The existing paired phone was not changed.", InfoBarSeverity.Informational);
+        }
+    }
+
+    private async void ForgetDevice_Click(object sender, RoutedEventArgs e)
+    {
+        if (!ViewModel.HasPairedDevice) return;
+        var name = string.IsNullOrWhiteSpace(ViewModel.PairedDeviceName) ? "this phone" : ViewModel.PairedDeviceName;
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = $"Forget {name}?",
+            Content = "This removes the pairing from this PC and tells the connected phone to forget it too. The PC identity and your Conduit settings are kept.",
+            PrimaryButtonText = "Forget",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Close,
+        };
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+
+        var result = ViewModel.ForgetPairedDevice();
+        if (result.Success)
+            ShowInfo("Phone forgotten", "Pairing was removed. Use Pair phone on both devices to link again.", InfoBarSeverity.Success);
+        else
+            ShowInfo("Could not forget phone", result.Detail, InfoBarSeverity.Error);
+    }
+
+    private async void SchedulePairingExpiryRefresh()
+    {
+        _pairingExpiryRefresh?.Cancel();
+        _pairingExpiryRefresh?.Dispose();
+        var cancellation = new CancellationTokenSource();
+        _pairingExpiryRefresh = cancellation;
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(121), cancellation.Token);
+            if (_loaded && !cancellation.IsCancellationRequested) ViewModel.RefreshAll();
+        }
+        catch (OperationCanceledException) { }
+        finally
+        {
+            if (ReferenceEquals(_pairingExpiryRefresh, cancellation))
+            {
+                _pairingExpiryRefresh = null;
+                cancellation.Dispose();
+            }
         }
     }
 

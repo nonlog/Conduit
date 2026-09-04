@@ -61,4 +61,15 @@ object ShareTarget {
             .onSuccess { Log.i(TAG, "share target is now '$name'") }
             .onFailure { Log.w(TAG, "could not publish the share target", it) }
     }
+
+    /** Removes the paired-desktop Direct Share entry when that relationship is forgotten. */
+    fun clear(context: Context) {
+        val manager = context.getSystemService(ShortcutManager::class.java) ?: return
+        runCatching { manager.removeDynamicShortcuts(listOf(ID)) }
+            .onFailure { Log.w(TAG, "could not remove the share target", it) }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            runCatching { manager.removeLongLivedShortcuts(listOf(ID)) }
+                .onFailure { Log.w(TAG, "could not remove the long-lived share target", it) }
+        }
+    }
 }

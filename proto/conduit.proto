@@ -55,11 +55,12 @@ message PairRequest {
   bytes  static_pub  = 3;  // empty over an established session: the handshake carried it
   string version     = 4;
   bytes  wallpaper_hash = 5;  // SHA-256 of the cached desktop preview; empty means missing
+  bool   pairing       = 6;  // true only during a user-opened two-minute LAN pairing window
 }
 
 message PairResponse {
-  bool  accept     = 1;
-  bytes static_pub = 2;
+  bool  accept     = 1;  // false on an authenticated live session means "forget this pairing"
+  bytes static_pub = 2;  // reserved for compatibility with the original pairing sketch
 }
 
 // --- clipboard ---
