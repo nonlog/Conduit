@@ -1,11 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Product mark: Microsoft Fluent UI System Icons / Phone Desktop 24 Filled (MIT). -->
+<!-- Original Conduit mark: two tracks moving in opposite directions. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
-    android:viewportWidth="36"
-    android:viewportHeight="36">
-    <group android:pivotX="12" android:pivotY="12" android:scaleX="0.68" android:scaleY="0.68" android:translateX="6" android:translateY="6">
-        <path android:fillColor="#FFFFFF" android:pathData="M8.254 9c0.967 0 1.75 0.783 1.75 1.75v9.5c0 0.966-0.783 1.75-1.75 1.75H3.75C2.784 22 2 21.216 2 20.25v-9.5C2 9.783 2.784 9 3.75 9h4.504zm-2.002 9.495h-0.5l-0.101 0.007c-0.367 0.05-0.649 0.364-0.649 0.743 0 0.38 0.282 0.694 0.649 0.743l0.101 0.007h0.5l0.102-0.007c0.366-0.05 0.648-0.363 0.648-0.743s-0.282-0.693-0.648-0.743l-0.102-0.007zM19.75 2c1.191 0 2.166 0.925 2.245 2.096L22 4.25v9c0 1.19-0.925 2.166-2.096 2.245L19.75 15.5h-3.746v2h1.246c0.415 0 0.75 0.336 0.75 0.75 0 0.38-0.282 0.694-0.648 0.743L17.25 19H11v-1.5h3.504v-2H11v-5c0-1.325-1.031-2.41-2.335-2.495L8.499 8H4V4.25c0-1.19 0.925-2.166 2.096-2.245L6.25 2h13.5z" />
-    </group>
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:pathData="M33,45 L72,45" android:strokeWidth="9" android:strokeColor="#FFFFFF" android:strokeLineCap="round" />
+    <path android:pathData="M64,37 L72,45 L64,53" android:strokeWidth="9" android:strokeColor="#FFFFFF" android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path android:pathData="M75,63 L36,63" android:strokeWidth="9" android:strokeColor="#FFFFFF" android:strokeLineCap="round" />
+    <path android:pathData="M44,55 L36,63 L44,71" android:strokeWidth="9" android:strokeColor="#FFFFFF" android:strokeLineCap="round" android:strokeLineJoin="round" />
 </vector>

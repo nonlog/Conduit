@@ -42,14 +42,15 @@ Conduit is a small native system utility, not a dashboard or marketing surface. 
 - Clipboard History is a real child destination: system Back/predictive-back must return to Home before the Activity can exit.
 - History rows show direction, time, and content only. Do not add instructions such as “tap to copy”.
 - Direct Share target icons must visually match the launcher app mark at chooser size; use a dedicated shortcut asset when the chooser renders adaptive icons at a different foreground scale.
-- The device card uses a dedicated Phone Desktop content glyph without launcher safe-zone inset; size the visible glyph for the 56 dp tile rather than reusing the adaptive-launcher foreground.
+- Use the original Conduit product mark everywhere identity is shown: two horizontal rounded tracks with arrowheads pointing in opposite directions. The device card uses a dedicated 24 dp form of this mark without launcher safe-zone inset; size the visible glyph for the 56 dp tile rather than reusing the adaptive-launcher foreground.
 
 ## Windows — Fluent / Windows 11
 
 - Use Uno Platform + WinUI 3 / Windows App SDK for the desktop control surface, matching Sefirah. Prefer native WinUI controls and theme resources over custom-drawn WPF/Win32 substitutes. Keep the Rust daemon as the resident backend; the UI remains on-demand.
 - Follow Windows 11 principles: calm, familiar, coherent, and system-accent aware.
 - Use Segoe UI Variable, system light/dark mode, rounded top-level window corners, and the system accent sparingly.
-- The Windows application/titlebar/taskbar icon, notification identity icon, and primary connection symbol use Microsoft Fluent `Phone Desktop` geometry, matching Android. The coloured app mark keeps the violet-to-blue background (`#6E5BD6` -> `#2F6FE0`); the tray uses dedicated monochrome 16/20/24 px regular glyphs rather than shrinking the coloured tile. Relay and Windows section headings stay text-only; never add decorative section glyphs.
+- The Windows application/titlebar/taskbar icon, notification identity icon, tray icon, Explorer verb, and primary connection symbol all use the original two-track bidirectional Conduit mark. Use theme-specific black/white exact-size raster frames on Windows. Explorer gets a slightly lighter outline weight so `Send with Conduit` visually matches Windows 11 native menu glyphs instead of reading like a filled app badge. Relay and Windows section headings stay text-only; never add decorative section glyphs.
+- The Windows-only target is native WinUI 3 / Windows App SDK. Do not enable Uno `SkiaRenderer` for this target: it adds a second renderer and substantially increases cold-start/runtime payload without improving the native Windows control surface.
 - Use a compact two-pane utility layout rather than a vertical dashboard:
   - left: connection/peer status and on-demand actions;
   - right: Relay and Windows integration settings.

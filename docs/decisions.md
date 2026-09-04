@@ -367,6 +367,15 @@ rendezvous id, and from there it is `copy_bidirectional` over opaque ciphertext.
 protobuf dependency, no Noise dependency, and no key — if anything in its dependency tree
 could decrypt a frame, the design would be wrong.
 
+**A parked phone is passive, not a retry loop.** The role-aware relay already keeps explicit-role
+waiters indefinitely and relies on kernel TCP keepalive to refresh NAT and reap genuinely dead
+sockets. Android therefore must not put a userspace read deadline on the pre-handshake parked
+socket. The former 600 s `SO_TIMEOUT` caused a healthy waiter to tear itself down every ten
+minutes, re-run discovery and relay selection, and spend much of an overnight desktop outage in
+`Looking for the desktop`. The phone now parks one socket without a userspace timeout and reports
+`Waiting for the desktop`; a network change or user disconnect still closes it immediately. Only
+a completed Noise session receives the 600 s relay read deadline used for dead-session detection.
+
 No ICE, STUN or TURN, ever. That machinery is precisely the transport lifecycle this project
 exists to avoid: candidate gathering, per-candidate sockets and a session object whose
 destruction is someone else's problem is the exact shape of the Phone Link leak. A splice

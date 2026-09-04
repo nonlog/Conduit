@@ -1,5 +1,6 @@
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.Win32;
 using Windows.Graphics;
 
 namespace Conduit;
@@ -23,13 +24,10 @@ public partial class App : Application
 
         try { MainWindow.SystemBackdrop = new MicaBackdrop(); } catch { }
 
-        MainWindow.Content = new MainPage();
-
-        var icon = Path.Combine(AppContext.BaseDirectory, "Assets", "conduit-icon.ico");
-        if (File.Exists(icon))
-        {
-            try { MainWindow.AppWindow.SetIcon(icon); } catch { }
-        }
+        var mainPage = new MainPage();
+        mainPage.ActualThemeChanged += (_, _) => ApplyThemeIcon();
+        MainWindow.Content = mainPage;
+        ApplyThemeIcon();
 
         try
         {
@@ -38,5 +36,33 @@ public partial class App : Application
         catch { }
 
         MainWindow.Activate();
+    }
+
+    private static void ApplyThemeIcon()
+    {
+        var icon = Path.Combine(AppContext.BaseDirectory, "Assets", ThemeIconFileName());
+        if (!File.Exists(icon))
+        {
+            icon = Path.Combine(AppContext.BaseDirectory, "Assets", "conduit-icon.ico");
+        }
+        if (File.Exists(icon))
+        {
+            try { MainWindow.AppWindow.SetIcon(icon); } catch { }
+        }
+    }
+
+    private static string ThemeIconFileName()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(
+                @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+            if (key?.GetValue("SystemUsesLightTheme") is int light && light == 0)
+            {
+                return "conduit-icon-dark.ico";
+            }
+        }
+        catch { }
+        return "conduit-icon-light.ico";
     }
 }

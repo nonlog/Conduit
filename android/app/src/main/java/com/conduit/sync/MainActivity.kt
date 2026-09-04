@@ -77,10 +77,16 @@ enum class LinkState(val label: String) {
     Idle("Not linked"),
     Discovering("Looking for the desktop"),
 
+    /** Relay is reachable and this socket is parked without polling until the desktop appears. */
+    Waiting("Waiting for the desktop"),
+
     /** Down, with an attempt already scheduled. See `SyncService.scheduleRetry`. */
     Retrying("Reconnecting"),
     Connected("Linked"),
 }
+
+/** Discovery and retry are still an active user request and therefore must remain stoppable. */
+internal fun isLinkRequestedState(state: LinkState): Boolean = state != LinkState.Idle
 
 /**
  * The screen's whole state. Snapshot state rather than a flow because writes come from
@@ -426,7 +432,7 @@ private fun SettingsTab(
         item { HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp)) }
         item {
             PreferenceRow(
-                icon = R.drawable.ic_phone_desktop,
+                icon = R.drawable.ic_brand_sync,
                 title = "Conduit",
                 subtitle = "Connected-device sync",
             )
@@ -442,7 +448,10 @@ private fun SefirahDeviceCard(
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
-    val linked = state == LinkState.Connected
+    // A user-requested link stays "on" while discovery/retry is in progress. Treating only the
+    // fully connected state as active made the toggle call Connect again while the UI said
+    // "Looking for the desktop", leaving no way to stop an unavailable desktop search.
+    val linkRequested = isLinkRequestedState(state)
     Card(modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large, colors = CardDefaults.cardColors()) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(16.dp),
@@ -455,7 +464,7 @@ private fun SefirahDeviceCard(
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
-                        painter = painterResource(R.drawable.ic_phone_desktop),
+                        painter = painterResource(R.drawable.ic_brand_sync),
                         contentDescription = null,
                         modifier = Modifier.size(36.dp),
                         tint = MaterialTheme.colorScheme.primary,
@@ -478,8 +487,8 @@ private fun SefirahDeviceCard(
                 }
             }
             FilledIconToggleButton(
-                checked = linked,
-                onCheckedChange = { if (linked) onDisconnect() else onConnect() },
+                checked = linkRequested,
+                onCheckedChange = { if (linkRequested) onDisconnect() else onConnect() },
                 colors = IconButtonDefaults.filledIconToggleButtonColors(
                     containerColor = MaterialTheme.colorScheme.surfaceVariant,
                     contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -489,7 +498,7 @@ private fun SefirahDeviceCard(
             ) {
                 Icon(
                     painter = painterResource(R.drawable.ic_sync),
-                    contentDescription = if (linked) "Disconnect" else "Connect",
+                    contentDescription = if (linkRequested) "Disconnect" else "Connect",
                 )
             }
         }

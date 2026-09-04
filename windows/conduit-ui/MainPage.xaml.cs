@@ -1,6 +1,7 @@
 using Conduit.Models;
 using Conduit.ViewModels;
 using Microsoft.UI.Dispatching;
+using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Storage.Pickers;
 
 namespace Conduit;
@@ -15,10 +16,18 @@ public sealed partial class MainPage : Page
     {
         InitializeComponent();
         DataContext = ViewModel;
+        ActualThemeChanged += (_, _) => UpdateTitleBarIcon();
+    }
+
+    private void UpdateTitleBarIcon()
+    {
+        var file = ActualTheme == ElementTheme.Dark ? "conduit-icon-dark.png" : "conduit-icon-light.png";
+        TitleBarIcon.Source = new BitmapImage(new Uri($"ms-appx:///Assets/{file}"));
     }
 
     private void MainPage_Loaded(object sender, RoutedEventArgs e)
     {
+        UpdateTitleBarIcon();
         App.MainWindow.SetTitleBar(TitleBarRoot);
         MainNavigationView.SelectedItem = SharedLinksNavigationItem;
         SettingsNavigation.SelectedItem = GeneralSettingsNavigationItem;

@@ -15,6 +15,10 @@
     <!-- New camera photos become a Windows toast. Watched with a ContentObserver,
          never polled. -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <!-- Optional, never requested automatically. Android 14+ protects wallpaper pixels behind the
+         All files access app-op; when the user grants it, Conduit can send one tiny wallpaper
+         preview to the paired desktop. Without it, wallpaper preview simply remains unavailable. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
@@ -49,6 +53,7 @@
             android:theme="@style/Theme.Conduit">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
+                <action android:name="android.service.quicksettings.action.QS_TILE_PREFERENCES" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
             <!-- Read by the framework, not by us: it is what pairs the runtime shortcut

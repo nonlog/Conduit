@@ -21,6 +21,7 @@ mod status;
 mod toast;
 mod tray;
 mod verification_code;
+mod wallpaper;
 mod wire;
 
 use anyhow::{bail, Context, Result};
@@ -647,6 +648,7 @@ async fn serve(
         device_name: advert::hostname(),
         static_pub: Vec::new(),
         version: env!("CARGO_PKG_VERSION").to_string(),
+        wallpaper_hash: wallpaper::cached_hash(data_dir),
     };
     session
         .send(&mut stream, pb::Kind::PairRequest, &hello.encode_to_vec())
@@ -924,6 +926,19 @@ async fn serve(
                         warn!(error = %e, "image transfer dropped");
                         incoming = None;
                     }
+                }
+            }
+            pb::Kind::WallpaperPreview => {
+                match pb::WallpaperPreview::decode(&envelope.payload[..]) {
+                    Ok(preview) => match wallpaper::store(data_dir, &preview) {
+                        Ok(true) => info!(
+                            bytes = preview.jpeg.len(),
+                            "phone wallpaper preview updated"
+                        ),
+                        Ok(false) => {}
+                        Err(e) => warn!(error = %e, "refused phone wallpaper preview"),
+                    },
+                    Err(e) => warn!(error = %e, "malformed phone wallpaper preview dropped"),
                 }
             }
             pb::Kind::SharedUrl => {

@@ -14,7 +14,6 @@
     <UnoFeatures>
       Toolkit;
       Mvvm;
-      SkiaRenderer;
     </UnoFeatures>
     <Platforms>x64</Platforms>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
@@ -33,5 +32,9 @@
   <ItemGroup>
     <Content Include="Assets\conduit-icon.png" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\conduit-icon.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\conduit-icon-light.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\conduit-icon-light.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\conduit-icon-dark.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\conduit-icon-dark.ico" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

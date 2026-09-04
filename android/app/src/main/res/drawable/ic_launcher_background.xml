@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Fluent-style accent gradient, matching the desktop side's design language: violet into
-  blue, top-left to bottom-right. Full-bleed 108dp because a launcher may crop, scale or
+  Conduit accent gradient: violet into blue, top-left to bottom-right. Full-bleed 108dp
+  because a launcher may crop, scale or
   parallax the background layer and any margin would show as a seam.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"

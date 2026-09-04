@@ -101,8 +101,9 @@ jobs:
         run: |
           npm ci --prefix windows/conduit-daemon/tools/icon-render
           node windows/conduit-daemon/tools/icon-render/render-icons.mjs
-          Copy-Item windows/conduit-daemon/assets/conduit-icon.ico windows/conduit-ui/Assets/conduit-icon.ico -Force
-          Copy-Item windows/conduit-daemon/assets/conduit-icon.png windows/conduit-ui/Assets/conduit-icon.png -Force
+          foreach ($name in @('conduit-icon.ico', 'conduit-icon.png', 'conduit-icon-light.ico', 'conduit-icon-light.png', 'conduit-icon-dark.ico', 'conduit-icon-dark.png')) {
+            Copy-Item "windows/conduit-daemon/assets/$name" "windows/conduit-ui/Assets/$name" -Force
+          }
 
       - name: Check Rust formatting
         shell: pwsh

@@ -13,6 +13,7 @@ import com.conduit.sync.proto.Kind
 import com.conduit.sync.proto.NotifAction
 import com.conduit.sync.proto.PairRequest
 import com.conduit.sync.proto.SharedUrl
+import com.conduit.sync.proto.WallpaperPreview
 import java.net.InetSocketAddress
 import java.net.InetAddress
 import java.net.Socket
@@ -28,16 +29,24 @@ private const val TAG = "conduit.link"
 private const val READ_DEADLINE_MS = 150_000
 
 /**
- * The relay path's deadline, following the desktop's slower keepalive there. A ping a
- * minute is free on Wi-Fi and a radio wake a minute on cellular, so the desktop pings
- * every 240 s over the relay and this is the 2.5x that follows. The cost is that a
- * tunnel dying without a FIN goes unnoticed for up to ten minutes; the benefit is that
- * an idle phone on mobile data wakes its radio four times an hour instead of sixty.
- *
- * It doubles as the parking deadline: a phone that reaches the relay before the desktop
- * sits in exactly this blocked read until it is spliced.
+ * Once Noise is up, the relay path follows the desktop's slower keepalive. The desktop
+ * pings every 240 s over the relay and this is the 2.5x read deadline that detects a
+ * genuinely dead established tunnel without minute-by-minute radio wakes.
  */
 private const val RELAY_READ_DEADLINE_MS = 600_000
+
+/**
+ * Before the desktop arrives, an explicit-role relay waiter has no userspace deadline.
+ * The relay is deliberately designed to park a waiter for hours and uses kernel TCP
+ * keepalive to reap dead sockets and refresh NAT. A ten-minute Android read timeout here
+ * used to tear down a healthy parked socket and start the whole discovery/relay cycle
+ * again even though nothing had changed. Socket.setSoTimeout(0) means block indefinitely;
+ * network changes and an explicit disconnect still close the socket immediately.
+ */
+private const val RELAY_PARK_READ_DEADLINE_MS = 0
+
+internal fun initialReadDeadlineMs(rendezvous: String?): Int =
+    if (rendezvous == null) READ_DEADLINE_MS else RELAY_PARK_READ_DEADLINE_MS
 
 private const val CONNECT_TIMEOUT_MS = 5_000
 private const val JOIN_TIMEOUT_MS = 2_000L
@@ -156,6 +165,9 @@ class Link(
          */
         fun onPeerName(name: String)
 
+        /** The desktop's cached phone-wallpaper hash. Empty means it has no preview yet. */
+        fun onWallpaperHash(hash: ByteArray) {}
+
         /**
          * A session that was actually up has gone. A dial that never completed its
          * handshake deliberately does not call this: re-dialling on a refusal is how a
@@ -245,6 +257,33 @@ class Link(
                 teardown()
             }
         }
+
+    /**
+     * Sends the tiny phone-wallpaper preview only when the desktop says its cached copy differs.
+     * Loading and root/platform access stay on the existing sender thread, never the UI thread.
+     */
+    fun sendWallpaperPreview(desktopHash: ByteArray, load: () -> Wallpapers.Preview?) = sender.execute {
+        val live = session ?: return@execute
+        val preview = runCatching { load() }
+            .onFailure { Log.w(TAG, "wallpaper preview could not be read", it) }
+            .getOrNull() ?: return@execute
+        if (desktopHash.contentEquals(preview.sha256)) {
+            Log.d(TAG, "desktop wallpaper preview is already current")
+            return@execute
+        }
+        val message = WallpaperPreview.newBuilder()
+            .setJpeg(com.google.protobuf.ByteString.copyFrom(preview.jpeg))
+            .setSha256(com.google.protobuf.ByteString.copyFrom(preview.sha256))
+            .build()
+        try {
+            live.send(Kind.WALLPAPER_PREVIEW, message.toByteArray())
+            sendPendingPong(live)
+            Log.i(TAG, "wallpaper preview sent: ${preview.jpeg.size} B")
+        } catch (e: Exception) {
+            Log.w(TAG, "wallpaper preview write failed", e)
+            teardown()
+        }
+    }
 
     /**
      * Streams one file to the desktop on the sender thread.
@@ -385,9 +424,10 @@ class Link(
                 socket = sock
                 sock.tcpNoDelay = true
                 sock.keepAlive = true
-                // A deadline, not a poll: the kernel wakes nobody until it expires.
-                sock.soTimeout =
-                    if (rendezvous == null) READ_DEADLINE_MS else RELAY_READ_DEADLINE_MS
+                // Direct sessions need a read deadline immediately. Relay sessions first
+                // enter a passive parked state; their established-session deadline is applied
+                // only after Noise completes.
+                sock.soTimeout = initialReadDeadlineMs(rendezvous)
                 // The relay arrives as a hostname, and resolving it blocks. This is the
                 // one thread here that is allowed to, so it is resolved here rather than
                 // on the connectivity callback that asked for the dial. Some Android VPNs
@@ -424,11 +464,13 @@ class Link(
                         flush()
                     }
                     Log.i(TAG, "session $count parked at $target as ${rendezvous.take(12)}")
+                    events.onState(LinkState.Waiting, null)
                 }
 
                 val live = WireSession.handshake(
                     sock.getInputStream(), sock.getOutputStream(), privateKey, initiator = true,
                 )
+                if (rendezvous != null) sock.soTimeout = RELAY_READ_DEADLINE_MS
                 session = live
                 established = true
                 val peer = Identity.fingerprint(live.peerStatic)
@@ -480,10 +522,15 @@ class Link(
             // Capped, because it is peer-supplied text on its way to a launcher shortcut
             // label and a notification. A desktop is not hostile, but a relay session is
             // reachable by anything that guesses a rendezvous.
-            Kind.PAIR_REQUEST -> PairRequest.parseFrom(envelope.payload).deviceName
-                .take(PEER_NAME_MAX)
-                .takeIf { it.isNotBlank() }
-                ?.let { events.onPeerName(it) }
+            Kind.PAIR_REQUEST -> {
+                val hello = PairRequest.parseFrom(envelope.payload)
+                hello.deviceName
+                    .take(PEER_NAME_MAX)
+                    .takeIf { it.isNotBlank() }
+                    ?.let { events.onPeerName(it) }
+                events.onWallpaperHash(hello.wallpaperHash.toByteArray())
+            }
+            Kind.WALLPAPER_PREVIEW -> Log.w(TAG, "unexpected wallpaper preview from desktop, dropped")
             Kind.CLIP_TEXT -> events.onText(ClipText.parseFrom(envelope.payload).text)
             Kind.NOTIF_ACTION -> events.onNotificationAction(NotifAction.parseFrom(envelope.payload))
             // Reassembly state lives on this thread and nowhere else, so it needs no

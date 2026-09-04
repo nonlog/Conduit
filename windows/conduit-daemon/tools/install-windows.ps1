@@ -37,7 +37,9 @@ foreach ($name in $required) {
 }
 
 $assetDir = Join-Path $PSScriptRoot '..\assets'
-foreach ($name in @('conduit-icon.ico', 'conduit-icon.png')) {
+$requiredIconAssets = @('conduit-icon.ico', 'conduit-icon.png', 'conduit-icon-light.ico', 'conduit-icon-light.png', 'conduit-icon-dark.ico', 'conduit-icon-dark.png')
+$optionalIconAssets = @('conduit-explorer-light.ico', 'conduit-explorer-dark.ico')
+foreach ($name in $requiredIconAssets) {
     if (-not (Test-Path (Join-Path $assetDir $name))) {
         throw "Missing icon asset $name"
     }
@@ -48,21 +50,67 @@ foreach ($name in @('conduit-icon.ico', 'conduit-icon.png')) {
 $hadAutostart = $null -ne (Get-ItemProperty -Path $runKey -Name Conduit -ErrorAction SilentlyContinue).Conduit
 $hadExplorerIntegration = Test-Path -LiteralPath $explorerVerbKey
 
-Get-Process conduit-daemon -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-Get-Process Conduit -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force -Path $installDir, $programs | Out-Null
-foreach ($name in $required) {
-    $from = (Resolve-Path (Join-Path $source $name)).Path
-    $to = Join-Path $installDir $name
-    if (-not [string]::Equals($from, $to, [StringComparison]::OrdinalIgnoreCase)) {
-        Copy-Item -Force $from $to
+$running = @(Get-Process conduit-daemon, Conduit -ErrorAction SilentlyContinue)
+if ($running.Count -gt 0) {
+    $running | Stop-Process -Force -ErrorAction SilentlyContinue
+    # Stop-Process requests termination but the executable image can stay mapped for a short
+    # moment. Wait for actual process exit before replacing binaries so an update never races the
+    # final file-handle release on a busy desktop.
+    $running | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
+    $stuck = @($running | Where-Object { -not $_.HasExited })
+    if ($stuck.Count -gt 0) {
+        throw "Conduit processes did not exit before update: $($stuck.Id -join ', ')"
     }
 }
-if (-not [string]::Equals((Resolve-Path $controlSource).Path, (Join-Path $installDir 'Conduit.exe'), [StringComparison]::OrdinalIgnoreCase)) {
-    Copy-Item -Force $controlSource (Join-Path $installDir 'Conduit.exe')
+New-Item -ItemType Directory -Force -Path $installDir, $programs | Out-Null
+
+# A packaged Conduit build contains the complete self-contained WinUI publish, not just the three
+# executable entry points. Updating only Conduit.exe leaves the old Conduit.dll/PRI/resources in
+# place, which means XAML and code-behind changes never reach the running UI. When the source is a
+# published package, copy the whole runtime payload while deliberately preserving the install's
+# data junction and keeping installer tooling out of the runtime root.
+$hasPublishedUi = Test-Path -LiteralPath (Join-Path $source 'Conduit.dll') -PathType Leaf
+if ($hasPublishedUi) {
+    foreach ($entry in Get-ChildItem -LiteralPath $source -Force) {
+        if ($entry.Name -in @('tools', 'data')) { continue }
+        $to = Join-Path $installDir $entry.Name
+        if ([string]::Equals($entry.FullName, $to, [StringComparison]::OrdinalIgnoreCase)) { continue }
+        if ($entry.PSIsContainer) {
+            Copy-Item -LiteralPath $entry.FullName -Destination $installDir -Recurse -Force
+        } else {
+            Copy-Item -LiteralPath $entry.FullName -Destination $to -Force
+        }
+    }
+} else {
+    # Developer/repo invocation still supports a Rust-only target/release directory.
+    foreach ($name in $required) {
+        $from = (Resolve-Path (Join-Path $source $name)).Path
+        $to = Join-Path $installDir $name
+        if (-not [string]::Equals($from, $to, [StringComparison]::OrdinalIgnoreCase)) {
+            Copy-Item -Force $from $to
+        }
+    }
+    if (-not [string]::Equals((Resolve-Path $controlSource).Path, (Join-Path $installDir 'Conduit.exe'), [StringComparison]::OrdinalIgnoreCase)) {
+        Copy-Item -Force $controlSource (Join-Path $installDir 'Conduit.exe')
+    }
+}
+if ($hasPublishedUi) {
+    foreach ($name in @('Conduit.dll', 'Conduit.pri')) {
+        $from = Join-Path $source $name
+        $to = Join-Path $installDir $name
+        if (-not (Test-Path -LiteralPath $to -PathType Leaf)) {
+            throw "Published UI payload did not install $name"
+        }
+        if ((Get-FileHash -LiteralPath $from -Algorithm SHA256).Hash -ne
+            (Get-FileHash -LiteralPath $to -Algorithm SHA256).Hash) {
+            throw "Published UI payload hash mismatch after installing $name"
+        }
+    }
 }
 Remove-Item (Join-Path $installDir 'conduit-control.exe') -Force -ErrorAction SilentlyContinue
-foreach ($name in @('conduit-icon.ico', 'conduit-icon.png')) {
+foreach ($name in @($requiredIconAssets + $optionalIconAssets)) {
+    $candidate = Join-Path $assetDir $name
+    if (-not (Test-Path $candidate)) { continue }
     $from = (Resolve-Path (Join-Path $assetDir $name)).Path
     $to = Join-Path $installDir $name
     if (-not [string]::Equals($from, $to, [StringComparison]::OrdinalIgnoreCase)) {
@@ -162,13 +210,15 @@ if (-not ('ConduitShortcut' -as [type])) {
 
 $controlExe = Join-Path $installDir 'Conduit.exe'
 $daemonExe = Join-Path $installDir 'conduit-daemon.exe'
-$iconIco = Join-Path $installDir 'conduit-icon.ico'
-$iconPng = Join-Path $installDir 'conduit-icon.png'
+$systemUsesLightTheme = (Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name SystemUsesLightTheme -ErrorAction SilentlyContinue).SystemUsesLightTheme
+$lightShell = $null -eq $systemUsesLightTheme -or $systemUsesLightTheme -ne 0
+$iconIco = Join-Path $installDir $(if ($lightShell) { 'conduit-icon-light.ico' } else { 'conduit-icon-dark.ico' })
+$iconAumid = $iconIco
 [ConduitShortcut]::Write($shortcut, $controlExe, $installDir, $iconIco, 'Conduit.Desktop')
 
 New-Item -Force -Path $aumidKey | Out-Null
 Set-ItemProperty -Path $aumidKey -Name DisplayName -Value 'Conduit'
-Set-ItemProperty -Path $aumidKey -Name IconUri -Value $iconPng
+Set-ItemProperty -Path $aumidKey -Name IconUri -Value $iconAumid
 Set-ItemProperty -Path $aumidKey -Name IconBackgroundColor -Value '00000000'
 Set-ItemProperty -Path $aumidKey -Name ShowInActionCenter -Type DWord -Value 1
 

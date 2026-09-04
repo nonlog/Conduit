@@ -6,6 +6,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RelaySelectionTest {
+    @Test
+    fun relayWaiterHasNoUserspaceReadDeadlineUntilNoiseIsUp() {
+        assertEquals(150_000, initialReadDeadlineMs(null))
+        assertEquals(0, initialReadDeadlineMs("paired-desktop"))
+    }
+
     private val tyo = RelayEndpoint("tyo", "tyo.example", 41113, "192.0.2.1")
     private val wa = RelayEndpoint("wa", "wa.example", 41113, "192.0.2.2")
     private val us = RelayEndpoint("us", "us.example", 41113, "192.0.2.3")

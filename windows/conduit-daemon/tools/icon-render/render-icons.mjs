@@ -5,50 +5,32 @@ import { Resvg } from '@resvg/resvg-js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const assets = path.resolve(here, '..', '..', 'assets');
-const fluent = path.join(assets, 'fluent');
 
-const brandSizes = [16, 20, 24, 28, 32, 34, 40, 43, 44, 48, 51, 55, 60, 64, 66, 68, 77, 88, 96, 128, 256];
-const traySizes = [16, 20, 24, 28, 32, 40, 48, 64];
-const brandGlyph = '#5B5BD6';
-const darkGlyph = '#202020';
-const lightGlyph = '#F6F6F6';
+// Exact target-size frames keep Windows from resampling a neighbouring bitmap at common DPI
+// scales. The mark itself is the original Conduit identity: two simple tracks moving in opposite
+// directions. It reads as bidirectional sync before it reads as any particular device type.
+const brandSizes = [16, 20, 24, 30, 32, 36, 40, 48, 60, 64, 72, 80, 96, 256];
+const traySizes = [16, 20, 24, 32, 40, 48, 64];
+const explorerSizes = [16, 20, 24, 32, 40, 48];
+const darkGlyph = '#000000';
+const lightGlyph = '#FFFFFF';
 
-function parseSource(file) {
-  const svg = fs.readFileSync(file, 'utf8');
-  const viewBox = svg.match(/viewBox="0 0 ([\d.]+) ([\d.]+)"/);
-  const pathData = svg.match(/<path d="([^"]+)"/s);
-  if (!viewBox || !pathData) throw new Error(`Could not parse Fluent source: ${file}`);
-  return { width: Number(viewBox[1]), height: Number(viewBox[2]), d: pathData[1] };
-}
-
-function brandSource(size) {
-  const sourceSize = size <= 18 ? 16 : size <= 22 ? 20 : 24;
-  const weight = sourceSize < 24 ? 'regular' : 'filled';
-  return parseSource(path.join(fluent, `ic_fluent_phone_desktop_${sourceSize}_${weight}.svg`));
-}
-
-function traySource(size) {
-  const sourceSize = size <= 18 ? 16 : size <= 22 ? 20 : 24;
-  return parseSource(path.join(fluent, `ic_fluent_phone_desktop_${sourceSize}_regular.svg`));
-}
-
-function brandSvg(size) {
-  const source = brandSource(size);
-  // Keep the mark transparent and monoline/monochrome like Sefirah instead of placing it in a
-  // rounded app tile. Small frames use the matching Fluent 16/20px path so Explorer, the taskbar
-  // and notification attribution never have to downscale the 24px geometry.
-  const scale = size <= 20 ? 0.90 : 0.86;
-  const pad = (source.width * (1 - scale) / 2).toFixed(3);
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${source.width}" height="${source.height}" viewBox="0 0 ${source.width} ${source.height}">
-  <g transform="translate(${pad} ${pad}) scale(${scale})"><path d="${source.d}" fill="${brandGlyph}"/></g>
+function arrowsSvg(color, strokeWidth = 2.15) {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <g fill="none" stroke="${color}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3.5 8h17"/>
+    <path d="M16.5 4l4 4-4 4"/>
+    <path d="M20.5 16h-17"/>
+    <path d="M7.5 12l-4 4 4 4"/>
+  </g>
 </svg>`;
 }
 
-function traySvg(size, color) {
-  const source = traySource(size);
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${source.width}" height="${source.height}" viewBox="0 0 ${source.width} ${source.height}">
-  <path d="${source.d}" fill="${color}"/>
-</svg>`;
+function explorerArrowsSvg(color) {
+  // Explorer's modern context menu uses light, outline system glyphs. Keep the same product mark
+  // but reduce stroke weight slightly so it sits beside Edit/Open-with rather than reading like a
+  // filled app badge. The dedicated exact-size ICO frames preserve the apparent size at high DPI.
+  return arrowsSvg(color, 1.85);
 }
 
 function render(svg, size) {
@@ -79,16 +61,51 @@ function writeIco(file, frames) {
 }
 
 fs.mkdirSync(assets, { recursive: true });
-const brandFrames = brandSizes.map((size) => ({ size, png: render(brandSvg(size), size) }));
-writeIco(path.join(assets, 'conduit-icon.ico'), brandFrames);
-fs.writeFileSync(path.join(assets, 'conduit-icon.png'), render(brandSvg(512), 512));
 
-const trayLight = traySizes.map((size) => ({ size, png: render(traySvg(size, darkGlyph), size) }));
-const trayDark = traySizes.map((size) => ({ size, png: render(traySvg(size, lightGlyph), size) }));
-writeIco(path.join(assets, 'conduit-tray-light.ico'), trayLight);
-writeIco(path.join(assets, 'conduit-tray-dark.ico'), trayDark);
+function writeThemeIcon(stem, color) {
+  const svg = arrowsSvg(color);
+  const frames = brandSizes.map((size) => ({ size, png: render(svg, size) }));
+  writeIco(path.join(assets, `${stem}.ico`), frames);
+  fs.writeFileSync(path.join(assets, `${stem}.png`), render(svg, 512));
+}
 
-console.log(path.join(assets, 'conduit-icon.png'));
-console.log(path.join(assets, 'conduit-icon.ico'));
-console.log(path.join(assets, 'conduit-tray-light.ico'));
-console.log(path.join(assets, 'conduit-tray-dark.ico'));
+writeThemeIcon('conduit-icon-light', darkGlyph);
+writeThemeIcon('conduit-icon-dark', lightGlyph);
+writeThemeIcon('conduit-icon', darkGlyph);
+
+const trayLightSvg = arrowsSvg(darkGlyph);
+const trayDarkSvg = arrowsSvg(lightGlyph);
+writeIco(
+  path.join(assets, 'conduit-tray-light.ico'),
+  traySizes.map((size) => ({ size, png: render(trayLightSvg, size) })),
+);
+writeIco(
+  path.join(assets, 'conduit-tray-dark.ico'),
+  traySizes.map((size) => ({ size, png: render(trayDarkSvg, size) })),
+);
+
+const explorerLightSvg = explorerArrowsSvg(darkGlyph);
+const explorerDarkSvg = explorerArrowsSvg(lightGlyph);
+writeIco(
+  path.join(assets, 'conduit-explorer-light.ico'),
+  explorerSizes.map((size) => ({ size, png: render(explorerLightSvg, size) })),
+);
+writeIco(
+  path.join(assets, 'conduit-explorer-dark.ico'),
+  explorerSizes.map((size) => ({ size, png: render(explorerDarkSvg, size) })),
+);
+
+for (const name of [
+  'conduit-icon.png',
+  'conduit-icon.ico',
+  'conduit-icon-light.png',
+  'conduit-icon-light.ico',
+  'conduit-icon-dark.png',
+  'conduit-icon-dark.ico',
+  'conduit-tray-light.ico',
+  'conduit-tray-dark.ico',
+  'conduit-explorer-light.ico',
+  'conduit-explorer-dark.ico',
+]) {
+  console.log(path.join(assets, name));
+}
