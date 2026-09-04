@@ -146,6 +146,7 @@ class MainActivity : ComponentActivity() {
         Settings.load(this)
         refreshClipboardAccessMode()
         request()
+        val appVersion = appVersionName()
         // A host on the launch intent pins the address and links straight away. It has to
         // go through the activity: Android 12+ refuses a foreground service started from
         // the background, so `am start-foreground-service` cannot drive the service itself.
@@ -153,6 +154,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             ConduitTheme {
                 ConduitApp(
+                    appVersion = appVersion,
                     peerName = LinkStatus.peerName,
                     path = LinkStatus.path,
                     state = LinkStatus.state,
@@ -218,6 +220,10 @@ class MainActivity : ComponentActivity() {
             )
         }.onFailure { Log.w(TAG, "cannot send ${sending.size} files", it) }
     }
+
+    @Suppress("DEPRECATION")
+    private fun appVersionName(): String =
+        packageManager.getPackageInfo(packageName, 0).versionName ?: "unknown"
 
     override fun onResume() {
         super.onResume()
@@ -296,6 +302,7 @@ private enum class MainTab(val title: String) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ConduitApp(
+    appVersion: String,
     peerName: String?,
     path: String?,
     state: LinkState,
@@ -386,6 +393,7 @@ private fun ConduitApp(
             )
             MainTab.Settings -> SettingsTab(
                 modifier = Modifier.padding(insets),
+                appVersion = appVersion,
                 historyCount = history.size,
                 hideNotifications = hideNotifications,
                 onHideNotifications = onHideNotifications,
@@ -460,6 +468,7 @@ private fun HomeTab(
 @Composable
 private fun SettingsTab(
     modifier: Modifier,
+    appVersion: String,
     historyCount: Int,
     hideNotifications: Boolean,
     onHideNotifications: (Boolean) -> Unit,
@@ -543,7 +552,7 @@ private fun SettingsTab(
                 PreferenceRow(
                     icon = R.drawable.ic_brand_sync,
                     title = "Conduit",
-                    subtitle = "Version ${BuildConfig.VERSION_NAME} · Fast, lightweight companion",
+                    subtitle = "Version $appVersion · Fast, lightweight companion",
                 )
             }
         }
