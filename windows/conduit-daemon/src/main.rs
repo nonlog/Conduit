@@ -272,7 +272,11 @@ async fn main() -> Result<()> {
                     println!(
                         "Pairing is open for {} seconds. Code: {code}{}",
                         pairing::WINDOW.as_secs(),
-                        if running { "" } else { "; it will apply when the daemon starts" }
+                        if running {
+                            ""
+                        } else {
+                            "; it will apply when the daemon starts"
+                        }
                     );
                 }
                 "cancel" => match control::pair(control::PairAction::Cancel).await {
@@ -818,9 +822,8 @@ async fn park_until(
             }
             Ok(Err(e)) => {
                 warn!(%endpoint, error = %e, "pairing relay unreachable");
-                let nap = RELAY_RETRY.min(
-                    deadline.saturating_duration_since(tokio::time::Instant::now()),
-                );
+                let nap = RELAY_RETRY
+                    .min(deadline.saturating_duration_since(tokio::time::Instant::now()));
                 if nap.is_zero() {
                     return;
                 }
@@ -936,7 +939,11 @@ async fn serve(
     pairing::confirm(data_dir, &remote_id, authorization, &peer_hello.device_name)?;
     desktop_status.linked(
         &remote_id,
-        if path.starts_with("relay") { "relay" } else { path },
+        if path.starts_with("relay") {
+            "relay"
+        } else {
+            path
+        },
         relay_endpoint,
     );
     desktop_status.peer_name(&peer_hello.device_name);

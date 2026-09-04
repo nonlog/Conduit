@@ -316,7 +316,10 @@ mod tests {
     #[test]
     fn pairing_code_normalizes_and_has_a_stable_rendezvous() {
         assert_eq!(normalize_code("ab12-cd34 ef"), "AB12CD34EF");
-        assert_eq!(pairing_rendezvous("AB12-CD34-EF"), pairing_rendezvous("ab12cd34ef"));
+        assert_eq!(
+            pairing_rendezvous("AB12-CD34-EF"),
+            pairing_rendezvous("ab12cd34ef")
+        );
         assert_eq!(
             pairing_rendezvous("AB12-CD34-EF"),
             "zTn_59YR4I0UaVAJgmJdGDFoOByFrXZpgzlCssnMVHM"
