@@ -149,20 +149,12 @@ mod tests {
     #[test]
     fn scoop_layout_resolves_persist_directory() {
         assert_eq!(
-            scoop_persist_from_install(Path::new(
-                r"D:\Programs\Scoop\apps\conduit\current"
-            )),
-            Some(PathBuf::from(
-                r"D:\Programs\Scoop\persist\conduit\data"
-            ))
+            scoop_persist_from_install(Path::new(r"D:\Programs\Scoop\apps\conduit\current")),
+            Some(PathBuf::from(r"D:\Programs\Scoop\persist\conduit\data"))
         );
         assert_eq!(
-            scoop_persist_from_install(Path::new(
-                r"D:\Programs\Scoop\apps\conduit\0.1.1"
-            )),
-            Some(PathBuf::from(
-                r"D:\Programs\Scoop\persist\conduit\data"
-            ))
+            scoop_persist_from_install(Path::new(r"D:\Programs\Scoop\apps\conduit\0.1.1")),
+            Some(PathBuf::from(r"D:\Programs\Scoop\persist\conduit\data"))
         );
     }
 
