@@ -15,7 +15,6 @@ import androidx.activity.result.contract.ActivityResultContracts.GetContent
 import androidx.activity.result.contract.ActivityResultContracts.GetMultipleContents
 import androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -36,7 +35,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconToggleButton
 import androidx.compose.material3.FilledTonalButton
@@ -47,7 +45,6 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -68,12 +65,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -181,9 +176,38 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun sendFiles(uris: List<android.net.Uri>) {
-        if (uris.isEmpty()) return
-        val clip = android.content.ClipData.newRawUri("conduit", uris.first())
-        uris.drop(1).forEach { clip.addItem(android.content.ClipData.Item(it)) }
+        val unique = uris.distinct()
+        if (unique.isEmpty()) return
+
+        // The picker can stay open while the desktop disappears. Re-check at the moment we
+        // actually hand work to the service instead of trusting the state that made the button
+        // visible before the picker launched.
+        if (LinkStatus.state != LinkState.Connected) {
+            val peer = LinkStatus.peerName ?: "the desktop"
+            Log.w(TAG, "picked files while ${LinkStatus.state}; connecting instead of sending")
+            send(ACTION_CONNECT)
+            android.widget.Toast.makeText(
+                this,
+                "Not linked to $peer yet - connecting, try again in a moment",
+                android.widget.Toast.LENGTH_SHORT,
+            ).show()
+            return
+        }
+
+        // Keep the same bound as the system share-sheet path. Link's sender queue is finite;
+        // silently handing it an unbounded multi-select can evict unrelated clips/notifications.
+        val sending = unique.take(MAX_SHARE_FILES)
+        if (unique.size > sending.size) {
+            Log.w(TAG, "picker returned ${unique.size} files, sending the first $MAX_SHARE_FILES")
+            android.widget.Toast.makeText(
+                this,
+                "Sending ${sending.size} of ${unique.size} files",
+                android.widget.Toast.LENGTH_SHORT,
+            ).show()
+        }
+
+        val clip = android.content.ClipData.newRawUri("conduit", sending.first())
+        sending.drop(1).forEach { clip.addItem(android.content.ClipData.Item(it)) }
         runCatching {
             startForegroundService(
                 Intent(this, SyncService::class.java).apply {
@@ -192,7 +216,7 @@ class MainActivity : ComponentActivity() {
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 },
             )
-        }.onFailure { Log.w(TAG, "cannot send files", it) }
+        }.onFailure { Log.w(TAG, "cannot send ${sending.size} files", it) }
     }
 
     override fun onResume() {
@@ -519,7 +543,7 @@ private fun SettingsTab(
                 PreferenceRow(
                     icon = R.drawable.ic_brand_sync,
                     title = "Conduit",
-                    subtitle = "Version 0.1.0 · Fast, lightweight companion",
+                    subtitle = "Version ${BuildConfig.VERSION_NAME} · Fast, lightweight companion",
                 )
             }
         }
@@ -699,7 +723,6 @@ private fun SefirahDeviceCard(
 @Composable
 private fun DeviceActionsCard(history: List<HistoryEntry>, onOpenHistory: () -> Unit) {
     val latest = history.firstOrNull()
-    val clipboard = LocalClipboardManager.current
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -794,16 +817,6 @@ private fun DeviceActionsCard(history: List<HistoryEntry>, onOpenHistory: () -> 
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                    }
-                    if (!clip.image && clip.preview.isNotBlank()) {
-                        OutlinedButton(
-                            onClick = { clipboard.setText(AnnotatedString(clip.preview)) },
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                            modifier = Modifier.heightIn(min = 32.dp),
-                            shape = RoundedCornerShape(8.dp),
-                        ) {
-                            Text("Copy", style = MaterialTheme.typography.labelMedium)
-                        }
                     }
                 }
             }
@@ -977,12 +990,8 @@ internal fun filterHistory(entries: List<HistoryEntry>, query: String): List<His
 
 @Composable
 private fun ClipRow(entry: HistoryEntry) {
-    val clipboard = LocalClipboardManager.current
     val directionLabel = if (entry.direction == Direction.Sent) "Sent" else "Received"
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        onClick = { if (!entry.image) clipboard.setText(AnnotatedString(entry.preview)) },
-    ) {
+    Card(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),

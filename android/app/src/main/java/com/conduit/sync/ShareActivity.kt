@@ -19,7 +19,7 @@ private const val TAG = "conduit.share"
  * queue and lose them silently. The excess is named in the log and in the toast rather than
  * dropped quietly. Raise it by giving transfers a queue of their own.
  */
-private const val MAX_FILES = 16
+internal const val MAX_SHARE_FILES = 16
 
 /** A deliberate web-page share, not arbitrary clipboard text. */
 internal fun sharedWebUrl(text: String): String? {
@@ -99,9 +99,9 @@ class ShareActivity : Activity() {
                 toast("Sent to $peer")
             }
             uris.isNotEmpty() -> {
-                val sending = uris.take(MAX_FILES)
+                val sending = uris.take(MAX_SHARE_FILES)
                 if (uris.size > sending.size) {
-                    Log.w(TAG, "share had ${uris.size} files, sending the first $MAX_FILES")
+                    Log.w(TAG, "share had ${uris.size} files, sending the first $MAX_SHARE_FILES")
                 }
                 toast(
                     when {

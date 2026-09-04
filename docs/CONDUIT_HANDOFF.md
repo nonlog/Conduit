@@ -649,12 +649,8 @@ Follow `docs/development.md` for Scoop-first tool installation and safe Android 
   - Upgraded connection status to a Fluent secondary badge chip with route indicator icon and responsive refresh.
   - Notification cards styled with rounded icon containers, medium font weights, and clear-all action.
 - **Git & GitHub CI/CD:**
-  - Branch: `codex/ui-redesign`, base: `master`.
-  - Author/Committer identity: `gemini-code-assist[bot] <176961590+gemini-code-assist[bot]@users.noreply.github.com>`.
-  - Commits: `fee537c` (initial redesign) and `72d8aed` (route wrap fix, photo vector, device card polish).
-  - GitHub Actions runs `33847948885` and `33850800306` both passed completely green (Android, Windows x64, Relay Linux x64).
-  - Open Pull Request: **PR #4** (`https://github.com/nonlog/Conduit/pull/4`).
-- **Device & runtime deployment:**
-  - Android debug APK deployed via ADB to connected OnePlus 12 (`127.0.0.1:15556`) with `RECEIVE_SENSITIVE_NOTIFICATIONS allow`.
-  - Windows Actions artifact extracted to `D:\Workspace\Conduit\artifacts_download\windows-test\Conduit.exe` and verified running.
+  - Branch: `codex/ui-redesign`, base: `master`; open Pull Request: **PR #4**.
+  - The redesign was consolidated into commit `182591e` from Gemini Code Assist. Review fixes are committed separately with the required `Codex <codex@openai.com>` author/committer identity before merge.
+  - Review fixes remove clipboard actions that could copy only the bounded history preview, apply the existing 16-file sender-queue cap and a fresh connection check to the in-app Android picker, and make Windows drag-and-drop send every dropped file sequentially instead of silently ignoring files after the first.
+  - Merge/deployment is gated on a clean GitHub Actions run for the reviewed head. Runtime installation on Log uses only that GitHub-built artifact; no Log-local build output is authoritative.
 

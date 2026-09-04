@@ -106,14 +106,35 @@ public sealed partial class MainPage : Page
         if (files.Count == 0) return;
 
         SendFileButton.IsEnabled = false;
-        ShowInfo("Sending file", $"{files[0].Name}  →  {ViewModel.DeviceName}", InfoBarSeverity.Informational);
+        var failures = new List<string>();
         try
         {
-            var result = await ViewModel.SendFileAsync(files[0].Path);
-            if (result.Success)
-                ShowInfo("Sent to phone", $"{files[0].Name} was received by {ViewModel.DeviceName}.", InfoBarSeverity.Success);
+            for (var index = 0; index < files.Count; index++)
+            {
+                var file = files[index];
+                var progress = files.Count == 1 ? file.Name : $"{index + 1} of {files.Count}: {file.Name}";
+                ShowInfo("Sending file", $"{progress}  →  {ViewModel.DeviceName}", InfoBarSeverity.Informational);
+
+                var result = await ViewModel.SendFileAsync(file.Path);
+                if (!result.Success)
+                {
+                    var detail = string.IsNullOrWhiteSpace(result.Detail) ? file.Name : $"{file.Name}: {result.Detail}";
+                    failures.Add(detail);
+                }
+            }
+
+            if (failures.Count == 0)
+            {
+                var summary = files.Count == 1 ? files[0].Name : $"{files.Count} files";
+                ShowInfo("Sent to phone", $"{summary} received by {ViewModel.DeviceName}.", InfoBarSeverity.Success);
+            }
             else
-                ShowInfo("Could not send file", string.IsNullOrWhiteSpace(result.Detail) ? files[0].Name : $"{files[0].Name}\n{result.Detail}", InfoBarSeverity.Error);
+            {
+                ShowInfo(
+                    "Could not send all files",
+                    $"{failures.Count} of {files.Count} failed. {string.Join("; ", failures.Take(3))}",
+                    InfoBarSeverity.Error);
+            }
         }
         finally
         {
