@@ -2,6 +2,8 @@ using Conduit.Models;
 using Conduit.ViewModels;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml.Media.Imaging;
+using Windows.ApplicationModel.DataTransfer;
+using Windows.Storage;
 using Windows.Storage.Pickers;
 
 namespace Conduit;
@@ -77,6 +79,41 @@ public sealed partial class MainPage : Page
                 ShowInfo("Sent to phone", $"{file.Name} was received by {ViewModel.DeviceName}.", InfoBarSeverity.Success);
             else
                 ShowInfo("Could not send file", string.IsNullOrWhiteSpace(result.Detail) ? file.Name : $"{file.Name}\n{result.Detail}", InfoBarSeverity.Error);
+        }
+        finally
+        {
+            SendFileButton.IsEnabled = true;
+            ViewModel.RefreshAll();
+        }
+    }
+
+    private void DropZone_DragOver(object sender, DragEventArgs e)
+    {
+        if (e.DataView.Contains(StandardDataFormats.StorageItems))
+        {
+            e.AcceptedOperation = DataPackageOperation.Copy;
+            e.DragUIOverride.Caption = $"Send to {ViewModel.DeviceName}";
+            e.DragUIOverride.IsCaptionVisible = true;
+            e.DragUIOverride.IsContentVisible = true;
+        }
+    }
+
+    private async void DropZone_Drop(object sender, DragEventArgs e)
+    {
+        if (!e.DataView.Contains(StandardDataFormats.StorageItems)) return;
+        var items = await e.DataView.GetStorageItemsAsync();
+        var files = items.OfType<StorageFile>().ToList();
+        if (files.Count == 0) return;
+
+        SendFileButton.IsEnabled = false;
+        ShowInfo("Sending file", $"{files[0].Name}  →  {ViewModel.DeviceName}", InfoBarSeverity.Informational);
+        try
+        {
+            var result = await ViewModel.SendFileAsync(files[0].Path);
+            if (result.Success)
+                ShowInfo("Sent to phone", $"{files[0].Name} was received by {ViewModel.DeviceName}.", InfoBarSeverity.Success);
+            else
+                ShowInfo("Could not send file", string.IsNullOrWhiteSpace(result.Detail) ? files[0].Name : $"{files[0].Name}\n{result.Detail}", InfoBarSeverity.Error);
         }
         finally
         {

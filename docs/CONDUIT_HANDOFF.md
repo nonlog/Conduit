@@ -634,3 +634,27 @@ Follow `docs/development.md` for Scoop-first tool installation and safe Android 
 - Explorer file send is being upgraded from final-error-only feedback to event-driven transfer progress. The resident daemon forwards bounded real byte progress over the existing named pipe, and the tiny `conduit-send.exe` helper owns one replace-in-place Windows progress toast. Android already had byte progress internally; completion/failure now remains visible briefly instead of immediately cancelling the transfer notification, so fast transfers still leave user-visible feedback.
 - The GitHub contributors REST endpoint was checked before changing history: the live default-branch contributors are `codex`, `claude`, and `nonlog`; there is currently no `claude[bot]` contributor or `claude[bot]` commit on `master`. The screenshot entry is therefore treated as stale GitHub contributor UI/cache, not a reason to rewrite valid repository history.
 - This checkpoint is intentionally pre-validation. Clean GitHub Actions, GitHub artifact installation on Log, Relay/proxy migration, desktop/Android notification verification, and final measurements are still required before this section is marked complete.
+
+## 2026-09-04 UI redesign — Material 3 mobile, Fluent 2 desktop, and drag-and-drop file transfer
+
+- **Android companion UI overhaul (`MainActivity.kt`):**
+  - Followed Sefirah & Material 3 guidelines (`MASTER.md`). Replaced the dual `<=>` icon ambiguity with a dedicated PC/desktop monitor vector asset (`ic_desktop.xml`) on the device card.
+  - Fixed severe layout squeezing bug where the connection route pill (`Relay · WA`) was forced into a vertical single-character wrap beside long state labels. Redesigned `SefirahDeviceCard` with a 3-tier vertical hierarchy: Desktop Name (19sp bold) -> Connection state with colored status dot (🟢 Linked / 🟡 Reconnecting / ⚪ Idle) -> Independent route chip (`⚡ LAN Direct` / `🌐 Relay · WA`).
+  - Added dedicated `ic_photo.xml` vector icon, replacing the accidental use of `ic_share_target.xml` whose 108x108 background rectangle had rendered as an opaque tinted black square under Compose.
+  - When linked, `SefirahDeviceCard` directly exposes `Send files` and `Send photo` action buttons without requiring a separate redundant middle card or navigating to system share sheets.
+  - Grouped settings into clean Material 3 surface containers for Sync & Privacy and About.
+- **Windows control surface redesign (`MainPage.xaml`, `MainPage.xaml.cs`):**
+  - Enhanced the left-pane phone hardware silhouette with an authentic top speaker/camera punch-hole bar, rounded corner frame, and live wallpaper mapping.
+  - Added native Explorer-to-phone Drag & Drop support (`DropZone`): dropping any file into the left pane triggers immediate send to the connected phone via `ViewModel.SendFileAsync`.
+  - Upgraded connection status to a Fluent secondary badge chip with route indicator icon and responsive refresh.
+  - Notification cards styled with rounded icon containers, medium font weights, and clear-all action.
+- **Git & GitHub CI/CD:**
+  - Branch: `codex/ui-redesign`, base: `master`.
+  - Author/Committer identity: `gemini-code-assist[bot] <176961590+gemini-code-assist[bot]@users.noreply.github.com>`.
+  - Commits: `fee537c` (initial redesign) and `72d8aed` (route wrap fix, photo vector, device card polish).
+  - GitHub Actions runs `33847948885` and `33850800306` both passed completely green (Android, Windows x64, Relay Linux x64).
+  - Open Pull Request: **PR #4** (`https://github.com/nonlog/Conduit/pull/4`).
+- **Device & runtime deployment:**
+  - Android debug APK deployed via ADB to connected OnePlus 12 (`127.0.0.1:15556`) with `RECEIVE_SENSITIVE_NOTIFICATIONS allow`.
+  - Windows Actions artifact extracted to `D:\Workspace\Conduit\artifacts_download\windows-test\Conduit.exe` and verified running.
+
