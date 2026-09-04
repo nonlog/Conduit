@@ -37,6 +37,10 @@ New-Item -ItemType Directory -Force -Path $stage | Out-Null
 # The WinUI publish is self-contained, so the whole publish directory is part of the package.
 Copy-Item -Path (Join-Path $ui '*') -Destination $stage -Recurse -Force
 
+# Runtime state is never package payload. If a local/build publish directory happens to contain a
+# data folder, excluding it here prevents an overlay from replacing Scoop's persisted data junction.
+Remove-Item -LiteralPath (Join-Path $stage 'data') -Recurse -Force -ErrorAction SilentlyContinue
+
 foreach ($name in $requiredRust) {
     Copy-Item -LiteralPath (Join-Path $rust $name) -Destination (Join-Path $stage $name) -Force
 }

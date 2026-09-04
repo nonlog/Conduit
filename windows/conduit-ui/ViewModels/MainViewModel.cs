@@ -517,9 +517,56 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private static string ResolveDataDir()
     {
         var overridden = Environment.GetEnvironmentVariable("CONDUIT_DATA_DIR");
-        return !string.IsNullOrWhiteSpace(overridden)
-            ? Path.GetFullPath(overridden)
-            : Path.Combine(AppContext.BaseDirectory, "data");
+        if (!string.IsNullOrWhiteSpace(overridden)) return Path.GetFullPath(overridden);
+
+        var portable = Path.Combine(AppContext.BaseDirectory, "data");
+        var persisted = ResolveScoopPersistDataDir(AppContext.BaseDirectory);
+        if (persisted is null) return portable;
+
+        // A development overlay can accidentally replace Scoop's data junction with a plain
+        // directory. The Scoop persist directory remains authoritative so settings and the Noise
+        // identity do not reset. Recover only files that are missing from persist; never overwrite
+        // established persisted state with a newly generated portable identity/config.
+        MigratePortableData(portable, persisted);
+        return persisted;
+    }
+
+    private static string? ResolveScoopPersistDataDir(string baseDirectory)
+    {
+        var install = new DirectoryInfo(Path.GetFullPath(baseDirectory)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        var conduit = install.Parent;
+        var apps = conduit?.Parent;
+        var root = apps?.Parent;
+        if (conduit is null || apps is null || root is null ||
+            !conduit.Name.Equals("conduit", StringComparison.OrdinalIgnoreCase) ||
+            !apps.Name.Equals("apps", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        return Path.Combine(root.FullName, "persist", "conduit", "data");
+    }
+
+    private static void MigratePortableData(string source, string destination)
+    {
+        if (!Directory.Exists(source)) return;
+        try
+        {
+            Directory.CreateDirectory(destination);
+            var sourceInfo = new DirectoryInfo(source);
+            var resolved = sourceInfo.ResolveLinkTarget(returnFinalTarget: true);
+            if (resolved is not null &&
+                Path.GetFullPath(resolved.FullName).Equals(Path.GetFullPath(destination), StringComparison.OrdinalIgnoreCase))
+                return;
+
+            foreach (var directory in Directory.EnumerateDirectories(source, "*", SearchOption.AllDirectories))
+                Directory.CreateDirectory(Path.Combine(destination, Path.GetRelativePath(source, directory)));
+            foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+            {
+                var target = Path.Combine(destination, Path.GetRelativePath(source, file));
+                if (!File.Exists(target)) File.Copy(file, target);
+            }
+        }
+        catch { }
     }
 
     private static void MigrateLegacyData(string destination)
