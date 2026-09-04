@@ -1,10 +1,13 @@
 //! One-peer trust and explicit pairing state for the Windows companion.
 //!
 //! Conduit deliberately keeps the current one-phone model: one persisted peer id, one display
-//! name, and a short user-opened pairing window. Nothing here polls. The pairing window is just an
-//! expiry timestamp checked when a real handshake arrives or when the UI asks for status.
+//! name, and a short user-opened pairing window. The pairing window can be reached either by LAN
+//! discovery or by a temporary Relay rendezvous derived from the human pairing code. No permanent
+//! polling is added; the temporary Relay parks exist only for the two-minute window.
 
 use anyhow::{bail, Context, Result};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -16,6 +19,9 @@ const PAIRING_FILE: &str = "pairing.txt";
 /// explicitly chose Forget.
 const PAIRING_MODEL_FILE: &str = "pairing-v2";
 const ID_LEN: usize = 43;
+const CODE_LEN: usize = 10;
+const CODE_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+const PAIRING_DOMAIN: &[u8] = b"conduit-pair-v1:";
 pub const WINDOW: Duration = Duration::from_secs(120);
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -23,6 +29,16 @@ pub struct State {
     pub device_id: Option<String>,
     pub device_name: Option<String>,
     pub pairing: bool,
+    pub pairing_code: Option<String>,
+    pub pairing_rendezvous: Option<String>,
+    pub pairing_expires_ms: Option<u128>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PairingWindow {
+    pub code: String,
+    pub rendezvous: String,
+    pub expires_ms: u128,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -33,10 +49,14 @@ pub enum Authorization {
 }
 
 pub fn state(dir: &Path) -> State {
+    let window = pairing_window(dir);
     State {
         device_id: peer_id(dir),
         device_name: peer_name(dir),
-        pairing: pairing_allowed(dir),
+        pairing: window.is_some(),
+        pairing_code: window.as_ref().map(|value| value.code.clone()),
+        pairing_rendezvous: window.as_ref().map(|value| value.rendezvous.clone()),
+        pairing_expires_ms: window.map(|value| value.expires_ms),
     }
 }
 
@@ -48,11 +68,19 @@ pub fn peer_name(dir: &Path) -> Option<String> {
     read_one_line(&dir.join(PEER_NAME_FILE)).filter(|value| !value.is_empty())
 }
 
-pub fn start(dir: &Path) -> Result<u128> {
+pub fn start(dir: &Path) -> Result<PairingWindow> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    let expires = now_ms().saturating_add(WINDOW.as_millis());
-    atomic_write(&dir.join(PAIRING_FILE), &format!("{expires}\n"))?;
-    Ok(expires)
+    let code = generate_code()?;
+    let expires_ms = now_ms().saturating_add(WINDOW.as_millis());
+    atomic_write(
+        &dir.join(PAIRING_FILE),
+        &format!("expires_ms={expires_ms}\ncode={code}\n"),
+    )?;
+    Ok(PairingWindow {
+        rendezvous: pairing_rendezvous(&code),
+        code,
+        expires_ms,
+    })
 }
 
 pub fn cancel(dir: &Path) -> Result<bool> {
@@ -83,11 +111,10 @@ pub fn remember_name(dir: &Path, name: &str) -> Result<()> {
 
 /// Decides whether one completed Noise XX handshake may become an application session.
 ///
-/// A different LAN peer is accepted only while the user has explicitly opened pairing. Existing
-/// installations get one compatibility path: before this feature there was no Windows-side peer
-/// store, but a previously paired phone already knows this desktop's 256-bit rendezvous id and can
-/// therefore arrive through Relay. The first such Relay arrival is pinned, making upgrades
-/// seamless without turning fresh LAN discovery into implicit pairing.
+/// A different peer is accepted only while the user has explicitly opened pairing on both sides.
+/// LAN discovery and the temporary pairing-code Relay rendezvous are both acceptable pairing
+/// transports; the normal long-lived Relay rendezvous never is. Existing installations get one
+/// compatibility path because old Windows builds had no peer store at all.
 pub fn authorize(
     dir: &Path,
     remote_id: &str,
@@ -99,10 +126,10 @@ pub fn authorize(
     }
 
     let remembered = peer_id(dir);
-    let local_pairing = pairing_allowed(dir);
+    let local_pairing = pairing_window(dir).is_some();
     if local_pairing {
-        if via != "lan" {
-            bail!("pairing is LAN-only; connect both devices to the same network");
+        if via != "lan" && via != "relay-pair" {
+            bail!("pairing must use LAN discovery or the temporary pairing-code rendezvous");
         }
         if !remote_pairing {
             bail!("the other device has not opened pairing");
@@ -138,11 +165,85 @@ pub fn confirm(
     if authorization != Authorization::Trusted {
         remember_peer(dir, remote_id)?;
     }
-    if pairing_allowed(dir) {
+    if pairing_window(dir).is_some() {
         let _ = cancel(dir);
     }
     remember_name(dir, name)?;
     mark_explicit_pairing_model(dir)
+}
+
+pub fn pairing_rendezvous(code: &str) -> String {
+    let normalized = normalize_code(code);
+    let mut hash = Sha256::new();
+    hash.update(PAIRING_DOMAIN);
+    hash.update(normalized.as_bytes());
+    URL_SAFE_NO_PAD.encode(hash.finalize())
+}
+
+pub fn normalize_code(code: &str) -> String {
+    code.chars()
+        .filter(|value| value.is_ascii_alphanumeric())
+        .map(|value| value.to_ascii_uppercase())
+        .collect()
+}
+
+pub fn format_code(code: &str) -> String {
+    let normalized = normalize_code(code);
+    if normalized.len() != CODE_LEN {
+        return normalized;
+    }
+    format!("{}-{}", &normalized[..5], &normalized[5..])
+}
+
+fn generate_code() -> Result<String> {
+    // snow already owns the CSPRNG used for Conduit's Noise identities. Reuse that dependency to
+    // obtain fresh entropy instead of adding another resident/runtime RNG crate for a two-minute
+    // pairing alias.
+    let params = "Noise_XX_25519_ChaChaPoly_BLAKE2s".parse()?;
+    let random = snow::Builder::new(params).generate_keypair()?;
+    let digest = Sha256::digest(&random.public);
+    let mut value = u64::from_be_bytes(digest[..8].try_into().expect("SHA-256 is 32 bytes"));
+    value >>= 14; // keep 50 random bits -> exactly 10 base32 characters
+    let mut out = [b'0'; CODE_LEN];
+    for index in (0..CODE_LEN).rev() {
+        out[index] = CODE_ALPHABET[(value & 31) as usize];
+        value >>= 5;
+    }
+    Ok(String::from_utf8(out.to_vec()).expect("pairing alphabet is ASCII"))
+}
+
+fn pairing_window(dir: &Path) -> Option<PairingWindow> {
+    let path = dir.join(PAIRING_FILE);
+    let text = std::fs::read_to_string(&path).ok()?;
+    let mut expires_ms = None;
+    let mut code = None;
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            // Compatibility with the first development implementation, which stored only the
+            // expiry as a bare integer. It cannot support code pairing, so treat it as expired.
+            let _ = std::fs::remove_file(&path);
+            return None;
+        };
+        match key.trim() {
+            "expires_ms" => expires_ms = value.trim().parse::<u128>().ok(),
+            "code" => code = Some(normalize_code(value)),
+            _ => {}
+        }
+    }
+    let expires_ms = expires_ms?;
+    let code = code?;
+    if code.len() != CODE_LEN {
+        return None;
+    }
+    if expires_ms <= now_ms() {
+        let _ = std::fs::remove_file(path);
+        return None;
+    }
+    Some(PairingWindow {
+        rendezvous: pairing_rendezvous(&code),
+        code,
+        expires_ms,
+    })
 }
 
 fn mark_explicit_pairing_model(dir: &Path) -> Result<()> {
@@ -156,23 +257,6 @@ fn remember_peer(dir: &Path, remote_id: &str) -> Result<()> {
         let _ = remove_if_exists(&dir.join(PEER_NAME_FILE));
     }
     Ok(())
-}
-
-fn pairing_allowed(dir: &Path) -> bool {
-    let path = dir.join(PAIRING_FILE);
-    let Some(value) = read_one_line(&path) else {
-        return false;
-    };
-    let Ok(expires) = value.parse::<u128>() else {
-        let _ = std::fs::remove_file(path);
-        return false;
-    };
-    if expires > now_ms() {
-        true
-    } else {
-        let _ = std::fs::remove_file(path);
-        false
-    }
 }
 
 fn valid_id(value: &str) -> bool {
@@ -230,14 +314,27 @@ mod tests {
     }
 
     #[test]
+    fn pairing_code_normalizes_and_has_a_stable_rendezvous() {
+        assert_eq!(normalize_code("ab12-cd34 ef"), "AB12CD34EF");
+        assert_eq!(pairing_rendezvous("AB12-CD34-EF"), pairing_rendezvous("ab12cd34ef"));
+        assert_eq!(
+            pairing_rendezvous("AB12-CD34-EF"),
+            "zTn_59YR4I0UaVAJgmJdGDFoOByFrXZpgzlCssnMVHM"
+        );
+        assert_eq!(pairing_rendezvous("AB12-CD34-EF").len(), ID_LEN);
+    }
+
+    #[test]
     fn explicit_window_pairs_once_then_pins() {
         let dir = temp("window");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let a = "A".repeat(ID_LEN);
         let b = "B".repeat(ID_LEN);
-        start(&dir).unwrap();
-        let authorization = authorize(&dir, &a, "lan", true).unwrap();
+        let window = start(&dir).unwrap();
+        assert_eq!(window.code.len(), CODE_LEN);
+        assert_eq!(window.rendezvous.len(), ID_LEN);
+        let authorization = authorize(&dir, &a, "relay-pair", true).unwrap();
         assert_eq!(authorization, Authorization::Paired);
         assert!(state(&dir).pairing);
         confirm(&dir, &a, authorization, "Phone").unwrap();
@@ -247,6 +344,17 @@ mod tests {
             Authorization::Trusted
         );
         assert!(authorize(&dir, &b, "lan", false).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ordinary_relay_cannot_replace_a_peer_during_pairing() {
+        let dir = temp("ordinary-relay");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        start(&dir).unwrap();
+        let id = "E".repeat(ID_LEN);
+        assert!(authorize(&dir, &id, "relay", true).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

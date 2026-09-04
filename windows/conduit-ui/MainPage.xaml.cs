@@ -253,7 +253,7 @@ public sealed partial class MainPage : Page
         {
             ShowInfo(
                 "Pairing is open",
-                "On the phone, choose Pair desktop while both devices are on the same LAN. This window closes in two minutes.",
+                $"Enter {ViewModel.PairingCodeDisplay} on the phone. The temporary code works through Conduit Relay even when the devices are on different networks, and expires in two minutes.",
                 InfoBarSeverity.Informational);
             SchedulePairingExpiryRefresh();
         }
@@ -262,6 +262,16 @@ public sealed partial class MainPage : Page
             _pairingExpiryRefresh?.Cancel();
             ShowInfo("Pairing cancelled", "The existing paired phone was not changed.", InfoBarSeverity.Informational);
         }
+    }
+
+    private void CopyPairingCode_Click(object sender, RoutedEventArgs e)
+    {
+        if (!ViewModel.PairingActive || string.IsNullOrWhiteSpace(ViewModel.PairingCode)) return;
+        var package = new Windows.ApplicationModel.DataTransfer.DataPackage();
+        package.SetText(ViewModel.PairingCodeDisplay);
+        Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(package);
+        Windows.ApplicationModel.DataTransfer.Clipboard.Flush();
+        ShowInfo("Pairing code copied", "Enter it in Conduit on the phone before the two-minute window expires.", InfoBarSeverity.Success);
     }
 
     private async void ForgetDevice_Click(object sender, RoutedEventArgs e)

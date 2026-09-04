@@ -118,6 +118,7 @@ struct SessionGuard {
 struct RelayArrival {
     stream: TcpStream,
     endpoint: String,
+    pairing: bool,
 }
 
 struct PendingOutbound {
@@ -240,17 +241,39 @@ async fn main() -> Result<()> {
                     println!("pairing={}", state.pairing);
                     println!("peer_id={}", state.device_id.as_deref().unwrap_or(""));
                     println!("peer_name={}", state.device_name.as_deref().unwrap_or(""));
+                    println!(
+                        "pairing_code={}",
+                        state
+                            .pairing_code
+                            .as_deref()
+                            .map(pairing::format_code)
+                            .unwrap_or_default()
+                    );
                 }
                 "start" => {
-                    match control::pair(control::PairAction::Start).await {
-                        Ok(()) => {
-                            println!("Pairing is open for {} seconds.", pairing::WINDOW.as_secs())
+                    let running = control::pair(control::PairAction::Start).await.is_ok();
+                    let window = if running {
+                        pairing::state(&dir)
+                    } else {
+                        let window = pairing::start(&dir)?;
+                        pairing::State {
+                            pairing: true,
+                            pairing_code: Some(window.code),
+                            pairing_rendezvous: Some(window.rendezvous),
+                            pairing_expires_ms: Some(window.expires_ms),
+                            ..Default::default()
                         }
-                        Err(_) => {
-                            pairing::start(&dir)?;
-                            println!("Pairing is open for {} seconds; it will apply when the daemon starts.", pairing::WINDOW.as_secs());
-                        }
-                    }
+                    };
+                    let code = window
+                        .pairing_code
+                        .as_deref()
+                        .map(pairing::format_code)
+                        .unwrap_or_else(|| "unavailable".to_string());
+                    println!(
+                        "Pairing is open for {} seconds. Code: {code}{}",
+                        pairing::WINDOW.as_secs(),
+                        if running { "" } else { "; it will apply when the daemon starts" }
+                    );
                 }
                 "cancel" => match control::pair(control::PairAction::Cancel).await {
                     Ok(()) => println!("Pairing cancelled."),
@@ -457,6 +480,19 @@ async fn main() -> Result<()> {
     );
     let (mut relay_tasks, mut relay_rx) =
         start_relay_workers(&relay_endpoints, &device_id, relay_proxy.clone());
+    let initial_pairing = pairing::state(&dir);
+    let (mut pairing_relay_tasks, mut pairing_relay_rx) = match (
+        initial_pairing.pairing_rendezvous.as_deref(),
+        initial_pairing.pairing_expires_ms,
+    ) {
+        (Some(rendezvous), Some(expires_ms)) => start_pairing_relay_workers(
+            &relay_endpoints,
+            rendezvous,
+            relay_proxy.clone(),
+            expires_ms,
+        ),
+        _ => empty_relay_workers(),
+    };
 
     let mut active: Option<tokio::task::JoinHandle<()>> = None;
     let mut active_path: Option<&'static str> = None;
@@ -502,6 +538,23 @@ async fn main() -> Result<()> {
                             relay_rx = rx;
                             relay_endpoints = new_relays;
                             relay_proxy = new_proxy;
+                            for task in pairing_relay_tasks.drain(..) {
+                                task.abort();
+                                let _ = task.await;
+                            }
+                            let pair_state = pairing::state(&dir);
+                            (pairing_relay_tasks, pairing_relay_rx) = match (
+                                pair_state.pairing_rendezvous.as_deref(),
+                                pair_state.pairing_expires_ms,
+                            ) {
+                                (Some(rendezvous), Some(expires_ms)) => start_pairing_relay_workers(
+                                    &relay_endpoints,
+                                    rendezvous,
+                                    relay_proxy.clone(),
+                                    expires_ms,
+                                ),
+                                _ => empty_relay_workers(),
+                            };
                             info!(
                                 relays = ?relay_endpoints,
                                 proxy = relay_proxy.as_deref().unwrap_or("direct"),
@@ -510,7 +563,7 @@ async fn main() -> Result<()> {
                             // A live relay socket belongs to the old routing configuration. End only
                             // that session so the phone reconnects through the newly parked routes;
                             // a LAN session is left untouched.
-                            if active_path == Some("relay") {
+                            if active_path.is_some_and(|path| path.starts_with("relay")) {
                                 if let Some(previous) = active.take() {
                                     previous.abort();
                                     let _ = previous.await;
@@ -530,11 +583,44 @@ async fn main() -> Result<()> {
             }
             Some(request) = pair_rx.recv() => {
                 let result = match request.action {
-                    control::PairAction::Start => pairing::start(&dir).map(|_| ()).map_err(|e| format!("{e:#}")),
-                    control::PairAction::Cancel => pairing::cancel(&dir).map(|_| ()).map_err(|e| format!("{e:#}")),
+                    control::PairAction::Start => match pairing::start(&dir) {
+                        Ok(window) => {
+                            for task in pairing_relay_tasks.drain(..) {
+                                task.abort();
+                                let _ = task.await;
+                            }
+                            let (tasks, rx) = start_pairing_relay_workers(
+                                &relay_endpoints,
+                                &window.rendezvous,
+                                relay_proxy.clone(),
+                                window.expires_ms,
+                            );
+                            pairing_relay_tasks = tasks;
+                            pairing_relay_rx = rx;
+                            info!(code = %pairing::format_code(&window.code), "pairing Relay aliases parked");
+                            Ok(())
+                        }
+                        Err(e) => Err(format!("{e:#}")),
+                    },
+                    control::PairAction::Cancel => {
+                        let result = pairing::cancel(&dir).map(|_| ()).map_err(|e| format!("{e:#}"));
+                        if result.is_ok() {
+                            for task in pairing_relay_tasks.drain(..) {
+                                task.abort();
+                                let _ = task.await;
+                            }
+                            (pairing_relay_tasks, pairing_relay_rx) = empty_relay_workers();
+                        }
+                        result
+                    }
                     control::PairAction::Forget => {
                         let result = pairing::forget(&dir).map(|_| ()).map_err(|e| format!("{e:#}"));
                         if result.is_ok() {
+                            for task in pairing_relay_tasks.drain(..) {
+                                task.abort();
+                                let _ = task.await;
+                            }
+                            (pairing_relay_tasks, pairing_relay_rx) = empty_relay_workers();
                             let _ = pair_session_tx.send(control::PairAction::Forget);
                             if active.is_none() {
                                 desktop_status.disconnected();
@@ -552,7 +638,13 @@ async fn main() -> Result<()> {
             }
             Some(arrival) = relay_rx.recv() => {
                 let peer = arrival.stream.peer_addr()?;
+                debug_assert!(!arrival.pairing);
                 (arrival.stream, peer, "relay", Some(arrival.endpoint))
+            }
+            Some(arrival) = pairing_relay_rx.recv() => {
+                let peer = arrival.stream.peer_addr()?;
+                debug_assert!(arrival.pairing);
+                (arrival.stream, peer, "relay-pair", Some(arrival.endpoint))
             }
         };
         info!(%peer, via, relay = relay_endpoint.as_deref().unwrap_or("-"), "peer arriving");
@@ -610,6 +702,10 @@ async fn main() -> Result<()> {
         session.abort();
         let _ = session.await;
     }
+    for task in pairing_relay_tasks.drain(..) {
+        task.abort();
+        let _ = task.await;
+    }
     desktop_status.disconnected();
     Ok(())
 }
@@ -632,12 +728,107 @@ fn start_relay_workers(
             rendezvous.to_owned(),
             relay_tx.clone(),
             relay_proxy.clone(),
+            false,
         )));
     }
     // Only workers own senders. With no configured relays this closes the receiver and makes the
     // `Some(arrival)` select branch dormant without any poll or special timer.
     drop(relay_tx);
     (tasks, relay_rx)
+}
+
+fn empty_relay_workers() -> (
+    Vec<tokio::task::JoinHandle<()>>,
+    tokio::sync::mpsc::Receiver<RelayArrival>,
+) {
+    let (tx, rx) = tokio::sync::mpsc::channel(1);
+    drop(tx);
+    (Vec::new(), rx)
+}
+
+fn start_pairing_relay_workers(
+    relays: &[String],
+    rendezvous: &str,
+    relay_proxy: Option<String>,
+    expires_ms: u128,
+) -> (
+    Vec<tokio::task::JoinHandle<()>>,
+    tokio::sync::mpsc::Receiver<RelayArrival>,
+) {
+    let (relay_tx, relay_rx) =
+        tokio::sync::mpsc::channel::<RelayArrival>((relays.len().max(1) * 2).max(2));
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let remaining_ms = expires_ms.saturating_sub(now_ms).min(u64::MAX as u128) as u64;
+    if remaining_ms == 0 {
+        drop(relay_tx);
+        return (Vec::new(), relay_rx);
+    }
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(remaining_ms);
+    let mut tasks = Vec::with_capacity(relays.len());
+    for endpoint in relays {
+        info!(%endpoint, "parking temporary pairing alias at relay");
+        tasks.push(tokio::spawn(park_until(
+            endpoint.clone(),
+            rendezvous.to_owned(),
+            relay_tx.clone(),
+            relay_proxy.clone(),
+            deadline,
+        )));
+    }
+    drop(relay_tx);
+    (tasks, relay_rx)
+}
+
+async fn park_until(
+    endpoint: String,
+    rendezvous: String,
+    tx: tokio::sync::mpsc::Sender<RelayArrival>,
+    relay_proxy: Option<String>,
+    deadline: tokio::time::Instant,
+) {
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return;
+        }
+        match tokio::time::timeout(
+            remaining,
+            wire::park(&endpoint, &rendezvous, relay_proxy.as_deref()),
+        )
+        .await
+        {
+            Ok(Ok(stream)) => {
+                if let Err(e) = set_keepalive(&stream) {
+                    warn!(error = %e, "pairing relay stream without keepalive");
+                }
+                if tx
+                    .send(RelayArrival {
+                        stream,
+                        endpoint: endpoint.clone(),
+                        pairing: true,
+                    })
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            Ok(Err(e)) => {
+                warn!(%endpoint, error = %e, "pairing relay unreachable");
+                let nap = RELAY_RETRY.min(
+                    deadline.saturating_duration_since(tokio::time::Instant::now()),
+                );
+                if nap.is_zero() {
+                    return;
+                }
+                tokio::time::sleep(nap).await;
+            }
+            Err(_) => return,
+        }
+    }
 }
 
 /// Keeps exactly one connection parked at the relay for the life of the process.
@@ -651,6 +842,7 @@ async fn park_forever(
     rendezvous: String,
     tx: tokio::sync::mpsc::Sender<RelayArrival>,
     relay_proxy: Option<String>,
+    pairing: bool,
 ) {
     loop {
         match wire::park(&endpoint, &rendezvous, relay_proxy.as_deref()).await {
@@ -663,6 +855,7 @@ async fn park_forever(
                     .send(RelayArrival {
                         stream,
                         endpoint: endpoint.clone(),
+                        pairing,
                     })
                     .await
                     .is_err()
@@ -697,7 +890,7 @@ async fn serve(
 ) -> Result<()> {
     stream.set_nodelay(true)?;
     set_keepalive(&stream)?;
-    let idle_ping = if path == "relay" {
+    let idle_ping = if path.starts_with("relay") {
         RELAY_IDLE_PING
     } else {
         IDLE_PING
@@ -741,7 +934,11 @@ async fn serve(
         "session authenticated"
     );
     pairing::confirm(data_dir, &remote_id, authorization, &peer_hello.device_name)?;
-    desktop_status.linked(&remote_id, path, relay_endpoint);
+    desktop_status.linked(
+        &remote_id,
+        if path.starts_with("relay") { "relay" } else { path },
+        relay_endpoint,
+    );
     desktop_status.peer_name(&peer_hello.device_name);
     info!(
         name = %peer_hello.device_name,

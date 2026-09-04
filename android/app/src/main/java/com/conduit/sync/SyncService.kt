@@ -73,6 +73,7 @@ const val ACTION_DISCONNECT = "com.conduit.sync.DISCONNECT"
 const val ACTION_PAIR = "com.conduit.sync.PAIR"
 const val ACTION_CANCEL_PAIR = "com.conduit.sync.CANCEL_PAIR"
 const val ACTION_FORGET = "com.conduit.sync.FORGET"
+const val EXTRA_PAIRING_CODE = "pairing_code"
 
 private const val PAIRING_WINDOW_MS = 120_000L
 private const val PAIRING_RETRY_MS = 2_000L
@@ -155,9 +156,11 @@ class SyncService : Service() {
 
     /** Explicit, user-opened LAN pairing window. Uptime excludes deep sleep and never wakes it. */
     @Volatile private var pairingUntilUptimeMs = 0L
+    @Volatile private var pairingRendezvous: String? = null
     private val pairingTimeout = Runnable {
         if (pairingUntilUptimeMs == 0L) return@Runnable
         pairingUntilUptimeMs = 0L
+        pairingRendezvous = null
         LinkStatus.pairing = false
         Log.i(TAG, "pairing window expired")
         if (knownPeer != null && Settings.linkWanted && networkUp) {
@@ -174,7 +177,7 @@ class SyncService : Service() {
     /** Retry is scoped to the explicit pairing window only. A failed/no-result mDNS burst schedules
      * one later burst; nothing here exists during normal linked/offline operation. */
     private val pairingRetry = Runnable {
-        if (!destroyed && pairingActive() && networkUp) searchPairingLan()
+        if (!destroyed && pairingActive() && networkUp) retryPairing()
     }
 
     /** Set in [onDestroy] so a retry already in flight cannot touch a closed [Link]. */
@@ -226,7 +229,7 @@ class SyncService : Service() {
             // that just failed, so it starts from the floor instead of serving out a
             // backoff earned on a network that no longer exists.
             cancelRetry()
-            if (pairingActive()) searchPairingLan(net) else redial(net)
+            if (pairingActive()) retryPairing(net) else redial(net)
         }
 
         override fun onLost(net: Network) {
@@ -316,6 +319,14 @@ class SyncService : Service() {
                             main.post {
                                 hideLinkNotification()
                                 if (pairingActive()) {
+                                    if (pairingRendezvous != null && endpoint != null) {
+                                        relayAttempt = null
+                                        relayAttemptConnected = false
+                                        if (relayCandidates.isNotEmpty()) {
+                                            main.postDelayed({ dialNextRelay() }, RELAY_FAILOVER_DELAY_MS)
+                                            return@post
+                                        }
+                                    }
                                     main.removeCallbacks(pairingRetry)
                                     main.postDelayed(pairingRetry, PAIRING_RETRY_MS)
                                     return@post
@@ -419,10 +430,12 @@ class SyncService : Service() {
                     remotePairing: Boolean,
                 ): Boolean {
                     if (pairingActive()) {
-                        // Pairing/replacement is deliberately LAN-only and mutual: both users must
-                        // have opened the short pairing window. This also prevents the old trusted
-                        // desktop from immediately consuming a "Pair new" attempt by reconnecting.
-                        return !viaRelay && remotePairing
+                        // Pairing/replacement is mutual. With a human pairing code, the temporary
+                        // rendezvous deliberately uses Relay; without one, mDNS/LAN is used. The
+                        // ordinary remembered-peer Relay cannot consume a Pair-new window because
+                        // the service never dials that rendezvous while pairing is active.
+                        val codeMode = pairingRendezvous != null
+                        return remotePairing && if (codeMode) viaRelay else !viaRelay
                     }
                     return deviceId == knownPeer
                 }
@@ -459,8 +472,10 @@ class SyncService : Service() {
                     LinkStatus.state = LinkState.Pairing
                     LinkStatus.path = "LAN · No desktop found"
                     hideLinkNotification()
-                    main.removeCallbacks(pairingRetry)
-                    main.postDelayed(pairingRetry, PAIRING_RETRY_MS)
+                    if (pairingRendezvous == null) {
+                        main.removeCallbacks(pairingRetry)
+                        main.postDelayed(pairingRetry, PAIRING_RETRY_MS)
+                    }
                 } else {
                     dialRelay()
                 }
@@ -502,7 +517,7 @@ class SyncService : Service() {
         //       --es host 127.0.0.1
         val host = intent?.getStringExtra("host")
         when {
-            intent?.action == ACTION_PAIR -> beginPairing()
+            intent?.action == ACTION_PAIR -> beginPairing(intent?.getStringExtra(EXTRA_PAIRING_CODE))
             intent?.action == ACTION_ACCESSIBILITY_CLIP -> onAccessibilityClip(intent)
             intent?.action == ACTION_SHARE -> onShare(intent)
             host != null -> {
@@ -623,6 +638,7 @@ class SyncService : Service() {
         Log.i(TAG, "user asked for a disconnect")
         Settings.linkWanted = false
         pairingUntilUptimeMs = 0L
+        pairingRendezvous = null
         LinkStatus.pairing = false
         main.removeCallbacks(pairingTimeout)
         main.removeCallbacks(pairingRetry)
@@ -656,7 +672,7 @@ class SyncService : Service() {
             return
         }
         if (pairingActive()) {
-            searchPairingLan(net)
+            retryPairing(net)
             return
         }
         if (knownPeer == null) {
@@ -690,7 +706,7 @@ class SyncService : Service() {
     private fun dialRelay() {
         val peer = knownPeer
         if (peer == null) {
-            Log.i(TAG, "no paired desktop yet, so no relay rendezvous; pair on a LAN first")
+            Log.i(TAG, "no paired desktop yet, so no normal relay rendezvous")
             LinkStatus.path = null
             // Nothing was dialled, so no reader thread will ever report Idle for this
             // attempt — and Idle is what schedules the next one. Without this the retry
@@ -709,7 +725,7 @@ class SyncService : Service() {
 
     private fun dialNextRelay() {
         if (!Settings.linkWanted || !networkUp) return
-        val peer = knownPeer ?: return
+        val rendezvous = pairingRendezvous ?: knownPeer ?: return
         val endpoint = relayCandidates.pollFirst()
         if (endpoint == null) {
             clearRelayPlan()
@@ -720,11 +736,15 @@ class SyncService : Service() {
         relayAttemptConnected = false
         relayConnectedAtMs = 0L
         relayAttemptStartedAtMs = SystemClock.elapsedRealtime()
-        LinkStatus.path = "Relay · ${endpoint.id.uppercase()}"
+        LinkStatus.path = if (pairingRendezvous != null) {
+            "Pairing · ${endpoint.id.uppercase()} Relay"
+        } else {
+            "Relay · ${endpoint.id.uppercase()}"
+        }
         Log.i(TAG, "trying relay ${endpoint.id} at ${endpoint.host}:${endpoint.port}")
         link.connectVia(
             InetSocketAddress.createUnresolved(endpoint.host, endpoint.port),
-            peer,
+            rendezvous,
             endpoint.fallbackIpv4,
         )
     }
@@ -766,12 +786,18 @@ class SyncService : Service() {
     private fun pairingActive(): Boolean =
         pairingUntilUptimeMs > SystemClock.uptimeMillis()
 
-    private fun beginPairing() {
+    private fun beginPairing(rawCode: String?) {
+        val normalized = rawCode?.let(PairingCode::normalize).orEmpty()
+        if (normalized.isNotEmpty() && !PairingCode.isValid(normalized)) {
+            Log.w(TAG, "refusing malformed pairing code")
+            return
+        }
         Settings.linkWanted = true
         pairingUntilUptimeMs = SystemClock.uptimeMillis() + PAIRING_WINDOW_MS
+        pairingRendezvous = normalized.takeIf(String::isNotEmpty)?.let(PairingCode::rendezvous)
         LinkStatus.pairing = true
         LinkStatus.state = LinkState.Pairing
-        LinkStatus.path = "LAN · Pairing"
+        LinkStatus.path = if (pairingRendezvous != null) "Pairing · Relay" else "LAN · Pairing"
         main.removeCallbacks(pairingTimeout)
         main.removeCallbacks(pairingRetry)
         main.postDelayed(pairingTimeout, PAIRING_WINDOW_MS)
@@ -780,12 +806,35 @@ class SyncService : Service() {
         clearRelayPlan()
         discovery.stop()
         link.disconnect()
-        Log.i(TAG, "pairing opened for ${PAIRING_WINDOW_MS / 1000}s")
-        searchPairingLan()
+        Log.i(
+            TAG,
+            if (pairingRendezvous != null) {
+                "pairing opened for ${PAIRING_WINDOW_MS / 1000}s with Relay code rendezvous"
+            } else {
+                "pairing opened for ${PAIRING_WINDOW_MS / 1000}s on LAN discovery"
+            },
+        )
+        retryPairing()
+    }
+
+    private fun retryPairing(net: Network? = null) {
+        if (!pairingActive() || !networkUp) return
+        if (pairingRendezvous != null) dialPairingRelay() else searchPairingLan(net)
+    }
+
+    private fun dialPairingRelay() {
+        if (!pairingActive() || pairingRendezvous == null || !networkUp) return
+        val context = currentNetworkClass()
+        relayNetworkClass = context
+        relayCandidates.clear()
+        relayQuality.candidates(context, relayEndpoints, System.currentTimeMillis())
+            .forEach(relayCandidates::addLast)
+        Log.i(TAG, "pairing relay candidates: ${relayCandidates.joinToString { it.id }}")
+        dialNextRelay()
     }
 
     private fun searchPairingLan(net: Network? = null) {
-        if (!pairingActive()) return
+        if (!pairingActive() || pairingRendezvous != null) return
         val caps = connectivity.getNetworkCapabilities(net ?: connectivity.activeNetwork)
         val lan = caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true ||
             caps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true
@@ -802,6 +851,7 @@ class SyncService : Service() {
 
     private fun cancelPairing(resumeOldPeer: Boolean) {
         pairingUntilUptimeMs = 0L
+        pairingRendezvous = null
         LinkStatus.pairing = false
         main.removeCallbacks(pairingTimeout)
         main.removeCallbacks(pairingRetry)
@@ -814,6 +864,7 @@ class SyncService : Service() {
     private fun forgetPeer(remote: Boolean) {
         Log.i(TAG, if (remote) "desktop requested unpair" else "user forgot the paired desktop")
         pairingUntilUptimeMs = 0L
+        pairingRendezvous = null
         LinkStatus.pairing = false
         main.removeCallbacks(pairingTimeout)
         main.removeCallbacks(pairingRetry)

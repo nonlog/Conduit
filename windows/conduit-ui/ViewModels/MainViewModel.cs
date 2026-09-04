@@ -23,6 +23,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private string? _pairedDeviceId;
     private string? _pairedDeviceName;
     private bool _pairingActive;
+    private string _pairingCode = string.Empty;
     private bool _relayUs = true;
     private bool _relayWa = true;
     private bool _relayTyo = true;
@@ -74,15 +75,27 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             if (!SetProperty(ref _pairingActive, value)) return;
             OnPropertyChanged(nameof(PairingSummary));
             OnPropertyChanged(nameof(PairActionLabel));
+            OnPropertyChanged(nameof(PairingCodeDisplay));
         }
     }
+    public string PairingCode
+    {
+        get => _pairingCode;
+        private set
+        {
+            if (!SetProperty(ref _pairingCode, value)) return;
+            OnPropertyChanged(nameof(PairingSummary));
+            OnPropertyChanged(nameof(PairingCodeDisplay));
+        }
+    }
+    public string PairingCodeDisplay => PairingActive ? FormatPairingCode(PairingCode) : string.Empty;
     public bool HasPairedDevice => !string.IsNullOrWhiteSpace(PairedDeviceId);
     public string PairActionLabel => PairingActive ? "Cancel pairing" : HasPairedDevice ? "Pair new phone" : "Pair phone";
     public string PairingSummary => PairingActive
-        ? "Pairing open for two minutes · keep both devices on the same LAN"
+        ? $"Code {FormatPairingCode(PairingCode)} · valid for two minutes · works through Relay or the same LAN"
         : HasPairedDevice
             ? $"{(string.IsNullOrWhiteSpace(PairedDeviceName) ? "Paired phone" : PairedDeviceName)} · {ShortDeviceId(PairedDeviceId)}"
-            : "No paired phone · pair once on the same LAN";
+            : "No paired phone · choose Pair phone and enter its code on Android";
     public bool RelayUs { get => _relayUs; set => SetRelay(ref _relayUs, value); }
     public bool RelayWa { get => _relayWa; set => SetRelay(ref _relayWa, value); }
     public bool RelayTyo { get => _relayTyo; set => SetRelay(ref _relayTyo, value); }
@@ -150,7 +163,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         PairedDeviceId = ReadOneLine(Path.Combine(_dataDir, "peer.txt"));
         PairedDeviceName = ReadOneLine(Path.Combine(_dataDir, "peer-name.txt"));
-        PairingActive = ReadPairingActive(Path.Combine(_dataDir, "pairing.txt"));
+        var pairing = ReadPairs(Path.Combine(_dataDir, "pairing.txt"));
+        PairingCode = Get(pairing, "code").Trim().ToUpperInvariant();
+        PairingActive = ulong.TryParse(Get(pairing, "expires_ms"), out var pairingExpiresMs) &&
+            pairingExpiresMs > (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() &&
+            PairingCode.Length == 10;
+        if (!PairingActive) PairingCode = string.Empty;
 
         var status = ReadPairs(Path.Combine(_dataDir, "status.txt"));
         var config = ReadPairs(Path.Combine(_dataDir, "config.txt"));
@@ -674,11 +692,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    private static bool ReadPairingActive(string path)
+    private static string FormatPairingCode(string code)
     {
-        var value = ReadOneLine(path);
-        return ulong.TryParse(value, out var expiresMs) &&
-            expiresMs > (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var normalized = new string(code.Where(char.IsLetterOrDigit).Select(char.ToUpperInvariant).ToArray());
+        return normalized.Length == 10 ? normalized[..5] + "-" + normalized[5..] : normalized;
     }
 
     private static string ShortDeviceId(string? id)

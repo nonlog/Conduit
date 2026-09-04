@@ -181,7 +181,7 @@ class MainActivity : ComponentActivity() {
                     },
                     onConnect = { send(ACTION_CONNECT) },
                     onDisconnect = { send(ACTION_DISCONNECT) },
-                    onPair = { send(ACTION_PAIR) },
+                    onPair = ::sendPair,
                     onCancelPair = { send(ACTION_CANCEL_PAIR) },
                     onForget = { send(ACTION_FORGET) },
                     onSendFiles = ::sendFiles,
@@ -291,6 +291,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun sendPair(code: String?) {
+        val intent = Intent(this, SyncService::class.java).setAction(ACTION_PAIR)
+        code?.let { intent.putExtra(EXTRA_PAIRING_CODE, PairingCode.normalize(it)) }
+        startForegroundService(intent)
+    }
+
     private fun refreshClipboardAccessMode() {
         clipboardAccessibilityEnabled = ClipboardAccess.isAccessibilityEnabled(this)
         clipboardMode = ClipboardAccess.mode(this)
@@ -335,7 +341,7 @@ private fun ConduitApp(
     onOpenClipboardAccessibility: () -> Unit,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
-    onPair: () -> Unit,
+    onPair: (String?) -> Unit,
     onCancelPair: () -> Unit,
     onForget: () -> Unit,
     onSendFiles: (List<android.net.Uri>) -> Unit,
@@ -343,7 +349,60 @@ private fun ConduitApp(
 ) {
     var page by rememberSaveable { mutableStateOf("main") }
     var tabName by rememberSaveable { mutableStateOf(MainTab.Home.name) }
+    var showPairDialog by rememberSaveable { mutableStateOf(false) }
+    var pairCode by rememberSaveable { mutableStateOf("") }
     val tab = runCatching { MainTab.valueOf(tabName) }.getOrDefault(MainTab.Home)
+    val requestPair = {
+        pairCode = ""
+        showPairDialog = true
+    }
+
+    if (showPairDialog) {
+        AlertDialog(
+            onDismissRequest = { showPairDialog = false },
+            title = { Text("Pair desktop") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        "On Windows, open Conduit Settings and choose Pair phone. " +
+                            "Enter the code shown there. The code works through Conduit Relay even when the devices are on different networks.",
+                    )
+                    OutlinedTextField(
+                        value = pairCode,
+                        onValueChange = { pairCode = PairingCode.normalize(it).take(PairingCode.LENGTH) },
+                        label = { Text("Pairing code") },
+                        placeholder = { Text("ABCDE-FGHIJ") },
+                        supportingText = { Text("10 characters · valid for two minutes") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    TextButton(
+                        onClick = {
+                            showPairDialog = false
+                            onPair(null)
+                        },
+                    ) {
+                        Text("Search the same LAN instead")
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = PairingCode.isValid(pairCode),
+                    onClick = {
+                        val code = PairingCode.normalize(pairCode)
+                        showPairDialog = false
+                        onPair(code)
+                    },
+                ) {
+                    Text("Pair")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPairDialog = false }) { Text("Cancel") }
+            },
+        )
+    }
 
     BackHandler(enabled = page == "history") { page = "main" }
     if (page == "history") {
@@ -412,7 +471,7 @@ private fun ConduitApp(
                 toPhone = toPhone,
                 onConnect = onConnect,
                 onDisconnect = onDisconnect,
-                onPair = onPair,
+                onPair = requestPair,
                 onCancelPair = onCancelPair,
                 onSendFiles = onSendFiles,
                 onOpenHistory = { page = "history" },
@@ -429,7 +488,7 @@ private fun ConduitApp(
                 clipboardMode = clipboardMode,
                 clipboardAccessibilityEnabled = clipboardAccessibilityEnabled,
                 onOpenClipboardAccessibility = onOpenClipboardAccessibility,
-                onPair = onPair,
+                onPair = requestPair,
                 onCancelPair = onCancelPair,
                 onForget = onForget,
                 onOpenHistory = { page = "history" },
