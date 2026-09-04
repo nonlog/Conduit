@@ -18,7 +18,7 @@ use windows_sys::Win32::System::Threading::{
 };
 use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
 use windows_sys::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
+    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
     NIM_SETVERSION, NOTIFYICONDATAW, NOTIFYICON_VERSION_4,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
@@ -143,7 +143,7 @@ unsafe fn data(hwnd: HWND, icon: HICON) -> NOTIFYICONDATAW {
     data.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
     data.hWnd = hwnd;
     data.uID = TRAY_ID;
-    data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
     data.uCallbackMessage = CALLBACK_MESSAGE;
     data.hIcon = icon;
     let tip = wide("Conduit");
