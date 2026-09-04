@@ -64,7 +64,12 @@ pub fn forget(dir: &Path) -> Result<bool> {
 }
 
 pub fn remember_name(dir: &Path, name: &str) -> Result<()> {
-    let name = name.replace(['\r', '\n'], " ").trim().chars().take(64).collect::<String>();
+    let name = name
+        .replace(['\r', '\n'], " ")
+        .trim()
+        .chars()
+        .take(64)
+        .collect::<String>();
     if name.is_empty() {
         return Ok(());
     }
@@ -119,7 +124,12 @@ pub fn authorize(
     bail!("peer is not paired; open pairing on both devices first")
 }
 
-pub fn confirm(dir: &Path, remote_id: &str, authorization: Authorization, name: &str) -> Result<()> {
+pub fn confirm(
+    dir: &Path,
+    remote_id: &str,
+    authorization: Authorization,
+    name: &str,
+) -> Result<()> {
     if authorization != Authorization::Trusted {
         remember_peer(dir, remote_id)?;
     }
@@ -222,7 +232,10 @@ mod tests {
         assert!(state(&dir).pairing);
         confirm(&dir, &a, authorization, "Phone").unwrap();
         assert!(!state(&dir).pairing);
-        assert_eq!(authorize(&dir, &a, "lan", true).unwrap(), Authorization::Trusted);
+        assert_eq!(
+            authorize(&dir, &a, "lan", true).unwrap(),
+            Authorization::Trusted
+        );
         assert!(authorize(&dir, &b, "lan", false).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }

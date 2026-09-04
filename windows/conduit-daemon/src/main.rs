@@ -241,13 +241,17 @@ async fn main() -> Result<()> {
                     println!("peer_id={}", state.device_id.as_deref().unwrap_or(""));
                     println!("peer_name={}", state.device_name.as_deref().unwrap_or(""));
                 }
-                "start" => match control::pair(control::PairAction::Start).await {
-                    Ok(()) => println!("Pairing is open for {} seconds.", pairing::WINDOW.as_secs()),
-                    Err(_) => {
-                        pairing::start(&dir)?;
-                        println!("Pairing is open for {} seconds; it will apply when the daemon starts.", pairing::WINDOW.as_secs());
+                "start" => {
+                    match control::pair(control::PairAction::Start).await {
+                        Ok(()) => {
+                            println!("Pairing is open for {} seconds.", pairing::WINDOW.as_secs())
+                        }
+                        Err(_) => {
+                            pairing::start(&dir)?;
+                            println!("Pairing is open for {} seconds; it will apply when the daemon starts.", pairing::WINDOW.as_secs());
+                        }
                     }
-                },
+                }
                 "cancel" => match control::pair(control::PairAction::Cancel).await {
                     Ok(()) => println!("Pairing cancelled."),
                     Err(_) => {
