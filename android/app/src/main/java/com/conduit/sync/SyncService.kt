@@ -75,6 +75,7 @@ const val ACTION_CANCEL_PAIR = "com.conduit.sync.CANCEL_PAIR"
 const val ACTION_FORGET = "com.conduit.sync.FORGET"
 
 private const val PAIRING_WINDOW_MS = 120_000L
+private const val PAIRING_RETRY_MS = 2_000L
 
 /** Sent by [ShareActivity]: URIs in the intent's ClipData, or text in EXTRA_TEXT. */
 const val ACTION_SHARE = "com.conduit.sync.SHARE"
@@ -168,6 +169,12 @@ class SyncService : Service() {
             hideLinkNotification()
             stopSelf()
         }
+    }
+
+    /** Retry is scoped to the explicit pairing window only. A failed/no-result mDNS burst schedules
+     * one later burst; nothing here exists during normal linked/offline operation. */
+    private val pairingRetry = Runnable {
+        if (!destroyed && pairingActive() && networkUp) searchPairingLan()
     }
 
     /** Set in [onDestroy] so a retry already in flight cannot touch a closed [Link]. */
@@ -308,6 +315,11 @@ class SyncService : Service() {
                             }
                             main.post {
                                 hideLinkNotification()
+                                if (pairingActive()) {
+                                    main.removeCallbacks(pairingRetry)
+                                    main.postDelayed(pairingRetry, PAIRING_RETRY_MS)
+                                    return@post
+                                }
                                 if (endpoint != null && networkUp && Settings.linkWanted) {
                                     if (!wasConnected) {
                                         relayQuality.dialFailed(
@@ -447,6 +459,8 @@ class SyncService : Service() {
                     LinkStatus.state = LinkState.Pairing
                     LinkStatus.path = "LAN · No desktop found"
                     hideLinkNotification()
+                    main.removeCallbacks(pairingRetry)
+                    main.postDelayed(pairingRetry, PAIRING_RETRY_MS)
                 } else {
                     dialRelay()
                 }
@@ -522,6 +536,7 @@ class SyncService : Service() {
         destroyed = true
         main.removeCallbacks(retry)
         main.removeCallbacks(pairingTimeout)
+        main.removeCallbacks(pairingRetry)
         main.removeCallbacks(wallpaperRefresh)
         if (::wallpaperManager.isInitialized) wallpaperManager.removeOnColorsChangedListener(wallpaperListener)
         // Cleared next, so the notification relay stops handing frames to a link that
@@ -610,6 +625,7 @@ class SyncService : Service() {
         pairingUntilUptimeMs = 0L
         LinkStatus.pairing = false
         main.removeCallbacks(pairingTimeout)
+        main.removeCallbacks(pairingRetry)
         main.removeCallbacks(retry)
         retryMs = RETRY_MIN_MS
         recoveryUntilUptimeMs = 0L
@@ -757,6 +773,7 @@ class SyncService : Service() {
         LinkStatus.state = LinkState.Pairing
         LinkStatus.path = "LAN · Pairing"
         main.removeCallbacks(pairingTimeout)
+        main.removeCallbacks(pairingRetry)
         main.postDelayed(pairingTimeout, PAIRING_WINDOW_MS)
         main.removeCallbacks(retry)
         retryMs = RETRY_MIN_MS
@@ -787,6 +804,7 @@ class SyncService : Service() {
         pairingUntilUptimeMs = 0L
         LinkStatus.pairing = false
         main.removeCallbacks(pairingTimeout)
+        main.removeCallbacks(pairingRetry)
         discovery.stop()
         if (resumeOldPeer && knownPeer != null && Settings.linkWanted && networkUp) {
             redial()
@@ -798,6 +816,7 @@ class SyncService : Service() {
         pairingUntilUptimeMs = 0L
         LinkStatus.pairing = false
         main.removeCallbacks(pairingTimeout)
+        main.removeCallbacks(pairingRetry)
         main.removeCallbacks(retry)
         discovery.stop()
         clearRelayPlan()

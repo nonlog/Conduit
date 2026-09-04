@@ -11,6 +11,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const PEER_FILE: &str = "peer.txt";
 const PEER_NAME_FILE: &str = "peer-name.txt";
 const PAIRING_FILE: &str = "pairing.txt";
+/// Marks data directories that have already entered the explicit-pairing model. Without this, an
+/// offline phone could resurrect itself through the one-time legacy Relay migration after the user
+/// explicitly chose Forget.
+const PAIRING_MODEL_FILE: &str = "pairing-v2";
 const ID_LEN: usize = 43;
 pub const WINDOW: Duration = Duration::from_secs(120);
 
@@ -60,6 +64,7 @@ pub fn forget(dir: &Path) -> Result<bool> {
     changed |= remove_if_exists(&dir.join(PEER_FILE))?;
     changed |= remove_if_exists(&dir.join(PEER_NAME_FILE))?;
     changed |= remove_if_exists(&dir.join(PAIRING_FILE))?;
+    mark_explicit_pairing_model(dir)?;
     Ok(changed)
 }
 
@@ -117,7 +122,7 @@ pub fn authorize(
     // paired phone knows this desktop's unguessable rendezvous id and can therefore reach this
     // exact relay parking slot. Pin that phone after the mutual hello succeeds. Fresh installs
     // have a new rendezvous id, so an unrelated phone cannot use this path.
-    if remembered.is_none() && via == "relay" {
+    if remembered.is_none() && via == "relay" && !dir.join(PAIRING_MODEL_FILE).exists() {
         return Ok(Authorization::LegacyRelayMigration);
     }
 
@@ -136,7 +141,12 @@ pub fn confirm(
     if pairing_allowed(dir) {
         let _ = cancel(dir);
     }
-    remember_name(dir, name)
+    remember_name(dir, name)?;
+    mark_explicit_pairing_model(dir)
+}
+
+fn mark_explicit_pairing_model(dir: &Path) -> Result<()> {
+    atomic_write(&dir.join(PAIRING_MODEL_FILE), "1\n")
 }
 
 fn remember_peer(dir: &Path, remote_id: &str) -> Result<()> {
@@ -269,6 +279,8 @@ mod tests {
         assert!(peer_id(&dir).is_none());
         assert!(peer_name(&dir).is_none());
         assert!(dir.join("identity.bin").exists());
+        assert!(dir.join(PAIRING_MODEL_FILE).exists());
+        assert!(authorize(&dir, &id, "relay", false).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
