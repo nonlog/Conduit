@@ -1,6 +1,8 @@
 using Microsoft.UI.Windowing;
+using Microsoft.Windows.AppLifecycle;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.Win32;
+using Windows.ApplicationModel.Activation;
 using Windows.Graphics;
 
 namespace Conduit;
@@ -27,6 +29,21 @@ public partial class App : Application
         var mainPage = new MainPage();
         mainPage.ActualThemeChanged += (_, _) => ApplyThemeIcon();
         MainWindow.Content = mainPage;
+
+        try
+        {
+            var activation = AppInstance.GetCurrent().GetActivatedEventArgs();
+            if (activation.Kind == ExtendedActivationKind.ShareTarget &&
+                activation.Data is ShareTargetActivatedEventArgs share)
+            {
+                mainPage.QueueShare(share.ShareOperation);
+            }
+        }
+        catch
+        {
+            // A normal unpackaged launch has no package activation context. Share-target identity
+            // is optional, so falling back to the ordinary control window is intentional.
+        }
         ApplyThemeIcon();
 
         try

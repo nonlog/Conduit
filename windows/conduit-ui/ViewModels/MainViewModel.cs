@@ -90,12 +90,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     }
     public string PairingCodeDisplay => PairingActive ? FormatPairingCode(PairingCode) : string.Empty;
     public bool HasPairedDevice => !string.IsNullOrWhiteSpace(PairedDeviceId);
-    public string PairActionLabel => PairingActive ? "Cancel pairing" : HasPairedDevice ? "Pair new phone" : "Pair phone";
+    public string PairActionLabel => PairingActive ? "Show pairing code" : HasPairedDevice ? "Pair new phone" : "Pair phone";
     public string PairingSummary => PairingActive
-        ? $"Code {FormatPairingCode(PairingCode)} · valid for two minutes · works through Relay or the same LAN"
+        ? "Pairing open · six-digit code valid for two minutes"
         : HasPairedDevice
             ? $"{(string.IsNullOrWhiteSpace(PairedDeviceName) ? "Paired phone" : PairedDeviceName)} · {ShortDeviceId(PairedDeviceId)}"
-            : "No paired phone · choose Pair phone and enter its code on Android";
+            : "No paired phone · pair with a six-digit code or QR code";
     public bool RelayUs { get => _relayUs; set => SetRelay(ref _relayUs, value); }
     public bool RelayWa { get => _relayWa; set => SetRelay(ref _relayWa, value); }
     public bool RelayTyo { get => _relayTyo; set => SetRelay(ref _relayTyo, value); }
@@ -167,7 +167,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         PairingCode = Get(pairing, "code").Trim().ToUpperInvariant();
         PairingActive = ulong.TryParse(Get(pairing, "expires_ms"), out var pairingExpiresMs) &&
             pairingExpiresMs > (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() &&
-            PairingCode.Length == 10;
+            PairingCode.Length == 6 && PairingCode.All(char.IsDigit);
         if (!PairingActive) PairingCode = string.Empty;
 
         var status = ReadPairs(Path.Combine(_dataDir, "status.txt"));
@@ -692,11 +692,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    private static string FormatPairingCode(string code)
-    {
-        var normalized = new string(code.Where(char.IsLetterOrDigit).Select(char.ToUpperInvariant).ToArray());
-        return normalized.Length == 10 ? normalized[..5] + "-" + normalized[5..] : normalized;
-    }
+    private static string FormatPairingCode(string code) =>
+        new(code.Where(char.IsDigit).Take(6).ToArray());
 
     private static string ShortDeviceId(string? id)
     {

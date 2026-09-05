@@ -7,6 +7,19 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+function Invoke-WindowsPowerShell([string]$Script) {
+    $exe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+        throw "Windows PowerShell is required for Appx registration: $exe"
+    }
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Script))
+    $output = & $exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $encoded 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Windows PowerShell command failed ($LASTEXITCODE): $($output -join [Environment]::NewLine)"
+    }
+    return @($output)
+}
+
 $source = (Resolve-Path $SourceDir).Path
 $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
 $appData = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)
@@ -116,6 +129,29 @@ foreach ($name in @($requiredIconAssets + $optionalIconAssets)) {
     if (-not [string]::Equals($from, $to, [StringComparison]::OrdinalIgnoreCase)) {
         Copy-Item -Force $from $to
     }
+}
+
+# Windows Share targets require package identity even though Conduit's binaries stay managed by
+# Scoop/the existing installer. On Windows 11 the tiny sparse identity package can remain unsigned
+# because it contains only a manifest; the executable and all assets continue to live here at the
+# external location. Re-register on update so the share contract always points at `current`.
+$sharePackageName = 'Conduit.Desktop.ShareTarget'
+$sharePackage = Join-Path $installDir 'Conduit.ShareTarget.msix'
+$shareTargetRegistered = $false
+if ((Test-Path -LiteralPath $sharePackage -PathType Leaf) -and [Environment]::OSVersion.Version.Build -ge 22000) {
+    $packageLiteral = "'" + $sharePackage.Replace("'", "''") + "'"
+    $locationLiteral = "'" + $installDir.Replace("'", "''") + "'"
+    $registerScript = @"
+`$ErrorActionPreference = 'Stop'
+Import-Module Appx -ErrorAction Stop
+Get-AppxPackage -Name '$sharePackageName' -ErrorAction SilentlyContinue | Remove-AppxPackage -ErrorAction Stop
+Add-AppxPackage -Path $packageLiteral -ExternalLocation $locationLiteral -AllowUnsigned -ForceApplicationShutdown -ErrorAction Stop
+if (-not (Get-AppxPackage -Name '$sharePackageName' -ErrorAction SilentlyContinue)) {
+    throw 'Conduit share-target identity did not register'
+}
+"@
+    Invoke-WindowsPowerShell $registerScript | Out-Null
+    $shareTargetRegistered = $true
 }
 
 $shortcutSource = @'
@@ -242,6 +278,7 @@ if (-not $NoStart) {
     InstallDir = $installDir
     Shortcut = $shortcut
     AppUserModelId = 'Conduit.Desktop'
+    ShareTargetRegistered = $shareTargetRegistered
     AutostartPreserved = $hadAutostart
     ExplorerIntegrationPreserved = $hadExplorerIntegration
     DaemonStarted = -not $NoStart

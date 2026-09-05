@@ -15,6 +15,7 @@ import androidx.activity.result.contract.ActivityResultContracts.GetContent
 import androidx.activity.result.contract.ActivityResultContracts.GetMultipleContents
 import androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions
 import androidx.compose.foundation.background
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -71,6 +72,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -160,6 +162,7 @@ class MainActivity : ComponentActivity() {
         // go through the activity: Android 12+ refuses a foreground service started from
         // the background, so `am start-foreground-service` cannot drive the service itself.
         intent.getStringExtra("host")?.let(::startLink)
+        handlePairIntent(intent)
         setContent {
             ConduitTheme {
                 ConduitApp(
@@ -251,6 +254,22 @@ class MainActivity : ComponentActivity() {
         // the port off the activity's current intent.
         setIntent(intent)
         intent.getStringExtra("host")?.let(::startLink)
+        handlePairIntent(intent)
+    }
+
+    /** QR payload from the Windows pairing dialog. Invalid/foreign links never start the service. */
+    private fun handlePairIntent(intent: Intent): Boolean {
+        if (intent.action != Intent.ACTION_VIEW) return false
+        val uri = intent.data ?: return false
+        if (!uri.scheme.equals("conduit", ignoreCase = true) ||
+            !uri.host.equals("pair", ignoreCase = true)) return false
+        val code = PairingCode.normalize(uri.getQueryParameter("code").orEmpty())
+        if (!PairingCode.isValid(code)) {
+            android.widget.Toast.makeText(this, "Invalid Conduit pairing code", android.widget.Toast.LENGTH_SHORT).show()
+            return true
+        }
+        sendPair(code)
+        return true
     }
 
     /**
@@ -365,15 +384,17 @@ private fun ConduitApp(
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
                         "On Windows, open Conduit Settings and choose Pair phone. " +
-                            "Enter the code shown there. The code works through Conduit Relay even when the devices are on different networks.",
+                            "Enter the six-digit code, or scan the QR code there with your phone camera. " +
+                            "Both methods work through Conduit Relay even when the devices are on different networks.",
                     )
                     OutlinedTextField(
                         value = pairCode,
                         onValueChange = { pairCode = PairingCode.normalize(it).take(PairingCode.LENGTH) },
                         label = { Text("Pairing code") },
-                        placeholder = { Text("ABCDE-FGHIJ") },
-                        supportingText = { Text("10 characters · valid for two minutes") },
+                        placeholder = { Text("123456") },
+                        supportingText = { Text("6 digits · valid for two minutes") },
                         singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
                         modifier = Modifier.fillMaxWidth(),
                     )
                     TextButton(

@@ -69,6 +69,7 @@ notification, image, or file contents.
 | Wire contract | [`../proto/conduit.proto`](../proto/conduit.proto) | Single protobuf schema consumed by Android and Rust. |
 | Windows daemon | `main.rs`, `wire.rs`, `pairing.rs`, `clip.rs`, `image.rs`, `file.rs`, `control.rs` | mDNS advertising, LAN listener, normal and temporary pairing Relay parking, explicit one-phone trust state, Noise session, native clipboard bridge, bounded image/file receive paths, and local named-pipe control. |
 | Windows notifications | `toast.rs` | Dedicated COM/MTA toast owner, AUMID registration, icon/avatar cache, notification update/removal, capture/Snipping-Tool activation, and file activation. |
+| Windows Share target | sparse external-location identity package + WinUI activation handling | Registers Conduit in the Windows Share Sheet without moving the Scoop-managed binaries into MSIX; shared `StorageItems` are forwarded through the resident daemon. |
 | Relay | `relay/src/main.rs` | Fixed-size rendezvous preamble validation, one waiting socket per key, and blind TCP splicing. |
 
 ## Session lifecycle and routing
@@ -90,13 +91,14 @@ device's own Noise identity, history and settings intact.
 
 First pairing and replacement pairing are explicit user actions:
 
-1. Windows `Pair phone` opens a two-minute window and generates a 10-character human code.
-2. The code is normalized and hashed with the fixed `conduit-pair-v1:` domain into a 43-character
+1. Windows `Pair phone` opens a two-minute window and generates a six-digit decimal code. The
+   same code is also exposed as a `conduit://pair?code=......` QR payload for camera-based entry.
+2. The code is normalized and hashed with the fixed `conduit-pair-v2:` domain into a 43-character
    temporary Relay rendezvous. Windows parks temporary responders on the configured Relay fleet
    only until the window expires. No Relay protocol or Relay trust state is added.
-3. Android can enter that code from any network and dial the same temporary rendezvous. If both
-   devices really share a LAN, `Search the same LAN instead` keeps the bounded mDNS path as a
-   fallback.
+3. Android can enter the six digits or receive the QR deep link from any network and dial the same
+   temporary rendezvous. If both devices really share a LAN, `Search the same LAN instead` keeps
+   the bounded mDNS path as a fallback.
 4. Noise XX still authenticates the actual static keys end-to-end. Before clipboard/files are
    enabled, both peers exchange `PairRequest` identity hellos, verify the announced id matches the
    Noise static key, and require both local pairing windows to be open for a new/replacement peer.

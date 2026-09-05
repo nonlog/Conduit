@@ -56,6 +56,15 @@
                 <action android:name="android.service.quicksettings.action.QS_TILE_PREFERENCES" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- QR pairing uses a tiny deep link rather than a camera dependency in Conduit.
+                 The system camera/Lens scans conduit://pair?code=123456 and hands the six-digit
+                 code to the existing explicit pairing flow. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="conduit" android:host="pair" />
+            </intent-filter>
             <!-- Read by the framework, not by us: it is what pairs the runtime shortcut
                  ShareTarget publishes with ShareActivity, so the share sheet's Direct Share
                  row shows the desktop's name rather than the manifest label "Conduit". -->

@@ -19,9 +19,8 @@ const PAIRING_FILE: &str = "pairing.txt";
 /// explicitly chose Forget.
 const PAIRING_MODEL_FILE: &str = "pairing-v2";
 const ID_LEN: usize = 43;
-const CODE_LEN: usize = 10;
-const CODE_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-const PAIRING_DOMAIN: &[u8] = b"conduit-pair-v1:";
+const CODE_LEN: usize = 6;
+const PAIRING_DOMAIN: &[u8] = b"conduit-pair-v2:";
 pub const WINDOW: Duration = Duration::from_secs(120);
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -181,35 +180,24 @@ pub fn pairing_rendezvous(code: &str) -> String {
 }
 
 pub fn normalize_code(code: &str) -> String {
-    code.chars()
-        .filter(|value| value.is_ascii_alphanumeric())
-        .map(|value| value.to_ascii_uppercase())
-        .collect()
+    code.chars().filter(|value| value.is_ascii_digit()).collect()
 }
 
 pub fn format_code(code: &str) -> String {
-    let normalized = normalize_code(code);
-    if normalized.len() != CODE_LEN {
-        return normalized;
-    }
-    format!("{}-{}", &normalized[..5], &normalized[5..])
+    normalize_code(code)
 }
 
 fn generate_code() -> Result<String> {
     // snow already owns the CSPRNG used for Conduit's Noise identities. Reuse that dependency to
-    // obtain fresh entropy instead of adding another resident/runtime RNG crate for a two-minute
-    // pairing alias.
+    // obtain fresh entropy instead of adding a resident/runtime RNG crate for a two-minute code.
+    // Six decimal digits are deliberately short for phone entry; the Relay only reveals a hit by
+    // successfully splicing the exact rendezvous, and the authenticated Noise hello still has to
+    // prove that both endpoints explicitly entered pairing before the peer is persisted.
     let params = "Noise_XX_25519_ChaChaPoly_BLAKE2s".parse()?;
     let random = snow::Builder::new(params).generate_keypair()?;
     let digest = Sha256::digest(&random.public);
-    let mut value = u64::from_be_bytes(digest[..8].try_into().expect("SHA-256 is 32 bytes"));
-    value >>= 14; // keep 50 random bits -> exactly 10 base32 characters
-    let mut out = [b'0'; CODE_LEN];
-    for index in (0..CODE_LEN).rev() {
-        out[index] = CODE_ALPHABET[(value & 31) as usize];
-        value >>= 5;
-    }
-    Ok(String::from_utf8(out.to_vec()).expect("pairing alphabet is ASCII"))
+    let value = u32::from_be_bytes(digest[..4].try_into().expect("SHA-256 is 32 bytes")) % 1_000_000;
+    Ok(format!("{value:06}"))
 }
 
 fn pairing_window(dir: &Path) -> Option<PairingWindow> {
@@ -226,13 +214,21 @@ fn pairing_window(dir: &Path) -> Option<PairingWindow> {
         };
         match key.trim() {
             "expires_ms" => expires_ms = value.trim().parse::<u128>().ok(),
-            "code" => code = Some(normalize_code(value)),
+            "code" => {
+                let raw = value.trim();
+                if raw.len() != CODE_LEN || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+                    let _ = std::fs::remove_file(&path);
+                    return None;
+                }
+                code = Some(raw.to_owned());
+            }
             _ => {}
         }
     }
     let expires_ms = expires_ms?;
     let code = code?;
     if code.len() != CODE_LEN {
+        let _ = std::fs::remove_file(&path);
         return None;
     }
     if expires_ms <= now_ms() {
@@ -315,16 +311,13 @@ mod tests {
 
     #[test]
     fn pairing_code_normalizes_and_has_a_stable_rendezvous() {
-        assert_eq!(normalize_code("ab12-cd34 ef"), "AB12CD34EF");
+        assert_eq!(normalize_code("12 34-56"), "123456");
+        assert_eq!(pairing_rendezvous("123-456"), pairing_rendezvous("123456"));
         assert_eq!(
-            pairing_rendezvous("AB12-CD34-EF"),
-            pairing_rendezvous("ab12cd34ef")
+            pairing_rendezvous("123456"),
+            "3sLbGZON6YWYSIrLdCIGl7TWmbRLGLVRBqCwooefYBY"
         );
-        assert_eq!(
-            pairing_rendezvous("AB12-CD34-EF"),
-            "zTn_59YR4I0UaVAJgmJdGDFoOByFrXZpgzlCssnMVHM"
-        );
-        assert_eq!(pairing_rendezvous("AB12-CD34-EF").len(), ID_LEN);
+        assert_eq!(pairing_rendezvous("123456").len(), ID_LEN);
     }
 
     #[test]

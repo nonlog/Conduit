@@ -28,6 +28,7 @@
     <PackageReference Include="CommunityToolkit.WinUI.Controls.SettingsControls" />
     <PackageReference Include="Uno.Fonts.Fluent" />
     <PackageReference Include="Microsoft.WindowsAppSDK" />
+    <PackageReference Include="QRCoder" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="Assets\conduit-icon.png" CopyToOutputDirectory="PreserveNewest" />

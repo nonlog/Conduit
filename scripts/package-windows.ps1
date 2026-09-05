@@ -7,7 +7,9 @@ param(
     [string]$RustReleaseDir,
 
     [Parameter(Mandatory)]
-    [string]$OutputZip
+    [string]$OutputZip,
+
+    [string]$ShareTargetPackage
 )
 
 $ErrorActionPreference = 'Stop'
@@ -54,6 +56,11 @@ foreach ($name in @('conduit-icon.ico', 'conduit-icon.png', 'conduit-icon-light.
     Copy-Item -LiteralPath (Join-Path $repoRoot "windows\conduit-daemon\assets\$name") -Destination $assetsDir -Force
 }
 Copy-Item -LiteralPath (Join-Path $repoRoot 'README.md') -Destination $stage -Force
+
+if (-not [string]::IsNullOrWhiteSpace($ShareTargetPackage)) {
+    $sharePackage = (Resolve-Path -LiteralPath $ShareTargetPackage).Path
+    Copy-Item -LiteralPath $sharePackage -Destination (Join-Path $stage 'Conduit.ShareTarget.msix') -Force
+}
 
 # Debug symbols are not required by the portable/Scoop runtime and make the WinUI package much larger.
 Get-ChildItem -LiteralPath $stage -Recurse -File -Filter '*.pdb' | Remove-Item -Force
