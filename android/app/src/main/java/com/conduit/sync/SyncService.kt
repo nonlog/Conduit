@@ -326,7 +326,7 @@ class SyncService : Service() {
                                 0L
                             }
                             main.post {
-                                hideLinkNotification()
+                                showWaitingOrPairingNotification()
                                 if (pairingActive()) {
                                     if (pairingRendezvous != null && endpoint != null) {
                                         relayAttempt = null
@@ -378,7 +378,9 @@ class SyncService : Service() {
                                 scheduleRetry()
                             }
                         }
-                        LinkState.Discovering, LinkState.Waiting, LinkState.Retrying, LinkState.Pairing -> {}
+                        LinkState.Discovering -> main.post { showConnectingNotification() }
+                        LinkState.Waiting, LinkState.Retrying -> main.post { showWaitingOrPairingNotification() }
+                        LinkState.Pairing -> main.post { showPairingNotification() }
                     }
                 }
 
@@ -480,7 +482,7 @@ class SyncService : Service() {
                 if (pairingActive()) {
                     LinkStatus.state = LinkState.Pairing
                     LinkStatus.path = "LAN · No desktop found"
-                    hideLinkNotification()
+                    showPairingNotification()
                     if (pairingRendezvous == null) {
                         main.removeCallbacks(pairingRetry)
                         main.postDelayed(pairingRetry, PAIRING_RETRY_MS)
@@ -517,8 +519,9 @@ class SyncService : Service() {
             }
         }
         // Android requires a service launched by startForegroundService() to enter foreground
-        // quickly. This is only a short-lived connecting notification; the persistent one is
-        // shown only after Noise is actually up, and is removed again on any disconnect.
+        // quickly. Keep this low-importance foreground service while the user wants the link:
+        // a parked Relay socket otherwise becomes an ordinary background service that Android may
+        // reclaim, breaking automatic recovery. Offline content observers remain suspended.
         ensureStartupForeground()
         // A literal address on the intent skips discovery, which is the only way to drive
         // the link when the phone and the desktop are not on one subnet:
@@ -606,25 +609,27 @@ class SyncService : Service() {
             Log.i(TAG, "link down and the user wants it off, not retrying")
             return@post
         }
-        if (!networkUp) {
-            // No point counting down against a network that is gone; onAvailable redials.
-            Log.i(TAG, "link down with no network, waiting for one")
-            return@post
-        }
-        if (pairingActive()) {
-            LinkStatus.state = LinkState.Pairing
-            hideLinkNotification()
-            return@post
-        }
-        if (knownPeer == null) {
+        if (!pairingActive() && knownPeer == null) {
             Log.i(TAG, "no paired desktop and pairing is closed; not retrying")
             LinkStatus.state = LinkState.Idle
             LinkStatus.path = null
             hideLinkNotification()
+            stopSelf()
+            return@post
+        }
+        if (!networkUp) {
+            // No point counting down against a network that is gone; onAvailable redials.
+            Log.i(TAG, "link down with no network, waiting for one")
+            showLinkNotification("Waiting for network · sync paused")
+            return@post
+        }
+        if (pairingActive()) {
+            LinkStatus.state = LinkState.Pairing
+            showPairingNotification()
             return@post
         }
         LinkStatus.state = LinkState.Retrying
-        hideLinkNotification()
+        showWaitingNotification()
         val ceiling = retryCeilingMs(SystemClock.uptimeMillis(), recoveryUntilUptimeMs)
         val delay = retryMs.coerceAtMost(ceiling)
         Log.i(
@@ -688,6 +693,7 @@ class SyncService : Service() {
             LinkStatus.state = LinkState.Idle
             LinkStatus.path = null
             hideLinkNotification()
+            stopSelf()
             return
         }
         val caps = connectivity.getNetworkCapabilities(net ?: connectivity.activeNetwork)
@@ -849,7 +855,7 @@ class SyncService : Service() {
         LinkStatus.state = LinkState.Pairing
         if (!lan) {
             LinkStatus.path = "Same Wi-Fi required"
-            hideLinkNotification()
+            showPairingNotification()
             return
         }
         LinkStatus.path = "LAN · Pairing"
@@ -1074,19 +1080,37 @@ class SyncService : Service() {
         }
     }
 
-    private fun ensureStartupForeground() {
-        if (foregroundVisible) return
-        startForeground(
-            LINK_NOTIFICATION_ID,
-            linkNotification(linked = false),
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
-        )
-        foregroundVisible = true
+    private fun ensureStartupForeground() = showConnectingNotification()
+
+    private fun showConnectingNotification() {
+        if (LinkStatus.state == LinkState.Connected) return
+        val peer = knownPeerName ?: LinkStatus.peerName ?: "desktop"
+        showLinkNotification("Connecting to $peer")
+    }
+
+    private fun showWaitingNotification() {
+        if (LinkStatus.state == LinkState.Connected || !Settings.linkWanted || knownPeer == null) return
+        val peer = knownPeerName ?: LinkStatus.peerName ?: "desktop"
+        showLinkNotification("Waiting for $peer · sync paused")
+    }
+
+    private fun showPairingNotification() {
+        if (!pairingActive()) return
+        showLinkNotification("Pairing · sync paused")
+    }
+
+    private fun showWaitingOrPairingNotification() {
+        if (pairingActive()) showPairingNotification() else showWaitingNotification()
     }
 
     private fun showLinkedNotification() {
         if (LinkStatus.state != LinkState.Connected) return
-        val notice = linkNotification(linked = true)
+        val peer = knownPeerName ?: LinkStatus.peerName ?: "desktop"
+        showLinkNotification("Linked to $peer")
+    }
+
+    private fun showLinkNotification(content: String) {
+        val notice = linkNotification(content)
         if (foregroundVisible) {
             getSystemService(NotificationManager::class.java).notify(LINK_NOTIFICATION_ID, notice)
         } else {
@@ -1112,7 +1136,7 @@ class SyncService : Service() {
         getSystemService(NotificationManager::class.java).cancel(LINK_NOTIFICATION_ID)
     }
 
-    private fun linkNotification(linked: Boolean): Notification {
+    private fun linkNotification(content: String): Notification {
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             // LOW, so an always-present notification never makes a sound.
             NotificationChannel(LINK_CHANNEL, "Link", NotificationManager.IMPORTANCE_LOW).apply {
@@ -1125,11 +1149,6 @@ class SyncService : Service() {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE,
         )
-        val peerName = knownPeerName ?: LinkStatus.peerName ?: "desktop"
-        val content = when {
-            !linked -> "Connecting to $peerName"
-            else -> "Linked to $peerName"
-        }
         return Notification.Builder(this, LINK_CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_link)
             .setContentTitle("Conduit")
