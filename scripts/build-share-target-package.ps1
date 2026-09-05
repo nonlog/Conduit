@@ -69,25 +69,16 @@ try {
         & $signTool sign /fd SHA256 /sha1 $cert.Thumbprint /s My $output
         if ($LASTEXITCODE -ne 0) { throw "signtool failed to sign $output" }
 
-        # SignTool's Authenticode verification policy wants a trusted root, while sparse-package
-        # deployment accepts the self-signed leaf in TrustedPeople. The build runner is ephemeral,
-        # so trust this certificate as a current-user root only long enough to cryptographically
-        # verify the package, then remove it. Target machines never receive root trust.
-        $trustedStore = [Security.Cryptography.X509Certificates.X509Store]::new(
-            [Security.Cryptography.X509Certificates.StoreName]::Root,
-            [Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser)
-        try {
-            $trustedStore.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-            $trustedStore.Add($cert)
-            & $signTool verify /pa $output
-            if ($LASTEXITCODE -ne 0) { throw "signtool could not verify $output" }
-        }
-        finally {
-            @($trustedStore.Certificates.Find(
-                [Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
-                $cert.Thumbprint,
-                $false)) | ForEach-Object { $trustedStore.Remove($_) }
-            $trustedStore.Dispose()
+        # `signtool sign` validates the package structure while producing the signature. Do not add
+        # this ephemeral self-signed certificate to a CI runner's Root store just to make `verify`
+        # trust it: Windows can surface a root-trust confirmation UI and stall a headless runner.
+        # The target installer is the real verification gate; it trusts this exact public leaf in
+        # CurrentUser\TrustedPeople before Add-AppxPackage validates and registers the package.
+        $signature = Get-AuthenticodeSignature -LiteralPath $output
+        if ($null -eq $signature.SignerCertificate -or
+            $signature.SignerCertificate.Thumbprint -ne $cert.Thumbprint -or
+            $signature.Status -eq [System.Management.Automation.SignatureStatus]::HashMismatch) {
+            throw "the signed sparse package does not carry the expected certificate"
         }
     }
     finally {
