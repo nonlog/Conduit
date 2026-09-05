@@ -24,4 +24,15 @@ class PairingCodeTest {
         )
         assertEquals(43, PairingCode.rendezvous("123456").length)
     }
+
+    @Test
+    fun parsesOnlyConduitPairingQrPayloads() {
+        assertEquals("123456", PairingCode.fromQrPayload("conduit://pair?code=123456"))
+        assertEquals("123456", PairingCode.fromQrPayload("CONDUIT://PAIR?foo=1&code=123456"))
+        assertEquals("123456", PairingCode.fromQrPayload("conduit://pair?code=12%2034-56"))
+        assertEquals(null, PairingCode.fromQrPayload("https://example.com/?code=123456"))
+        assertEquals(null, PairingCode.fromQrPayload("conduit://other?code=123456"))
+        assertEquals(null, PairingCode.fromQrPayload("conduit://pair?code=12345"))
+        assertEquals(null, PairingCode.fromQrPayload("conduit://pair"))
+    }
 }

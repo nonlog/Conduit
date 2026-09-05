@@ -76,6 +76,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.google.android.gms.mlkit.codescanner.GmsBarcodeScannerOptions
+import com.google.android.gms.mlkit.codescanner.GmsBarcodeScanning
+import com.google.mlkit.vision.barcode.common.Barcode
 
 private const val TAG = "conduit.ui"
 
@@ -135,6 +138,14 @@ class MainActivity : ComponentActivity() {
     private var clipboardMode by mutableStateOf(ClipboardSyncMode.Unavailable)
     private var clipboardAccessibilityEnabled by mutableStateOf(false)
 
+    private val pairingScanner by lazy {
+        val options = GmsBarcodeScannerOptions.Builder()
+            .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+            .enableAutoZoom()
+            .build()
+        GmsBarcodeScanning.getClient(this, options)
+    }
+
     private val ask = registerForActivityResult(RequestMultiplePermissions()) { granted ->
         granted.filterValues { !it }.keys.forEach {
             // Not fatal, and not worth nagging over. Photo mirroring simply stays off
@@ -185,6 +196,7 @@ class MainActivity : ComponentActivity() {
                     onConnect = { send(ACTION_CONNECT) },
                     onDisconnect = { send(ACTION_DISCONNECT) },
                     onPair = ::sendPair,
+                    onScanPairQr = ::scanPairingQr,
                     onCancelPair = { send(ACTION_CANCEL_PAIR) },
                     onForget = { send(ACTION_FORGET) },
                     onSendFiles = ::sendFiles,
@@ -261,15 +273,45 @@ class MainActivity : ComponentActivity() {
     private fun handlePairIntent(intent: Intent): Boolean {
         if (intent.action != Intent.ACTION_VIEW) return false
         val uri = intent.data ?: return false
-        if (!uri.scheme.equals("conduit", ignoreCase = true) ||
-            !uri.host.equals("pair", ignoreCase = true)) return false
-        val code = PairingCode.normalize(uri.getQueryParameter("code").orEmpty())
-        if (!PairingCode.isValid(code)) {
+        val code = PairingCode.fromQrPayload(uri.toString())
+        if (code == null) {
             android.widget.Toast.makeText(this, "Invalid Conduit pairing code", android.widget.Toast.LENGTH_SHORT).show()
             return true
         }
         sendPair(code)
         return true
+    }
+
+    /**
+     * Opens the Google Play services QR scanner only when the user asks for it. Conduit itself
+     * never receives camera frames and therefore needs no CAMERA permission or background camera
+     * component. The scanner module is downloaded on first use if the device does not have it yet.
+     */
+    private fun scanPairingQr(onCode: (String) -> Unit) {
+        pairingScanner.startScan()
+            .addOnSuccessListener { barcode ->
+                val code = PairingCode.fromQrPayload(barcode.rawValue.orEmpty())
+                if (code == null) {
+                    android.widget.Toast.makeText(
+                        this,
+                        "That is not a Conduit pairing QR code",
+                        android.widget.Toast.LENGTH_SHORT,
+                    ).show()
+                    return@addOnSuccessListener
+                }
+                onCode(code)
+            }
+            .addOnCanceledListener {
+                Log.d(TAG, "pairing QR scan cancelled")
+            }
+            .addOnFailureListener { error ->
+                Log.w(TAG, "pairing QR scanner failed", error)
+                android.widget.Toast.makeText(
+                    this,
+                    "Could not open the QR scanner",
+                    android.widget.Toast.LENGTH_SHORT,
+                ).show()
+            }
     }
 
     /**
@@ -361,6 +403,7 @@ private fun ConduitApp(
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
     onPair: (String?) -> Unit,
+    onScanPairQr: (((String) -> Unit) -> Unit),
     onCancelPair: () -> Unit,
     onForget: () -> Unit,
     onSendFiles: (List<android.net.Uri>) -> Unit,
@@ -384,9 +427,21 @@ private fun ConduitApp(
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
                         "On Windows, open Conduit Settings and choose Pair phone. " +
-                            "Enter the six-digit code, or scan the QR code there with your phone camera. " +
+                            "Scan the QR code shown there, or enter its six-digit code. " +
                             "Both methods work through Conduit Relay even when the devices are on different networks.",
                     )
+                    FilledTonalButton(
+                        onClick = {
+                            onScanPairQr { code ->
+                                pairCode = code
+                                showPairDialog = false
+                                onPair(code)
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Scan QR code")
+                    }
                     OutlinedTextField(
                         value = pairCode,
                         onValueChange = { pairCode = PairingCode.normalize(it).take(PairingCode.LENGTH) },
