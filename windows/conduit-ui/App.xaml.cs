@@ -13,6 +13,9 @@ public partial class App : Application
 
     public App()
     {
+        // Keep the WinUI window on Conduit's long-standing Win32 taskbar identity even when the
+        // sparse ShareTarget package grants this process package identity.
+        TaskbarIdentity.SetProcessIdentity();
         InitializeComponent();
     }
 
@@ -69,6 +72,7 @@ public partial class App : Application
         if (File.Exists(icon))
         {
             try { MainWindow.AppWindow.SetIcon(icon); } catch { }
+            TaskbarIdentity.Apply(MainWindow, icon);
         }
     }
 
