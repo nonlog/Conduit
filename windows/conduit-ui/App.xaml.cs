@@ -31,7 +31,7 @@ public partial class App : Application
 
         try
         {
-            var activation = AppInstance.GetCurrent().GetActivatedEventArgs();
+            var activation = Microsoft.Windows.AppLifecycle.AppInstance.GetCurrent().GetActivatedEventArgs();
             if (activation.Kind == ExtendedActivationKind.ShareTarget &&
                 activation.Data is Windows.ApplicationModel.Activation.ShareTargetActivatedEventArgs share)
             {
