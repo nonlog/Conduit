@@ -143,7 +143,7 @@ if ((Test-Path -LiteralPath $sharePackage -PathType Leaf) -and [Environment]::OS
     $locationLiteral = "'" + $installDir.Replace("'", "''") + "'"
     $registerScript = @"
 `$ErrorActionPreference = 'Stop'
-Import-Module Appx -ErrorAction Stop
+Import-Module (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules\Appx\Appx.psd1') -ErrorAction Stop
 Get-AppxPackage -Name '$sharePackageName' -ErrorAction SilentlyContinue | Remove-AppxPackage -ErrorAction Stop
 Add-AppxPackage -Path $packageLiteral -ExternalLocation $locationLiteral -AllowUnsigned -ForceApplicationShutdown -ErrorAction Stop
 if (-not (Get-AppxPackage -Name '$sharePackageName' -ErrorAction SilentlyContinue)) {

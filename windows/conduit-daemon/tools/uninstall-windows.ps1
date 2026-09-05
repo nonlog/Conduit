@@ -8,7 +8,7 @@ function Remove-ConduitShareTargetPackage {
     if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { return }
     $script = @"
 `$ErrorActionPreference = 'Stop'
-Import-Module Appx -ErrorAction Stop
+Import-Module (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules\Appx\Appx.psd1') -ErrorAction Stop
 Get-AppxPackage -Name 'Conduit.Desktop.ShareTarget' -ErrorAction SilentlyContinue | Remove-AppxPackage -ErrorAction Stop
 "@
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
