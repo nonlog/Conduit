@@ -69,11 +69,12 @@ try {
         & $signTool sign /fd SHA256 /sha1 $cert.Thumbprint /s My $output
         if ($LASTEXITCODE -ne 0) { throw "signtool failed to sign $output" }
 
-        # Trust only for the verification running on this ephemeral build host. The portable
-        # artifact contains the public certificate; the target installer performs the same exact
-        # per-user TrustedPeople step before package registration.
+        # SignTool's Authenticode verification policy wants a trusted root, while sparse-package
+        # deployment accepts the self-signed leaf in TrustedPeople. The build runner is ephemeral,
+        # so trust this certificate as a current-user root only long enough to cryptographically
+        # verify the package, then remove it. Target machines never receive root trust.
         $trustedStore = [Security.Cryptography.X509Certificates.X509Store]::new(
-            [Security.Cryptography.X509Certificates.StoreName]::TrustedPeople,
+            [Security.Cryptography.X509Certificates.StoreName]::Root,
             [Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser)
         try {
             $trustedStore.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
