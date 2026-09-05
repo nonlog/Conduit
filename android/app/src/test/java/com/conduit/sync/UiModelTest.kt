@@ -16,6 +16,13 @@ class UiModelTest {
     }
 
     @Test
+    fun successfulPairingRouteStopsAdvertisingPairingState() {
+        assertEquals("LAN", completedPairingPath(viaRelay = false, relayId = null))
+        assertEquals("Relay · WA", completedPairingPath(viaRelay = true, relayId = "wa"))
+        assertEquals("Relay", completedPairingPath(viaRelay = true, relayId = null))
+    }
+
+    @Test
     fun historySearchMatchesTextAndDirectionCaseInsensitively() {
         val entries = listOf(
             HistoryEntry(Direction.Sent, "Alpha clipboard", 3L),

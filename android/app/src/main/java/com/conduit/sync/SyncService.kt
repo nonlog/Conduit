@@ -67,6 +67,14 @@ private const val UNSTABLE_RELAY_SESSION_MS = 60_000L
 internal fun retryCeilingMs(nowUptimeMs: Long, recoveryUntilUptimeMs: Long): Long =
     if (nowUptimeMs < recoveryUntilUptimeMs) RECOVERY_RETRY_MAX_MS else RETRY_MAX_MS
 
+/** Once pairing succeeds, the route chip describes the live transport instead of pairing state. */
+internal fun completedPairingPath(viaRelay: Boolean, relayId: String?): String =
+    if (!viaRelay) {
+        "LAN"
+    } else {
+        relayId?.trim()?.takeIf(String::isNotEmpty)?.let { "Relay · ${it.uppercase()}" } ?: "Relay"
+    }
+
 /** Sent by the UI. A disconnect has to be remembered, or START_STICKY undoes the user's tap. */
 const val ACTION_CONNECT = "com.conduit.sync.CONNECT"
 const val ACTION_DISCONNECT = "com.conduit.sync.DISCONNECT"
@@ -905,6 +913,9 @@ class SyncService : Service() {
 
     /** Persists a peer only after the desktop returned its authenticated pairing hello. */
     private fun rememberPeer(deviceId: String) {
+        val completedPairing = pairingActive()
+        val completedViaRelay = completedPairing && pairingRendezvous != null
+        val completedRelayId = relayAttempt?.id
         val changed = deviceId != knownPeer
         knownPeer = deviceId
         LinkStatus.pairedDeviceId = deviceId
@@ -914,6 +925,9 @@ class SyncService : Service() {
                 .onFailure { Log.w(TAG, "could not store the peer id; relay stays unavailable", it) }
         }
         cancelPairing(resumeOldPeer = false)
+        if (completedPairing) {
+            LinkStatus.path = completedPairingPath(completedViaRelay, completedRelayId)
+        }
     }
 
     /**

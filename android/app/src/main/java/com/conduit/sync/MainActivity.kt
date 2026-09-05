@@ -1030,15 +1030,17 @@ private fun DeviceManagementCard(
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
                     )
-                    Text(
-                        when {
-                            pairing -> "Pairing open · same Wi-Fi required"
-                            pairedDeviceId != null -> "Device ${pairedDeviceId.take(10)}…"
-                            else -> "Pair a desktop to enable LAN and Relay reconnect"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    if (pairing || pairedDeviceId == null) {
+                        Text(
+                            if (pairing) {
+                                "Pairing open · same Wi-Fi required"
+                            } else {
+                                "Pair a desktop to enable LAN and Relay reconnect"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
             Row(

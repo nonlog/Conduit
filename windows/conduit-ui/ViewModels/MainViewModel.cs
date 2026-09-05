@@ -94,7 +94,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public string PairingSummary => PairingActive
         ? "Pairing open · six-digit code valid for two minutes"
         : HasPairedDevice
-            ? $"{(string.IsNullOrWhiteSpace(PairedDeviceName) ? "Paired phone" : PairedDeviceName)} · {ShortDeviceId(PairedDeviceId)}"
+            ? (string.IsNullOrWhiteSpace(PairedDeviceName) ? "Paired phone" : PairedDeviceName)
             : "No paired phone · pair with a six-digit code or QR code";
     public bool RelayUs { get => _relayUs; set => SetRelay(ref _relayUs, value); }
     public bool RelayWa { get => _relayWa; set => SetRelay(ref _relayWa, value); }
@@ -694,12 +694,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private static string FormatPairingCode(string code) =>
         new(code.Where(char.IsDigit).Take(6).ToArray());
-
-    private static string ShortDeviceId(string? id)
-    {
-        if (string.IsNullOrWhiteSpace(id)) return "";
-        return id.Length <= 12 ? id : id[..10] + "…";
-    }
 
     private static Dictionary<string, string> ReadPairs(string path)
     {
