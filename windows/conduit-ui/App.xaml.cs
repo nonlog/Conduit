@@ -1,5 +1,6 @@
 using Microsoft.UI.Windowing;
-using Microsoft.Windows.AppLifecycle;
+using Windows.ApplicationModel;
+using Windows.ApplicationModel.Activation;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.Win32;
 using Windows.Graphics;
@@ -19,8 +20,8 @@ public partial class App : Application
     {
         // Packaged activations are one-shot. Capture the share payload before WinUI/Uno startup
         // can observe activation state, then hand it to the page after the shell exists.
-        Microsoft.Windows.AppLifecycle.AppActivationArguments? activation = null;
-        try { activation = Microsoft.Windows.AppLifecycle.AppInstance.GetCurrent().GetActivatedEventArgs(); } catch { }
+        IActivatedEventArgs? activation = null;
+        try { activation = Windows.ApplicationModel.AppInstance.GetActivatedEventArgs(); } catch { }
 
         MainWindow = new Window
         {
@@ -36,8 +37,8 @@ public partial class App : Application
 
         try
         {
-            if (activation?.Kind == ExtendedActivationKind.ShareTarget &&
-                activation.Data is Windows.ApplicationModel.Activation.ShareTargetActivatedEventArgs share)
+            if (activation?.Kind == ActivationKind.ShareTarget &&
+                activation is ShareTargetActivatedEventArgs share)
             {
                 mainPage.QueueShare(share.ShareOperation);
             }
