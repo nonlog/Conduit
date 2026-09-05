@@ -52,6 +52,12 @@ const MAGIC: [u8; 4] = *b"CDT1";
 const INITIATOR: u8 = b'>';
 const RESPONDER: u8 = b'<';
 
+/// The phone is the battery-sensitive half. Five minutes keeps a parked NAT mapping fresh
+/// without forcing the radio awake every minute while the desktop is away.
+const PHONE_KEEPALIVE_IDLE: Duration = Duration::from_secs(5 * 60);
+/// The desktop is on mains power, so retain the faster stale-waiter cleanup there.
+const DESKTOP_KEEPALIVE_IDLE: Duration = Duration::from_secs(60);
+
 /// `BASE64URL(SHA256(static_pub))` unpadded is always 43 characters, so the preamble is
 /// a fixed size: no length field, no delimiter, no parser to get wrong.
 const ID_LEN: usize = 43;
@@ -130,9 +136,9 @@ async fn arrive(
     pairs: &AtomicU64,
 ) -> Result<()> {
     stream.set_nodelay(true)?;
-    keepalive(&stream)?;
 
     let (id, role, legacy) = read_preamble(&mut stream).await?;
+    keepalive(&stream, role)?;
     let want = match role {
         INITIATOR => RESPONDER,
         RESPONDER => INITIATOR,
@@ -257,12 +263,18 @@ fn short(id: &str) -> &str {
     &id[..id.len().min(12)]
 }
 
-/// 60 s idle / 10 s probe / 3 retries. The only liveness machinery in the relay, and it
-/// belongs to the kernel: dead waiters are reaped and live ones have their NAT mapping
-/// refreshed without this process owning a timer.
-fn keepalive(stream: &TcpStream) -> Result<()> {
+/// Kernel-only waiter liveness. The phone gets a five-minute idle interval because every
+/// successful probe can wake a cellular/Wi-Fi radio; the mains-powered desktop keeps the
+/// original one-minute interval. Failure probes remain short so a genuinely dead waiter is
+/// reaped promptly once probing starts. No userspace timer or polling loop is introduced.
+fn keepalive(stream: &TcpStream, role: u8) -> Result<()> {
+    let idle = if role == INITIATOR {
+        PHONE_KEEPALIVE_IDLE
+    } else {
+        DESKTOP_KEEPALIVE_IDLE
+    };
     let ka = socket2::TcpKeepalive::new()
-        .with_time(Duration::from_secs(60))
+        .with_time(idle)
         .with_interval(Duration::from_secs(10));
     // Windows' SIO_KEEPALIVE_VALS has no retry count; this crate only ships to Linux,
     // but it is built and tested on the Windows dev box.
