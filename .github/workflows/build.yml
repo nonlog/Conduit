@@ -142,6 +142,7 @@ jobs:
           ./scripts/build-share-target-package.ps1
           -ManifestPath ./windows/conduit-ui/ShareTargetPackage/AppxManifest.xml
           -OutputPackage ./artifacts/Conduit.ShareTarget.msix
+          -OutputCertificate ./artifacts/Conduit.ShareTarget.cer
 
       - name: Package Scoop-compatible Windows build
         shell: pwsh
@@ -150,6 +151,7 @@ jobs:
           -UiPublishDir ./artifacts/windows-ui
           -RustReleaseDir ./target/release
           -ShareTargetPackage ./artifacts/Conduit.ShareTarget.msix
+          -ShareTargetCertificate ./artifacts/Conduit.ShareTarget.cer
           -OutputZip ./artifacts/Conduit-windows-x64.zip
 
       - name: Upload Windows artifact

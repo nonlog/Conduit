@@ -9,7 +9,9 @@ param(
     [Parameter(Mandatory)]
     [string]$OutputZip,
 
-    [string]$ShareTargetPackage
+    [string]$ShareTargetPackage,
+
+    [string]$ShareTargetCertificate
 )
 
 $ErrorActionPreference = 'Stop'
@@ -60,6 +62,10 @@ Copy-Item -LiteralPath (Join-Path $repoRoot 'README.md') -Destination $stage -Fo
 if (-not [string]::IsNullOrWhiteSpace($ShareTargetPackage)) {
     $sharePackage = (Resolve-Path -LiteralPath $ShareTargetPackage).Path
     Copy-Item -LiteralPath $sharePackage -Destination (Join-Path $stage 'Conduit.ShareTarget.msix') -Force
+}
+if (-not [string]::IsNullOrWhiteSpace($ShareTargetCertificate)) {
+    $shareCertificate = (Resolve-Path -LiteralPath $ShareTargetCertificate).Path
+    Copy-Item -LiteralPath $shareCertificate -Destination (Join-Path $stage 'Conduit.ShareTarget.cer') -Force
 }
 
 # Debug symbols are not required by the portable/Scoop runtime and make the WinUI package much larger.

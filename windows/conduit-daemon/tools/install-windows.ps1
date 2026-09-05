@@ -20,6 +20,43 @@ function Invoke-WindowsPowerShell([string]$Script) {
     return @($output)
 }
 
+function Get-CertificateThumbprint([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+    $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($Path)
+    try { return $certificate.Thumbprint } finally { $certificate.Dispose() }
+}
+
+function Add-TrustedPeopleCertificate([string]$Path) {
+    $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($Path)
+    $store = [Security.Cryptography.X509Certificates.X509Store]::new(
+        [Security.Cryptography.X509Certificates.StoreName]::TrustedPeople,
+        [Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser)
+    try {
+        $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+        $store.Add($certificate)
+        return $certificate.Thumbprint
+    }
+    finally {
+        $store.Dispose()
+        $certificate.Dispose()
+    }
+}
+
+function Remove-TrustedPeopleCertificate([string]$Thumbprint) {
+    if ([string]::IsNullOrWhiteSpace($Thumbprint)) { return }
+    $store = [Security.Cryptography.X509Certificates.X509Store]::new(
+        [Security.Cryptography.X509Certificates.StoreName]::TrustedPeople,
+        [Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser)
+    try {
+        $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+        @($store.Certificates.Find(
+            [Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
+            $Thumbprint,
+            $false)) | ForEach-Object { $store.Remove($_) }
+    }
+    finally { $store.Dispose() }
+}
+
 $source = (Resolve-Path $SourceDir).Path
 $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
 $appData = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)
@@ -33,6 +70,7 @@ $installDir = if ([string]::IsNullOrWhiteSpace($InstallDir)) {
 }
 $programs = Join-Path $appData 'Microsoft\Windows\Start Menu\Programs'
 $shortcut = Join-Path $programs 'Conduit.lnk'
+$previousShareCertificateThumbprint = Get-CertificateThumbprint (Join-Path $installDir 'Conduit.ShareTarget.cer')
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $aumidKey = 'HKCU:\Software\Classes\AppUserModelId\Conduit.Desktop'
 $explorerVerbKey = 'Registry::HKEY_CURRENT_USER\Software\Classes\*\shell\Conduit.SendToPhone'
@@ -132,26 +170,37 @@ foreach ($name in @($requiredIconAssets + $optionalIconAssets)) {
 }
 
 # Windows Share targets require package identity even though Conduit's binaries stay managed by
-# Scoop/the existing installer. On Windows 11 the tiny sparse identity package can remain unsigned
-# because it contains only a manifest; the executable and all assets continue to live here at the
-# external location. Re-register on update so the share contract always points at `current`.
+# Scoop/the existing installer. The identity-only sparse package is signed in CI with a short-lived
+# build certificate; only its public certificate ships. Trust that exact certificate for this user
+# before registration, and remove the previous build certificate so updates do not accumulate them.
 $sharePackageName = 'Conduit.Desktop.ShareTarget'
 $sharePackage = Join-Path $installDir 'Conduit.ShareTarget.msix'
+$shareCertificate = Join-Path $installDir 'Conduit.ShareTarget.cer'
 $shareTargetRegistered = $false
-if ((Test-Path -LiteralPath $sharePackage -PathType Leaf) -and [Environment]::OSVersion.Version.Build -ge 22000) {
-    $packageLiteral = "'" + $sharePackage.Replace("'", "''") + "'"
-    $locationLiteral = "'" + $installDir.Replace("'", "''") + "'"
-    $registerScript = @"
+if ((Test-Path -LiteralPath $sharePackage -PathType Leaf) -and
+    (Test-Path -LiteralPath $shareCertificate -PathType Leaf) -and
+    [Environment]::OSVersion.Version.Build -ge 19041) {
+    Remove-TrustedPeopleCertificate $previousShareCertificateThumbprint
+    $currentShareCertificateThumbprint = Add-TrustedPeopleCertificate $shareCertificate
+    try {
+        $packageLiteral = "'" + $sharePackage.Replace("'", "''") + "'"
+        $locationLiteral = "'" + $installDir.Replace("'", "''") + "'"
+        $registerScript = @"
 `$ErrorActionPreference = 'Stop'
-Import-Module (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules\Appx\Appx.psd1') -ErrorAction Stop
+Import-Module (Join-Path `$env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules\Appx\Appx.psd1') -ErrorAction Stop
 Get-AppxPackage -Name '$sharePackageName' -ErrorAction SilentlyContinue | Remove-AppxPackage -ErrorAction Stop
-Add-AppxPackage -Path $packageLiteral -ExternalLocation $locationLiteral -AllowUnsigned -ForceApplicationShutdown -ErrorAction Stop
+Add-AppxPackage -Path $packageLiteral -ExternalLocation $locationLiteral -ForceApplicationShutdown -ErrorAction Stop
 if (-not (Get-AppxPackage -Name '$sharePackageName' -ErrorAction SilentlyContinue)) {
     throw 'Conduit share-target identity did not register'
 }
 "@
-    Invoke-WindowsPowerShell $registerScript | Out-Null
-    $shareTargetRegistered = $true
+        Invoke-WindowsPowerShell $registerScript | Out-Null
+        $shareTargetRegistered = $true
+    }
+    catch {
+        Remove-TrustedPeopleCertificate $currentShareCertificateThumbprint
+        throw
+    }
 }
 
 $shortcutSource = @'

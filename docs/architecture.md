@@ -69,7 +69,7 @@ notification, image, or file contents.
 | Wire contract | [`../proto/conduit.proto`](../proto/conduit.proto) | Single protobuf schema consumed by Android and Rust. |
 | Windows daemon | `main.rs`, `wire.rs`, `pairing.rs`, `clip.rs`, `image.rs`, `file.rs`, `control.rs` | mDNS advertising, LAN listener, normal and temporary pairing Relay parking, explicit one-phone trust state, Noise session, native clipboard bridge, bounded image/file receive paths, and local named-pipe control. |
 | Windows notifications | `toast.rs` | Dedicated COM/MTA toast owner, AUMID registration, icon/avatar cache, notification update/removal, capture/Snipping-Tool activation, and file activation. |
-| Windows Share target | sparse external-location identity package + WinUI activation handling | Registers Conduit in the Windows Share Sheet without moving the Scoop-managed binaries into MSIX; shared `StorageItems` are forwarded through the resident daemon. |
+| Windows Share target | signed sparse external-location identity package + WinUI activation handling | Registers Conduit in the Windows Share Sheet without moving the Scoop-managed binaries into MSIX; CI signs the identity-only package with an ephemeral build certificate, the installer trusts only its public certificate for the current user, and shared `StorageItems` are forwarded through the resident daemon. |
 | Relay | `relay/src/main.rs` | Fixed-size rendezvous preamble validation, one waiting socket per key, and blind TCP splicing. |
 
 ## Session lifecycle and routing
