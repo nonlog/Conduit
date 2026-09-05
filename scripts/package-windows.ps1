@@ -7,7 +7,11 @@ param(
     [string]$RustReleaseDir,
 
     [Parameter(Mandatory)]
-    [string]$OutputZip
+    [string]$OutputZip,
+
+    [string]$ShareTargetPackage,
+
+    [string]$ShareTargetCertificate
 )
 
 $ErrorActionPreference = 'Stop'
@@ -41,6 +45,15 @@ Copy-Item -Path (Join-Path $ui '*') -Destination $stage -Recurse -Force
 # data folder, excluding it here prevents an overlay from replacing Scoop's persisted data junction.
 Remove-Item -LiteralPath (Join-Path $stage 'data') -Recurse -Force -ErrorAction SilentlyContinue
 
+# Windows App SDK's MRT resource lookup currently treats a sparse/external-location process as fully
+# packaged and asks for the conventional resources.pri name. Keep Uno's module-named Conduit.pri for
+# normal unpackaged launch, and ship an identical alias so the same executable also starts with the
+# sparse Share Target identity.
+$modulePri = Join-Path $stage 'Conduit.pri'
+if (Test-Path -LiteralPath $modulePri -PathType Leaf) {
+    Copy-Item -LiteralPath $modulePri -Destination (Join-Path $stage 'resources.pri') -Force
+}
+
 foreach ($name in $requiredRust) {
     Copy-Item -LiteralPath (Join-Path $rust $name) -Destination (Join-Path $stage $name) -Force
 }
@@ -54,6 +67,15 @@ foreach ($name in @('conduit-icon.ico', 'conduit-icon.png', 'conduit-icon-light.
     Copy-Item -LiteralPath (Join-Path $repoRoot "windows\conduit-daemon\assets\$name") -Destination $assetsDir -Force
 }
 Copy-Item -LiteralPath (Join-Path $repoRoot 'README.md') -Destination $stage -Force
+
+if (-not [string]::IsNullOrWhiteSpace($ShareTargetPackage)) {
+    $sharePackage = (Resolve-Path -LiteralPath $ShareTargetPackage).Path
+    Copy-Item -LiteralPath $sharePackage -Destination (Join-Path $stage 'Conduit.ShareTarget.msix') -Force
+}
+if (-not [string]::IsNullOrWhiteSpace($ShareTargetCertificate)) {
+    $shareCertificate = (Resolve-Path -LiteralPath $ShareTargetCertificate).Path
+    Copy-Item -LiteralPath $shareCertificate -Destination (Join-Path $stage 'Conduit.ShareTarget.cer') -Force
+}
 
 # Debug symbols are not required by the portable/Scoop runtime and make the WinUI package much larger.
 Get-ChildItem -LiteralPath $stage -Recurse -File -Filter '*.pdb' | Remove-Item -Force

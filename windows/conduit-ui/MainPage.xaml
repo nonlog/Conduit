@@ -272,6 +272,13 @@
                                                   HorizontalScrollMode="Disabled">
                                         <StackPanel Spacing="4" HorizontalAlignment="Stretch">
                                             <TextBlock Text="General" Margin="0,0,0,8" FontSize="28" FontWeight="SemiBold" />
+                                            <wuc:SettingsCard Header="Paired phone" Description="{Binding PairingSummary}">
+                                                <wuc:SettingsCard.HeaderIcon><FontIcon Glyph="&#xE8EA;" /></wuc:SettingsCard.HeaderIcon>
+                                                <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                                    <Button Content="{Binding PairActionLabel}" Click="PairDevice_Click" />
+                                                    <Button Content="Forget" IsEnabled="{Binding HasPairedDevice}" Click="ForgetDevice_Click" />
+                                                </StackPanel>
+                                            </wuc:SettingsCard>
                                             <wuc:SettingsCard Header="Relay points" Description="Managed Conduit relays; LAN remains preferred when available">
                                                 <wuc:SettingsCard.HeaderIcon><FontIcon Glyph="&#xE774;" /></wuc:SettingsCard.HeaderIcon>
                                                 <StackPanel MinWidth="330" MaxWidth="410" Spacing="2">

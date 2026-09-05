@@ -3,5 +3,6 @@
     <PackageVersion Include="CommunityToolkit.WinUI.Controls.SettingsControls" Version="8.2.251219" />
     <PackageVersion Include="Uno.Fonts.Fluent" Version="2.9.4" />
     <PackageVersion Include="Microsoft.WindowsAppSDK" Version="2.0.1" />
+    <PackageVersion Include="QRCoder" Version="1.8.0" />
   </ItemGroup>
 </Project>

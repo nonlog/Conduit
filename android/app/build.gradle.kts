@@ -83,6 +83,10 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.activity:activity-compose:1.13.0")
 
+    // On-demand QR pairing. Google Code Scanner delegates camera access and image processing to
+    // Play services, so Conduit itself needs no CAMERA permission and no resident camera pipeline.
+    implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
+
     // Reading the clipboard from the background is impossible on stock Android 10+, so
     // ClipboardHook lifts the check inside system_server. compileOnly: LSPosed supplies
     // the implementation, and nothing from this jar may end up in the APK.

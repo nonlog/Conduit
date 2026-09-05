@@ -62,13 +62,14 @@ notification, image, or file contents.
 
 | Area | Main pieces | Responsibility |
 | --- | --- | --- |
-| Android UI | `MainActivity`, `History`, `Settings`, `TransferStatus` | Compose status and transfer progress, peer identity, a separate searchable clipboard-history page, connect/disconnect, and user-owned notification-content privacy choice. |
+| Android UI | `MainActivity`, `History`, `Settings`, `TransferStatus` | Compose status and transfer progress, paired-desktop management, temporary pairing-code entry, a separate searchable clipboard-history page, connect/disconnect, and user-owned notification-content privacy choice. |
 | Android service | `SyncService`, `LinkTileService` | Owns the link for the app process; receives clipboard/default-network events; starts/stops discovery, camera/screenshot observation and reconnect scheduling; exposes the same connect/disconnect intent through a Quick Settings tile. |
 | Android transport | `Link`, `WireSession`, `Noise` | One socket/session at a time; one reader thread and one single-thread sender executor; Noise XX framing and dispatch. |
 | Android integration | `ClipboardHook`, `NotificationRelay`, `Discovery`, `Photos`, `Screenshots`, `ShareActivity` | LSPosed clipboard permission escape, system notification callbacks, bounded mDNS discovery, edge-triggered camera/screenshot observation, and URI-grant-safe sharing. |
 | Wire contract | [`../proto/conduit.proto`](../proto/conduit.proto) | Single protobuf schema consumed by Android and Rust. |
-| Windows daemon | `main.rs`, `wire.rs`, `clip.rs`, `image.rs`, `file.rs`, `control.rs` | mDNS advertising, LAN listener, relay parking, Noise session, native clipboard bridge, bounded image/file receive paths, and a local named-pipe command seam for desktop→phone file sends. |
+| Windows daemon | `main.rs`, `wire.rs`, `pairing.rs`, `clip.rs`, `image.rs`, `file.rs`, `control.rs` | mDNS advertising, LAN listener, normal and temporary pairing Relay parking, explicit one-phone trust state, Noise session, native clipboard bridge, bounded image/file receive paths, and local named-pipe control. |
 | Windows notifications | `toast.rs` | Dedicated COM/MTA toast owner, AUMID registration, icon/avatar cache, notification update/removal, capture/Snipping-Tool activation, and file activation. |
+| Windows Share target | signed sparse external-location identity package + WinUI activation handling | Registers Conduit in the Windows Share Sheet without moving the Scoop-managed binaries into MSIX; CI signs the identity-only package with an ephemeral build certificate; first registration temporarily trusts only that public leaf in Local Machine Trusted People, removes it immediately after Appx registration, and shared `StorageItems` are forwarded through the resident daemon. |
 | Relay | `relay/src/main.rs` | Fixed-size rendezvous preamble validation, one waiting socket per key, and blind TCP splicing. |
 
 ## Session lifecycle and routing
@@ -79,8 +80,33 @@ notification, image, or file contents.
 2. On Wi-Fi or Ethernet, `Discovery` starts one eight-second mDNS burst for `_conduit._tcp`.
    It stops on the first resolved desktop or its deadline.
 3. On mobile data, and after an empty LAN burst, the phone dials the relay directly.
-4. Relay use requires the desktop's remembered device ID, obtained from a prior completed
-   direct handshake.  An unpaired phone must pair on a LAN first.
+4. Normal Relay reconnect requires the desktop's remembered device ID, pinned only after a
+   mutually accepted Noise XX session.
+
+### Pairing and device replacement
+
+Conduit currently has an intentional **one phone ↔ one desktop** trust model. Disconnecting a link
+does not remove that relationship; `Forget` removes only the peer record/name and leaves each
+device's own Noise identity, history and settings intact.
+
+First pairing and replacement pairing are explicit user actions:
+
+1. Windows `Pair phone` opens a two-minute window and generates a six-digit decimal code. The
+   same code is also exposed as a `conduit://pair?code=......` QR payload for camera-based entry.
+2. The code is normalized and hashed with the fixed `conduit-pair-v2:` domain into a 43-character
+   temporary Relay rendezvous. Windows parks temporary responders on the configured Relay fleet
+   only until the window expires. No Relay protocol or Relay trust state is added.
+3. Android can enter the six digits or receive the QR deep link from any network and dial the same
+   temporary rendezvous. If both devices really share a LAN, `Search the same LAN instead` keeps
+   the bounded mDNS path as a fallback.
+4. Noise XX still authenticates the actual static keys end-to-end. Before clipboard/files are
+   enabled, both peers exchange `PairRequest` identity hellos, verify the announced id matches the
+   Noise static key, and require both local pairing windows to be open for a new/replacement peer.
+5. Only then are the real peer ids persisted. Future reconnects use the real desktop id through
+   ordinary Relay/LAN routing; the temporary code is not a device identity and expires.
+
+A `pairing-v2` marker prevents a deliberately forgotten peer from being re-admitted through the
+one-time compatibility migration used by pre-pairing-management installations.
 
 ### Multi-Relay selection: passive, sticky, battery-first
 

@@ -11,7 +11,16 @@ class UiModelTest {
         assertTrue(isLinkRequestedState(LinkState.Discovering))
         assertTrue(isLinkRequestedState(LinkState.Waiting))
         assertTrue(isLinkRequestedState(LinkState.Retrying))
+        assertTrue(isLinkRequestedState(LinkState.Pairing))
         assertTrue(isLinkRequestedState(LinkState.Connected))
+        assertEquals("Offline · auto reconnect on", LinkState.Waiting.label)
+    }
+
+    @Test
+    fun successfulPairingRouteStopsAdvertisingPairingState() {
+        assertEquals("LAN", completedPairingPath(viaRelay = false, relayId = null))
+        assertEquals("Relay · WA", completedPairingPath(viaRelay = true, relayId = "wa"))
+        assertEquals("Relay", completedPairingPath(viaRelay = true, relayId = null))
     }
 
     @Test

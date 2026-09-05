@@ -20,6 +20,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private string _connectionGlyph = "\uE711";
     private ImageSource? _wallpaperSource;
     private bool _isLinked;
+    private string? _pairedDeviceId;
+    private string? _pairedDeviceName;
+    private bool _pairingActive;
+    private string _pairingCode = string.Empty;
     private bool _relayUs = true;
     private bool _relayWa = true;
     private bool _relayTyo = true;
@@ -43,6 +47,55 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public string ConnectionGlyph { get => _connectionGlyph; private set => SetProperty(ref _connectionGlyph, value); }
     public ImageSource? WallpaperSource { get => _wallpaperSource; private set => SetProperty(ref _wallpaperSource, value); }
     public bool IsLinked { get => _isLinked; private set => SetProperty(ref _isLinked, value); }
+    public string? PairedDeviceId
+    {
+        get => _pairedDeviceId;
+        private set
+        {
+            if (!SetProperty(ref _pairedDeviceId, value)) return;
+            OnPropertyChanged(nameof(HasPairedDevice));
+            OnPropertyChanged(nameof(PairingSummary));
+            OnPropertyChanged(nameof(PairActionLabel));
+        }
+    }
+    public string? PairedDeviceName
+    {
+        get => _pairedDeviceName;
+        private set
+        {
+            if (!SetProperty(ref _pairedDeviceName, value)) return;
+            OnPropertyChanged(nameof(PairingSummary));
+        }
+    }
+    public bool PairingActive
+    {
+        get => _pairingActive;
+        private set
+        {
+            if (!SetProperty(ref _pairingActive, value)) return;
+            OnPropertyChanged(nameof(PairingSummary));
+            OnPropertyChanged(nameof(PairActionLabel));
+            OnPropertyChanged(nameof(PairingCodeDisplay));
+        }
+    }
+    public string PairingCode
+    {
+        get => _pairingCode;
+        private set
+        {
+            if (!SetProperty(ref _pairingCode, value)) return;
+            OnPropertyChanged(nameof(PairingSummary));
+            OnPropertyChanged(nameof(PairingCodeDisplay));
+        }
+    }
+    public string PairingCodeDisplay => PairingActive ? FormatPairingCode(PairingCode) : string.Empty;
+    public bool HasPairedDevice => !string.IsNullOrWhiteSpace(PairedDeviceId);
+    public string PairActionLabel => PairingActive ? "Show pairing code" : HasPairedDevice ? "Pair new phone" : "Pair phone";
+    public string PairingSummary => PairingActive
+        ? "Pairing open · six-digit code valid for two minutes"
+        : HasPairedDevice
+            ? (string.IsNullOrWhiteSpace(PairedDeviceName) ? "Paired phone" : PairedDeviceName)
+            : "No paired phone · pair with a six-digit code or QR code";
     public bool RelayUs { get => _relayUs; set => SetRelay(ref _relayUs, value); }
     public bool RelayWa { get => _relayWa; set => SetRelay(ref _relayWa, value); }
     public bool RelayTyo { get => _relayTyo; set => SetRelay(ref _relayTyo, value); }
@@ -108,6 +161,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void LoadStatusAndConfig()
     {
+        PairedDeviceId = ReadOneLine(Path.Combine(_dataDir, "peer.txt"));
+        PairedDeviceName = ReadOneLine(Path.Combine(_dataDir, "peer-name.txt"));
+        var pairing = ReadPairs(Path.Combine(_dataDir, "pairing.txt"));
+        PairingCode = Get(pairing, "code").Trim().ToUpperInvariant();
+        PairingActive = ulong.TryParse(Get(pairing, "expires_ms"), out var pairingExpiresMs) &&
+            pairingExpiresMs > (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() &&
+            PairingCode.Length == 6 && PairingCode.All(char.IsDigit);
+        if (!PairingActive) PairingCode = string.Empty;
+
         var status = ReadPairs(Path.Combine(_dataDir, "status.txt"));
         var config = ReadPairs(Path.Combine(_dataDir, "config.txt"));
         var state = Get(status, "state");
@@ -116,7 +178,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         var relay = Get(status, "relay");
         var linked = state.Equals("linked", StringComparison.OrdinalIgnoreCase);
 
-        DeviceName = string.IsNullOrWhiteSpace(peer) ? "No phone" : peer;
+        DeviceName = !string.IsNullOrWhiteSpace(peer)
+            ? peer
+            : !string.IsNullOrWhiteSpace(PairedDeviceName)
+                ? PairedDeviceName
+                : HasPairedDevice ? "Paired phone" : "No phone";
         ConnectionState = PrettyState(state);
         IsLinked = linked;
         ConnectionGlyph = linked ? "\uE73E" : "\uE711";
@@ -263,7 +329,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             !name.Equals("config.txt", StringComparison.OrdinalIgnoreCase) &&
             !name.Equals("notifications.tsv", StringComparison.OrdinalIgnoreCase) &&
             !name.Equals("shared-links.tsv", StringComparison.OrdinalIgnoreCase) &&
-            !name.Equals("wallpaper.jpg", StringComparison.OrdinalIgnoreCase)) return;
+            !name.Equals("wallpaper.jpg", StringComparison.OrdinalIgnoreCase) &&
+            !name.Equals("peer.txt", StringComparison.OrdinalIgnoreCase) &&
+            !name.Equals("peer-name.txt", StringComparison.OrdinalIgnoreCase) &&
+            !name.Equals("pairing.txt", StringComparison.OrdinalIgnoreCase)) return;
 
         _dispatcher?.TryEnqueue(() =>
         {
@@ -401,6 +470,27 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 return part[(split + 1)..].Trim();
         }
         return null;
+    }
+
+    public (bool Success, string Detail) StartPairing()
+    {
+        var result = RunDaemonCommandDetailed("pair", "start");
+        RefreshAll();
+        return result;
+    }
+
+    public (bool Success, string Detail) CancelPairing()
+    {
+        var result = RunDaemonCommandDetailed("pair", "cancel");
+        RefreshAll();
+        return result;
+    }
+
+    public (bool Success, string Detail) ForgetPairedDevice()
+    {
+        var result = RunDaemonCommandDetailed("pair", "forget");
+        RefreshAll();
+        return result;
     }
 
     public bool SetAutostart(bool enabled)
@@ -587,6 +677,23 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
         catch { }
     }
+
+    private static string? ReadOneLine(string path)
+    {
+        try
+        {
+            if (!File.Exists(path)) return null;
+            var value = File.ReadAllText(path).Trim();
+            return string.IsNullOrWhiteSpace(value) ? null : value;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+    }
+
+    private static string FormatPairingCode(string code) =>
+        new(code.Where(char.IsDigit).Take(6).ToArray());
 
     private static Dictionary<string, string> ReadPairs(string path)
     {

@@ -15,6 +15,7 @@ import androidx.activity.result.contract.ActivityResultContracts.GetContent
 import androidx.activity.result.contract.ActivityResultContracts.GetMultipleContents
 import androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions
 import androidx.compose.foundation.background
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -32,6 +33,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -70,9 +72,13 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
+import com.google.mlkit.vision.barcode.common.Barcode
 
 private const val TAG = "conduit.ui"
 
@@ -82,10 +88,11 @@ enum class LinkState(val label: String) {
     Discovering("Looking for the desktop"),
 
     /** Relay is reachable and this socket is parked without polling until the desktop appears. */
-    Waiting("Waiting for the desktop"),
+    Waiting("Offline · auto reconnect on"),
 
     /** Down, with an attempt already scheduled. See `SyncService.scheduleRetry`. */
     Retrying("Reconnecting"),
+    Pairing("Pairing on LAN"),
     Connected("Linked"),
 }
 
@@ -112,6 +119,12 @@ object LinkStatus {
      */
     var peerName by mutableStateOf<String?>(null)
 
+    /** Persisted desktop id, separate from the fingerprint of the currently live session. */
+    var pairedDeviceId by mutableStateOf<String?>(null)
+
+    /** True only during the explicit two-minute same-LAN pairing window. */
+    var pairing by mutableStateOf(false)
+
     /** "LAN", "Relay" or "Direct": which route the current attempt is taking. */
     var path by mutableStateOf<String?>(null)
     var fingerprint by mutableStateOf("-- : -- : -- : -- : -- : -- : -- : --")
@@ -124,6 +137,14 @@ class MainActivity : ComponentActivity() {
      */
     private var clipboardMode by mutableStateOf(ClipboardSyncMode.Unavailable)
     private var clipboardAccessibilityEnabled by mutableStateOf(false)
+
+    private val pairingScanner by lazy {
+        val options = GmsBarcodeScannerOptions.Builder()
+            .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+            .enableAutoZoom()
+            .build()
+        GmsBarcodeScanning.getClient(this, options)
+    }
 
     private val ask = registerForActivityResult(RequestMultiplePermissions()) { granted ->
         granted.filterValues { !it }.keys.forEach {
@@ -138,7 +159,8 @@ class MainActivity : ComponentActivity() {
         // Shown before anything is running, so the desktop can be paired against it.
         LinkStatus.fingerprint = Identity.fingerprint(Identity.loadOrCreate(filesDir).public)
         // Same reason as History below: the activity can be the first component to run, and
-        // an empty desktop name until the service happens to start reads as "never paired".
+        // pairing state must be accurate before the background service happens to start.
+        if (LinkStatus.pairedDeviceId == null) LinkStatus.pairedDeviceId = Identity.peer(filesDir)
         if (LinkStatus.peerName == null) LinkStatus.peerName = Identity.peerName(filesDir)
         // The activity can be the first component to run, so it loads history too rather
         // than showing an empty list until the service happens to start.
@@ -151,11 +173,14 @@ class MainActivity : ComponentActivity() {
         // go through the activity: Android 12+ refuses a foreground service started from
         // the background, so `am start-foreground-service` cannot drive the service itself.
         intent.getStringExtra("host")?.let(::startLink)
+        handlePairIntent(intent)
         setContent {
             ConduitTheme {
                 ConduitApp(
                     appVersion = appVersion,
                     peerName = LinkStatus.peerName,
+                    pairedDeviceId = LinkStatus.pairedDeviceId,
+                    pairing = LinkStatus.pairing,
                     path = LinkStatus.path,
                     state = LinkStatus.state,
                     history = History.entries,
@@ -170,6 +195,10 @@ class MainActivity : ComponentActivity() {
                     },
                     onConnect = { send(ACTION_CONNECT) },
                     onDisconnect = { send(ACTION_DISCONNECT) },
+                    onPair = ::sendPair,
+                    onScanPairQr = ::scanPairingQr,
+                    onCancelPair = { send(ACTION_CANCEL_PAIR) },
+                    onForget = { send(ACTION_FORGET) },
                     onSendFiles = ::sendFiles,
                     onClearHistory = History::clear,
                 )
@@ -237,6 +266,52 @@ class MainActivity : ComponentActivity() {
         // the port off the activity's current intent.
         setIntent(intent)
         intent.getStringExtra("host")?.let(::startLink)
+        handlePairIntent(intent)
+    }
+
+    /** QR payload from the Windows pairing dialog. Invalid/foreign links never start the service. */
+    private fun handlePairIntent(intent: Intent): Boolean {
+        if (intent.action != Intent.ACTION_VIEW) return false
+        val uri = intent.data ?: return false
+        val code = PairingCode.fromQrPayload(uri.toString())
+        if (code == null) {
+            android.widget.Toast.makeText(this, "Invalid Conduit pairing code", android.widget.Toast.LENGTH_SHORT).show()
+            return true
+        }
+        sendPair(code)
+        return true
+    }
+
+    /**
+     * Opens the Google Play services QR scanner only when the user asks for it. Conduit itself
+     * never receives camera frames and therefore needs no CAMERA permission or background camera
+     * component. The scanner module is downloaded on first use if the device does not have it yet.
+     */
+    private fun scanPairingQr(onCode: (String) -> Unit) {
+        pairingScanner.startScan()
+            .addOnSuccessListener { barcode ->
+                val code = PairingCode.fromQrPayload(barcode.rawValue.orEmpty())
+                if (code == null) {
+                    android.widget.Toast.makeText(
+                        this,
+                        "That is not a Conduit pairing QR code",
+                        android.widget.Toast.LENGTH_SHORT,
+                    ).show()
+                    return@addOnSuccessListener
+                }
+                onCode(code)
+            }
+            .addOnCanceledListener {
+                Log.d(TAG, "pairing QR scan cancelled")
+            }
+            .addOnFailureListener { error ->
+                Log.w(TAG, "pairing QR scanner failed", error)
+                android.widget.Toast.makeText(
+                    this,
+                    "Could not open the QR scanner",
+                    android.widget.Toast.LENGTH_SHORT,
+                ).show()
+            }
     }
 
     /**
@@ -271,7 +346,16 @@ class MainActivity : ComponentActivity() {
     /** Connect and disconnect are the same call with a different action. */
     private fun send(action: String) {
         val intent = Intent(this, SyncService::class.java).setAction(action)
-        if (action == ACTION_DISCONNECT) startService(intent) else startForegroundService(intent)
+        when (action) {
+            ACTION_DISCONNECT, ACTION_CANCEL_PAIR, ACTION_FORGET -> startService(intent)
+            else -> startForegroundService(intent)
+        }
+    }
+
+    private fun sendPair(code: String?) {
+        val intent = Intent(this, SyncService::class.java).setAction(ACTION_PAIR)
+        code?.let { intent.putExtra(EXTRA_PAIRING_CODE, PairingCode.normalize(it)) }
+        startForegroundService(intent)
     }
 
     private fun refreshClipboardAccessMode() {
@@ -304,6 +388,8 @@ private enum class MainTab(val title: String) {
 private fun ConduitApp(
     appVersion: String,
     peerName: String?,
+    pairedDeviceId: String?,
+    pairing: Boolean,
     path: String?,
     state: LinkState,
     history: List<HistoryEntry>,
@@ -316,12 +402,83 @@ private fun ConduitApp(
     onOpenClipboardAccessibility: () -> Unit,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
+    onPair: (String?) -> Unit,
+    onScanPairQr: (((String) -> Unit) -> Unit),
+    onCancelPair: () -> Unit,
+    onForget: () -> Unit,
     onSendFiles: (List<android.net.Uri>) -> Unit,
     onClearHistory: () -> Unit,
 ) {
     var page by rememberSaveable { mutableStateOf("main") }
     var tabName by rememberSaveable { mutableStateOf(MainTab.Home.name) }
+    var showPairDialog by rememberSaveable { mutableStateOf(false) }
+    var pairCode by rememberSaveable { mutableStateOf("") }
     val tab = runCatching { MainTab.valueOf(tabName) }.getOrDefault(MainTab.Home)
+    val requestPair = {
+        pairCode = ""
+        showPairDialog = true
+    }
+
+    if (showPairDialog) {
+        AlertDialog(
+            onDismissRequest = { showPairDialog = false },
+            title = { Text("Pair desktop") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        "On Windows, open Conduit Settings and choose Pair phone. " +
+                            "Scan the QR code shown there, or enter its six-digit code. " +
+                            "Both methods work through Conduit Relay even when the devices are on different networks.",
+                    )
+                    FilledTonalButton(
+                        onClick = {
+                            onScanPairQr { code ->
+                                pairCode = code
+                                showPairDialog = false
+                                onPair(code)
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Scan QR code")
+                    }
+                    OutlinedTextField(
+                        value = pairCode,
+                        onValueChange = { pairCode = PairingCode.normalize(it).take(PairingCode.LENGTH) },
+                        label = { Text("Pairing code") },
+                        placeholder = { Text("123456") },
+                        supportingText = { Text("6 digits · valid for two minutes") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    TextButton(
+                        onClick = {
+                            showPairDialog = false
+                            onPair(null)
+                        },
+                    ) {
+                        Text("Search the same LAN instead")
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = PairingCode.isValid(pairCode),
+                    onClick = {
+                        val code = PairingCode.normalize(pairCode)
+                        showPairDialog = false
+                        onPair(code)
+                    },
+                ) {
+                    Text("Pair")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPairDialog = false }) { Text("Cancel") }
+            },
+        )
+    }
 
     BackHandler(enabled = page == "history") { page = "main" }
     if (page == "history") {
@@ -381,6 +538,8 @@ private fun ConduitApp(
             MainTab.Home -> HomeTab(
                 modifier = Modifier.padding(insets),
                 peerName = peerName,
+                pairedDeviceId = pairedDeviceId,
+                pairing = pairing,
                 path = path,
                 state = state,
                 history = history,
@@ -388,18 +547,26 @@ private fun ConduitApp(
                 toPhone = toPhone,
                 onConnect = onConnect,
                 onDisconnect = onDisconnect,
+                onPair = requestPair,
+                onCancelPair = onCancelPair,
                 onSendFiles = onSendFiles,
                 onOpenHistory = { page = "history" },
             )
             MainTab.Settings -> SettingsTab(
                 modifier = Modifier.padding(insets),
                 appVersion = appVersion,
+                pairedDeviceId = pairedDeviceId,
+                peerName = peerName,
+                pairing = pairing,
                 historyCount = history.size,
                 hideNotifications = hideNotifications,
                 onHideNotifications = onHideNotifications,
                 clipboardMode = clipboardMode,
                 clipboardAccessibilityEnabled = clipboardAccessibilityEnabled,
                 onOpenClipboardAccessibility = onOpenClipboardAccessibility,
+                onPair = requestPair,
+                onCancelPair = onCancelPair,
+                onForget = onForget,
                 onOpenHistory = { page = "history" },
             )
         }
@@ -410,6 +577,8 @@ private fun ConduitApp(
 private fun HomeTab(
     modifier: Modifier,
     peerName: String?,
+    pairedDeviceId: String?,
+    pairing: Boolean,
     path: String?,
     state: LinkState,
     history: List<HistoryEntry>,
@@ -417,6 +586,8 @@ private fun HomeTab(
     toPhone: FileTransfer?,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
+    onPair: () -> Unit,
+    onCancelPair: () -> Unit,
     onSendFiles: (List<android.net.Uri>) -> Unit,
     onOpenHistory: () -> Unit,
 ) {
@@ -436,9 +607,13 @@ private fun HomeTab(
             SefirahDeviceCard(
                 state = state,
                 peerName = peerName,
+                pairedDeviceId = pairedDeviceId,
+                pairing = pairing,
                 path = path,
                 onConnect = onConnect,
                 onDisconnect = onDisconnect,
+                onPair = onPair,
+                onCancelPair = onCancelPair,
                 onSendFiles = { pickFiles.launch("*/*") },
                 onSendPhoto = { pickPhoto.launch("image/*") },
             )
@@ -469,19 +644,66 @@ private fun HomeTab(
 private fun SettingsTab(
     modifier: Modifier,
     appVersion: String,
+    pairedDeviceId: String?,
+    peerName: String?,
+    pairing: Boolean,
     historyCount: Int,
     hideNotifications: Boolean,
     onHideNotifications: (Boolean) -> Unit,
     clipboardMode: ClipboardSyncMode,
     clipboardAccessibilityEnabled: Boolean,
     onOpenClipboardAccessibility: () -> Unit,
+    onPair: () -> Unit,
+    onCancelPair: () -> Unit,
+    onForget: () -> Unit,
     onOpenHistory: () -> Unit,
 ) {
+    var confirmForget by rememberSaveable { mutableStateOf(false) }
+    if (confirmForget) {
+        AlertDialog(
+            onDismissRequest = { confirmForget = false },
+            title = { Text("Forget ${peerName ?: "desktop"}?") },
+            text = {
+                Text(
+                    "This removes the pairing from this phone and tells the connected desktop to forget it too. " +
+                        "Your phone identity, clipboard history, and settings are kept.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmForget = false
+                    onForget()
+                }) { Text("Forget") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmForget = false }) { Text("Cancel") }
+            },
+        )
+    }
+
     LazyColumn(
         modifier = modifier,
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        item {
+            Text(
+                "Devices",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+        item {
+            DeviceManagementCard(
+                peerName = peerName,
+                pairedDeviceId = pairedDeviceId,
+                pairing = pairing,
+                onPair = onPair,
+                onCancelPair = onCancelPair,
+                onForget = { confirmForget = true },
+            )
+        }
         item {
             Text(
                 "Sync & Privacy",
@@ -563,18 +785,23 @@ private fun SettingsTab(
 private fun SefirahDeviceCard(
     state: LinkState,
     peerName: String?,
+    pairedDeviceId: String?,
+    pairing: Boolean,
     path: String?,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
+    onPair: () -> Unit,
+    onCancelPair: () -> Unit,
     onSendFiles: () -> Unit = {},
     onSendPhoto: () -> Unit = {},
 ) {
+    val isPaired = pairedDeviceId != null
     val linkRequested = isLinkRequestedState(state)
     val isConnected = state == LinkState.Connected
 
     val statusColor = when {
         isConnected -> Color(0xFF22C55E) // Vibrant green
-        state == LinkState.Discovering || state == LinkState.Waiting || state == LinkState.Retrying ->
+        pairing || state == LinkState.Discovering || state == LinkState.Retrying ->
             Color(0xFFF59E0B) // Amber
         else -> MaterialTheme.colorScheme.outline
     }
@@ -628,7 +855,11 @@ private fun SefirahDeviceCard(
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     Text(
-                        peerName ?: "No paired computer",
+                        when {
+                            pairing -> "Pairing for a desktop"
+                            isPaired -> peerName ?: "Paired desktop"
+                            else -> "No paired computer"
+                        },
                         style = MaterialTheme.typography.titleMedium,
                         fontSize = 19.sp,
                         fontWeight = FontWeight.Bold,
@@ -645,7 +876,11 @@ private fun SefirahDeviceCard(
                                 .background(statusColor, CircleShape),
                         )
                         Text(
-                            state.label,
+                            when {
+                                pairing -> "Open pairing on the desktop too"
+                                !isPaired -> "Ready to pair"
+                                else -> state.label
+                            },
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             fontWeight = FontWeight.Medium,
@@ -669,23 +904,44 @@ private fun SefirahDeviceCard(
                         }
                     }
                 }
-                FilledIconToggleButton(
-                    checked = linkRequested,
-                    onCheckedChange = { if (linkRequested) onDisconnect() else onConnect() },
-                    colors = IconButtonDefaults.filledIconToggleButtonColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                        checkedContainerColor = MaterialTheme.colorScheme.primary,
-                        checkedContentColor = MaterialTheme.colorScheme.onPrimary,
-                    ),
-                    modifier = Modifier.size(44.dp),
-                ) {
-                    Icon(
-                        painter = painterResource(R.drawable.ic_sync),
-                        contentDescription = if (linkRequested) "Disconnect" else "Connect",
-                        modifier = Modifier.size(22.dp),
-                    )
+                if (pairing || !isPaired) {
+                    FilledTonalButton(
+                        onClick = if (pairing) onCancelPair else onPair,
+                        shape = RoundedCornerShape(12.dp),
+                    ) {
+                        Text(if (pairing) "Cancel" else "Pair")
+                    }
+                } else {
+                    FilledIconToggleButton(
+                        checked = linkRequested,
+                        onCheckedChange = { if (linkRequested) onDisconnect() else onConnect() },
+                        colors = IconButtonDefaults.filledIconToggleButtonColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            checkedContainerColor = MaterialTheme.colorScheme.primary,
+                            checkedContentColor = MaterialTheme.colorScheme.onPrimary,
+                        ),
+                        modifier = Modifier.size(44.dp),
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_sync),
+                            contentDescription = if (linkRequested) "Disconnect" else "Connect",
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
                 }
+            }
+
+            if (!isPaired || pairing) {
+                Text(
+                    if (pairing) {
+                        "Keep both devices on the same Wi-Fi and open Pair new device on Windows within two minutes."
+                    } else {
+                        "Pair once on the same Wi-Fi. After that Conduit can reconnect through Relay automatically."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
 
             if (isConnected) {
@@ -723,6 +979,89 @@ private fun SefirahDeviceCard(
                         Spacer(Modifier.width(8.dp))
                         Text("Send photo")
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DeviceManagementCard(
+    peerName: String?,
+    pairedDeviceId: String?,
+    pairing: Boolean,
+    onPair: () -> Unit,
+    onCancelPair: () -> Unit,
+    onForget: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+        ),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Surface(
+                    modifier = Modifier.size(40.dp),
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_desktop),
+                            contentDescription = null,
+                            modifier = Modifier.size(22.dp),
+                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                        )
+                    }
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        peerName ?: if (pairedDeviceId != null) "Paired desktop" else "No paired desktop",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    if (pairing || pairedDeviceId == null) {
+                        Text(
+                            if (pairing) {
+                                "Pairing open · same Wi-Fi required"
+                            } else {
+                                "Pair a desktop to enable LAN and Relay reconnect"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (pairedDeviceId != null && !pairing) {
+                    TextButton(onClick = onForget) { Text("Forget") }
+                }
+                FilledTonalButton(
+                    onClick = if (pairing) onCancelPair else onPair,
+                    shape = RoundedCornerShape(12.dp),
+                ) {
+                    Text(
+                        when {
+                            pairing -> "Cancel pairing"
+                            pairedDeviceId != null -> "Pair new desktop"
+                            else -> "Pair desktop"
+                        },
+                    )
                 }
             }
         }

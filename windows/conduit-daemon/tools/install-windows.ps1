@@ -7,6 +7,56 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+function Invoke-WindowsPowerShell([string]$Script) {
+    $exe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+        throw "Windows PowerShell is required for Appx registration: $exe"
+    }
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Script))
+    $output = & $exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $encoded 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Windows PowerShell command failed ($LASTEXITCODE): $($output -join [Environment]::NewLine)"
+    }
+    return @($output)
+}
+
+function Get-CertificateThumbprint([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+    $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($Path)
+    try { return $certificate.Thumbprint } finally { $certificate.Dispose() }
+}
+
+function Add-MachineTrustedPeopleCertificate([string]$Path) {
+    $thumbprint = Get-CertificateThumbprint $Path
+    if ([string]::IsNullOrWhiteSpace($thumbprint)) { throw "Could not read certificate: $Path" }
+    & certutil.exe -f -addstore TrustedPeople $Path | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not temporarily trust the Conduit share-target certificate (certutil exit $LASTEXITCODE). Run the first Share Target registration elevated."
+    }
+    return $thumbprint
+}
+
+function Remove-MachineTrustedPeopleCertificate([string]$Thumbprint) {
+    if ([string]::IsNullOrWhiteSpace($Thumbprint)) { return }
+    & certutil.exe -delstore TrustedPeople $Thumbprint | Out-Null
+    # Not-found is harmless: the point of this call is that no build certificate remains trusted.
+}
+
+function Remove-CurrentUserCertificate([Security.Cryptography.X509Certificates.StoreName]$StoreName, [string]$Thumbprint) {
+    if ([string]::IsNullOrWhiteSpace($Thumbprint)) { return }
+    $store = [Security.Cryptography.X509Certificates.X509Store]::new(
+        $StoreName,
+        [Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser)
+    try {
+        $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+        @($store.Certificates.Find(
+            [Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
+            $Thumbprint,
+            $false)) | ForEach-Object { $store.Remove($_) }
+    }
+    finally { $store.Dispose() }
+}
+
 $source = (Resolve-Path $SourceDir).Path
 $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
 $appData = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)
@@ -20,6 +70,7 @@ $installDir = if ([string]::IsNullOrWhiteSpace($InstallDir)) {
 }
 $programs = Join-Path $appData 'Microsoft\Windows\Start Menu\Programs'
 $shortcut = Join-Path $programs 'Conduit.lnk'
+$previousShareCertificateThumbprint = Get-CertificateThumbprint (Join-Path $installDir 'Conduit.ShareTarget.cer')
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $aumidKey = 'HKCU:\Software\Classes\AppUserModelId\Conduit.Desktop'
 $explorerVerbKey = 'Registry::HKEY_CURRENT_USER\Software\Classes\*\shell\Conduit.SendToPhone'
@@ -95,7 +146,7 @@ if ($hasPublishedUi) {
     }
 }
 if ($hasPublishedUi) {
-    foreach ($name in @('Conduit.dll', 'Conduit.pri')) {
+    foreach ($name in @('Conduit.dll', 'Conduit.pri', 'resources.pri')) {
         $from = Join-Path $source $name
         $to = Join-Path $installDir $name
         if (-not (Test-Path -LiteralPath $to -PathType Leaf)) {
@@ -115,6 +166,56 @@ foreach ($name in @($requiredIconAssets + $optionalIconAssets)) {
     $to = Join-Path $installDir $name
     if (-not [string]::Equals($from, $to, [StringComparison]::OrdinalIgnoreCase)) {
         Copy-Item -Force $from $to
+    }
+}
+
+# Windows Share targets require package identity even though Conduit's binaries stay managed by
+# Scoop/the existing installer. The identity-only sparse package is signed in CI with a short-lived
+# build certificate. Appx deployment on current Windows builds checks the Local Machine trust store,
+# so first registration temporarily adds that public leaf to TrustedPeople, registers the package,
+# then removes it immediately. No signing certificate remains trusted after installation.
+#
+# The registered sparse identity keeps pointing at this stable `current` external location, so normal
+# Conduit updates do not need certificate-store access again. Re-register only when the identity is
+# actually absent (for example, first install or after manual package removal).
+$sharePackageName = 'Conduit.Desktop.ShareTarget'
+$sharePackage = Join-Path $installDir 'Conduit.ShareTarget.msix'
+$shareCertificate = Join-Path $installDir 'Conduit.ShareTarget.cer'
+$shareTargetRegistered = $false
+$shareRegistrationProbe = @"
+`$ErrorActionPreference = 'Stop'
+Import-Module (Join-Path `$env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules\Appx\Appx.psd1') -ErrorAction Stop
+if (Get-AppxPackage -Name '$sharePackageName' -ErrorAction SilentlyContinue) { 'CONDUIT_SHARE_TARGET_REGISTERED' }
+"@
+$shareProbeOutput = @(Invoke-WindowsPowerShell $shareRegistrationProbe)
+$shareTargetRegistered = ($shareProbeOutput -join "`n") -match 'CONDUIT_SHARE_TARGET_REGISTERED'
+
+if (-not $shareTargetRegistered -and
+    (Test-Path -LiteralPath $sharePackage -PathType Leaf) -and
+    (Test-Path -LiteralPath $shareCertificate -PathType Leaf) -and
+    [Environment]::OSVersion.Version.Build -ge 19041) {
+    # Clean certificate-store residue from earlier development builds before trying the real gate.
+    Remove-MachineTrustedPeopleCertificate $previousShareCertificateThumbprint
+    Remove-CurrentUserCertificate ([Security.Cryptography.X509Certificates.StoreName]::TrustedPeople) $previousShareCertificateThumbprint
+    Remove-CurrentUserCertificate ([Security.Cryptography.X509Certificates.StoreName]::Root) $previousShareCertificateThumbprint
+
+    $temporaryThumbprint = Add-MachineTrustedPeopleCertificate $shareCertificate
+    try {
+        $packageLiteral = "'" + $sharePackage.Replace("'", "''") + "'"
+        $locationLiteral = "'" + $installDir.Replace("'", "''") + "'"
+        $registerScript = @"
+`$ErrorActionPreference = 'Stop'
+Import-Module (Join-Path `$env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules\Appx\Appx.psd1') -ErrorAction Stop
+Add-AppxPackage -Path $packageLiteral -ExternalLocation $locationLiteral -ForceApplicationShutdown -ErrorAction Stop
+if (-not (Get-AppxPackage -Name '$sharePackageName' -ErrorAction SilentlyContinue)) {
+    throw 'Conduit share-target identity did not register'
+}
+"@
+        Invoke-WindowsPowerShell $registerScript | Out-Null
+        $shareTargetRegistered = $true
+    }
+    finally {
+        Remove-MachineTrustedPeopleCertificate $temporaryThumbprint
     }
 }
 
@@ -246,6 +347,7 @@ if (-not $NoStart) {
     InstallDir = $installDir
     Shortcut = $shortcut
     AppUserModelId = 'Conduit.Desktop'
+    ShareTargetRegistered = $shareTargetRegistered
     AutostartPreserved = $hadAutostart
     ExplorerIntegrationPreserved = $hadExplorerIntegration
     DaemonStarted = -not $NoStart

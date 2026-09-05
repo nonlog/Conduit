@@ -26,6 +26,9 @@ const REMOTE_RESULT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const LOCAL_RESULT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Begins with NUL, which a valid Win32 path cannot contain, so old path-only clients remain valid.
 const RELOAD_COMMAND: &str = "\0reload\0";
+const PAIR_START_COMMAND: &str = "\0pair-start\0";
+const PAIR_CANCEL_COMMAND: &str = "\0pair-cancel\0";
+const PAIR_FORGET_COMMAND: &str = "\0pair-forget\0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TransferProgress {
@@ -43,11 +46,24 @@ pub struct ReloadRequest {
     pub completion: oneshot::Sender<std::result::Result<(), String>>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PairAction {
+    Start,
+    Cancel,
+    Forget,
+}
+
+pub struct PairRequest {
+    pub action: PairAction,
+    pub completion: oneshot::Sender<std::result::Result<(), String>>,
+}
+
 /// Serves local requests forever. The pipe remains backward compatible with the original
 /// path-only sender: only a NUL-prefixed payload is interpreted as a daemon command.
 pub async fn serve(
     send_tx: mpsc::Sender<SendRequest>,
     reload_tx: mpsc::Sender<ReloadRequest>,
+    pair_tx: mpsc::Sender<PairRequest>,
 ) -> Result<()> {
     loop {
         let pipe = ServerOptions::new()
@@ -58,8 +74,9 @@ pub async fn serve(
             .context("accepting a Conduit control client")?;
         let send_tx = send_tx.clone();
         let reload_tx = reload_tx.clone();
+        let pair_tx = pair_tx.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle(pipe, send_tx, reload_tx).await {
+            if let Err(e) = handle(pipe, send_tx, reload_tx, pair_tx).await {
                 warn!(error = %e, "local control request failed");
             }
         });
@@ -70,6 +87,7 @@ async fn handle(
     mut pipe: NamedPipeServer,
     send_tx: mpsc::Sender<SendRequest>,
     reload_tx: mpsc::Sender<ReloadRequest>,
+    pair_tx: mpsc::Sender<PairRequest>,
 ) -> Result<()> {
     let request = read_request(&mut pipe).await?;
     if request == RELOAD_COMMAND {
@@ -83,6 +101,37 @@ async fn handle(
                 Ok(Ok(Err(message))) => bail!("could not apply settings: {message}"),
                 Ok(Err(_)) => bail!("daemon dropped the settings reload request"),
                 Err(_) => bail!("timed out applying settings"),
+            }
+        }
+        .await;
+        match outcome {
+            Ok(()) => pipe.write_all(b"OK\n").await?,
+            Err(e) => {
+                let reply = format!("ERR {e:#}\n");
+                let _ = pipe.write_all(reply.as_bytes()).await;
+            }
+        }
+        let _ = pipe.shutdown().await;
+        return Ok(());
+    }
+
+    let pair_action = match request.as_str() {
+        PAIR_START_COMMAND => Some(PairAction::Start),
+        PAIR_CANCEL_COMMAND => Some(PairAction::Cancel),
+        PAIR_FORGET_COMMAND => Some(PairAction::Forget),
+        _ => None,
+    };
+    if let Some(action) = pair_action {
+        let outcome: Result<()> = async {
+            let (completion, done) = oneshot::channel();
+            pair_tx
+                .try_send(PairRequest { action, completion })
+                .map_err(|e| anyhow::anyhow!("pairing control queue is unavailable: {e}"))?;
+            match tokio::time::timeout(LOCAL_RESULT_TIMEOUT, done).await {
+                Ok(Ok(Ok(()))) => Ok(()),
+                Ok(Ok(Err(message))) => bail!("could not update pairing: {message}"),
+                Ok(Err(_)) => bail!("daemon dropped the pairing request"),
+                Err(_) => bail!("timed out updating pairing"),
             }
         }
         .await;
@@ -224,7 +273,20 @@ where
 
 /// Asks the already-running daemon to re-read config and apply it in place.
 pub async fn reload() -> Result<()> {
-    let bytes = RELOAD_COMMAND.as_bytes();
+    simple_command(RELOAD_COMMAND, "Conduit settings to apply").await
+}
+
+pub async fn pair(action: PairAction) -> Result<()> {
+    let command = match action {
+        PairAction::Start => PAIR_START_COMMAND,
+        PairAction::Cancel => PAIR_CANCEL_COMMAND,
+        PairAction::Forget => PAIR_FORGET_COMMAND,
+    };
+    simple_command(command, "Conduit pairing state to update").await
+}
+
+async fn simple_command(command: &str, what: &str) -> Result<()> {
+    let bytes = command.as_bytes();
     let mut client = open_client().await?;
     client.write_u32(bytes.len() as u32).await?;
     client.write_all(bytes).await?;
@@ -234,7 +296,7 @@ pub async fn reload() -> Result<()> {
         client.read_to_end(&mut reply),
     )
     .await
-    .context("timed out waiting for Conduit settings to apply")??;
+    .with_context(|| format!("timed out waiting for {what}"))??;
     let reply = String::from_utf8(reply).context("control response is not UTF-8")?;
     if reply == "OK\n" {
         Ok(())

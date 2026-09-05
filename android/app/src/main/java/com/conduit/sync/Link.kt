@@ -12,6 +12,7 @@ import com.conduit.sync.proto.FileResult
 import com.conduit.sync.proto.Kind
 import com.conduit.sync.proto.NotifAction
 import com.conduit.sync.proto.PairRequest
+import com.conduit.sync.proto.PairResponse
 import com.conduit.sync.proto.SharedUrl
 import com.conduit.sync.proto.WallpaperPreview
 import java.net.InetSocketAddress
@@ -114,6 +115,7 @@ internal fun isVpnFakeIp(address: InetAddress): Boolean {
  */
 class Link(
     private val privateKey: ByteArray,
+    private val localDeviceId: String,
     private val localDeviceName: String,
     private val events: Events,
     private val openIncomingFile: (FileOffer) -> Files.Incoming? = { null },
@@ -148,6 +150,19 @@ class Link(
 
         /** A Windows toast action, already authenticated by the live Noise peer. */
         fun onNotificationAction(action: NotifAction) {}
+
+        /**
+         * Called after Noise XX exposes the peer static key but before any application data is
+         * accepted. Return true only for the stored desktop or during an explicit LAN pairing
+         * window. Pairing never learns a new peer through Relay.
+         */
+        fun authorizePeer(deviceId: String, viaRelay: Boolean, remotePairing: Boolean): Boolean
+
+        /** True only while the user has explicitly opened this phone's LAN pairing window. */
+        fun pairingRequested(): Boolean
+
+        /** The authenticated desktop asked both sides to forget this relationship. */
+        fun onPeerForgotten()
 
         /**
          * The peer's stable id, on every completed handshake. The service persists it
@@ -398,6 +413,18 @@ class Link(
         }
     }
 
+    /** Sends a best-effort authenticated forget signal, then tears down this session. */
+    fun forgetPeer() = sender.execute {
+        val live = session
+        if (live != null) {
+            runCatching {
+                val response = PairResponse.newBuilder().setAccept(false).build()
+                live.send(Kind.PAIR_RESPONSE, response.toByteArray())
+            }.onFailure { Log.w(TAG, "could not notify the desktop about unpairing", it) }
+        }
+        teardown()
+    }
+
     /** Final shutdown. After this the object is spent — the service is going away too. */
     fun close() {
         sender.execute { teardown() }
@@ -470,17 +497,42 @@ class Link(
                 val live = WireSession.handshake(
                     sock.getInputStream(), sock.getOutputStream(), privateKey, initiator = true,
                 )
-                if (rendezvous != null) sock.soTimeout = RELAY_READ_DEADLINE_MS
+                val remoteId = Identity.deviceId(live.peerStatic)
+                val viaRelay = rendezvous != null
+                if (viaRelay) sock.soTimeout = RELAY_READ_DEADLINE_MS
                 session = live
-                established = true
                 val peer = Identity.fingerprint(live.peerStatic)
-                Log.i(TAG, "session $count up to $target, peer $peer")
-                events.onPeer(Identity.deviceId(live.peerStatic))
-                events.onState(LinkState.Connected, peer)
+                Log.i(TAG, "session $count completed Noise to $target, peer $peer")
+
+                // Pairing policy is mutual. Both sides announce whether the user explicitly opened
+                // pairing, then each decides whether this Noise identity may become an application
+                // session. A new peer therefore cannot be learned because mDNS happened to find it.
                 val hello = PairRequest.newBuilder()
+                    .setDeviceId(localDeviceId)
                     .setDeviceName(localDeviceName.take(PEER_NAME_MAX))
+                    .setPairing(events.pairingRequested())
                     .build()
-                send(Kind.PAIR_REQUEST, hello.toByteArray(), "device name")
+                send(Kind.PAIR_REQUEST, hello.toByteArray(), "pairing hello")
+                val first = live.recv()
+                if (first.kind != Kind.PAIR_REQUEST) {
+                    throw SecurityException("desktop did not confirm pairing with its identity hello")
+                }
+                val desktopHello = PairRequest.parseFrom(first.payload)
+                if (desktopHello.deviceId.isNotEmpty() && desktopHello.deviceId != remoteId) {
+                    throw SecurityException("desktop hello does not match its Noise identity")
+                }
+                if (!events.authorizePeer(remoteId, viaRelay, desktopHello.pairing)) {
+                    throw SecurityException("desktop is not paired; open pairing on both devices")
+                }
+                Log.i(TAG, "session $count pairing policy accepted $peer")
+                events.onPeer(remoteId)
+                desktopHello.deviceName
+                    .take(PEER_NAME_MAX)
+                    .takeIf { it.isNotBlank() }
+                    ?.let(events::onPeerName)
+                events.onWallpaperHash(desktopHello.wallpaperHash.toByteArray())
+                established = true
+                events.onState(LinkState.Connected, peer)
 
                 while (true) dispatch(live.recv())
             }
@@ -529,6 +581,13 @@ class Link(
                     .takeIf { it.isNotBlank() }
                     ?.let { events.onPeerName(it) }
                 events.onWallpaperHash(hello.wallpaperHash.toByteArray())
+            }
+            Kind.PAIR_RESPONSE -> {
+                val response = PairResponse.parseFrom(envelope.payload)
+                if (!response.accept) {
+                    events.onPeerForgotten()
+                    throw SecurityException("desktop removed this phone")
+                }
             }
             Kind.WALLPAPER_PREVIEW -> Log.w(TAG, "unexpected wallpaper preview from desktop, dropped")
             Kind.CLIP_TEXT -> events.onText(ClipText.parseFrom(envelope.payload).text)
