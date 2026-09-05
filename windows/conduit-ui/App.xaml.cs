@@ -20,7 +20,7 @@ public partial class App : Application
         // Packaged activations are one-shot. Capture the share payload before WinUI/Uno startup
         // can observe activation state, then hand it to the page after the shell exists.
         Microsoft.Windows.AppLifecycle.AppActivationArguments? activation = null;
-        try { activation = AppInstance.GetCurrent().GetActivatedEventArgs(); } catch { }
+        try { activation = Microsoft.Windows.AppLifecycle.AppInstance.GetCurrent().GetActivatedEventArgs(); } catch { }
 
         MainWindow = new Window
         {
