@@ -174,6 +174,7 @@ class SyncService : Service() {
         LinkStatus.pairing = false
         Log.i(TAG, "pairing window expired")
         if (knownPeer != null && Settings.linkWanted && networkUp) {
+            hideLinkNotification()
             redial()
         } else if (knownPeer == null) {
             Settings.linkWanted = false
@@ -334,7 +335,7 @@ class SyncService : Service() {
                                 0L
                             }
                             main.post {
-                                showWaitingOrPairingNotification()
+                                showPairingOrHideOfflineNotification()
                                 if (pairingActive()) {
                                     if (pairingRendezvous != null && endpoint != null) {
                                         relayAttempt = null
@@ -386,8 +387,18 @@ class SyncService : Service() {
                                 scheduleRetry()
                             }
                         }
-                        LinkState.Discovering -> main.post { showConnectingNotification() }
-                        LinkState.Waiting, LinkState.Retrying -> main.post { showWaitingOrPairingNotification() }
+                        LinkState.Discovering -> main.post {
+                            if (pairingActive()) {
+                                showPairingNotification()
+                            } else if (foregroundVisible) {
+                                // Keep the user-initiated connection attempt visible, but never
+                                // resurrect a notification for a background retry after we demoted.
+                                showConnectingNotification()
+                            }
+                        }
+                        LinkState.Waiting, LinkState.Retrying -> main.post {
+                            showPairingOrHideOfflineNotification()
+                        }
                         LinkState.Pairing -> main.post { showPairingNotification() }
                     }
                 }
@@ -526,11 +537,12 @@ class SyncService : Service() {
                 return START_STICKY
             }
         }
-        // Android requires a service launched by startForegroundService() to enter foreground
-        // quickly. Keep this low-importance foreground service while the user wants the link:
-        // a parked Relay socket otherwise becomes an ordinary background service that Android may
-        // reclaim, breaking automatic recovery. Offline content observers remain suspended.
-        ensureStartupForeground()
+        // User-initiated starts arrive through startForegroundService() and must enter foreground
+        // promptly. A START_STICKY restart has a null intent; keep that restart background-only so
+        // an offline desktop never resurrects a persistent notification by itself.
+        if (intent != null && intent.action != ACTION_ACCESSIBILITY_CLIP) {
+            ensureStartupForeground()
+        }
         // A literal address on the intent skips discovery, which is the only way to drive
         // the link when the phone and the desktop are not on one subnet:
         //   adb reverse tcp:41112 tcp:41112
@@ -626,9 +638,12 @@ class SyncService : Service() {
             return@post
         }
         if (!networkUp) {
-            // No point counting down against a network that is gone; onAvailable redials.
+            // No point counting down against a network that is gone; onAvailable redials. Keep the
+            // service background-only and notification-free while there is nothing to connect over.
             Log.i(TAG, "link down with no network, waiting for one")
-            showLinkNotification("Waiting for network · sync paused")
+            LinkStatus.state = LinkState.Waiting
+            LinkStatus.path = null
+            hideLinkNotification()
             return@post
         }
         if (pairingActive()) {
@@ -637,7 +652,7 @@ class SyncService : Service() {
             return@post
         }
         LinkStatus.state = LinkState.Retrying
-        showWaitingNotification()
+        hideLinkNotification()
         val ceiling = retryCeilingMs(SystemClock.uptimeMillis(), recoveryUntilUptimeMs)
         val delay = retryMs.coerceAtMost(ceiling)
         Log.i(
@@ -878,6 +893,7 @@ class SyncService : Service() {
         main.removeCallbacks(pairingTimeout)
         main.removeCallbacks(pairingRetry)
         discovery.stop()
+        if (LinkStatus.state != LinkState.Connected) hideLinkNotification()
         if (resumeOldPeer && knownPeer != null && Settings.linkWanted && networkUp) {
             redial()
         }
@@ -1094,7 +1110,13 @@ class SyncService : Service() {
         }
     }
 
-    private fun ensureStartupForeground() = showConnectingNotification()
+    private fun ensureStartupForeground() {
+        if (LinkStatus.state == LinkState.Connected) {
+            showLinkedNotification()
+        } else {
+            showConnectingNotification()
+        }
+    }
 
     private fun showConnectingNotification() {
         if (LinkStatus.state == LinkState.Connected) return
@@ -1102,19 +1124,20 @@ class SyncService : Service() {
         showLinkNotification("Connecting to $peer")
     }
 
-    private fun showWaitingNotification() {
-        if (LinkStatus.state == LinkState.Connected || !Settings.linkWanted || knownPeer == null) return
-        val peer = knownPeerName ?: LinkStatus.peerName ?: "desktop"
-        showLinkNotification("Waiting for $peer · sync paused")
-    }
-
     private fun showPairingNotification() {
         if (!pairingActive()) return
         showLinkNotification("Pairing · sync paused")
     }
 
-    private fun showWaitingOrPairingNotification() {
-        if (pairingActive()) showPairingNotification() else showWaitingNotification()
+    private fun showPairingOrHideOfflineNotification() {
+        if (pairingActive()) {
+            showPairingNotification()
+        } else {
+            // A foreground-service notification cannot be hidden while the service remains
+            // foreground. Demote as soon as the link is no longer live; the passive Relay waiter
+            // and bounded reconnect state machine may continue as an ordinary background service.
+            hideLinkNotification()
+        }
     }
 
     private fun showLinkedNotification() {
@@ -1128,12 +1151,20 @@ class SyncService : Service() {
         if (foregroundVisible) {
             getSystemService(NotificationManager::class.java).notify(LINK_NOTIFICATION_ID, notice)
         } else {
-            startForeground(
-                LINK_NOTIFICATION_ID,
-                notice,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
-            )
-            foregroundVisible = true
+            try {
+                startForeground(
+                    LINK_NOTIFICATION_ID,
+                    notice,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+                )
+                foregroundVisible = true
+            } catch (e: IllegalStateException) {
+                // A sticky background restart can reconnect after Android has removed our right to
+                // promote a foreground service. The session is still useful while the process
+                // survives; never crash or bring back a stale offline notification just for this.
+                Log.w(TAG, "could not promote background link to foreground", e)
+                getSystemService(NotificationManager::class.java).cancel(LINK_NOTIFICATION_ID)
+            }
         }
     }
 
@@ -1154,7 +1185,7 @@ class SyncService : Service() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             // LOW, so an always-present notification never makes a sound.
             NotificationChannel(LINK_CHANNEL, "Link", NotificationManager.IMPORTANCE_LOW).apply {
-                description = "Shown while the desktop link is running"
+                description = "Shown while Conduit is connecting, pairing, or linked"
             },
         )
         val open = PendingIntent.getActivity(

@@ -88,7 +88,7 @@ enum class LinkState(val label: String) {
     Discovering("Looking for the desktop"),
 
     /** Relay is reachable and this socket is parked without polling until the desktop appears. */
-    Waiting("Waiting for the desktop"),
+    Waiting("Offline · auto reconnect on"),
 
     /** Down, with an attempt already scheduled. See `SyncService.scheduleRetry`. */
     Retrying("Reconnecting"),
@@ -801,7 +801,7 @@ private fun SefirahDeviceCard(
 
     val statusColor = when {
         isConnected -> Color(0xFF22C55E) // Vibrant green
-        pairing || state == LinkState.Discovering || state == LinkState.Waiting || state == LinkState.Retrying ->
+        pairing || state == LinkState.Discovering || state == LinkState.Retrying ->
             Color(0xFFF59E0B) // Amber
         else -> MaterialTheme.colorScheme.outline
     }

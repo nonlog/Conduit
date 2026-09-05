@@ -50,9 +50,9 @@ object Settings {
      * Whether the user wants a link at all, which is the one thing here that is not a
      * preference so much as a memory of a tap.
      *
-     * On by default, and persisted because `START_STICKY` lets the system restart
-     * [SyncService] with a null intent — a restart that silently reconnects is a restart that
-     * overrides the disconnect the user asked for.
+     * On by default, and persisted because the service can survive or be restarted while the UI
+     * is gone. A restart that silently reconnects after an explicit Disconnect would override the
+     * user, so that choice has to live on disk.
      */
     var linkWanted: Boolean
         get() = wanted

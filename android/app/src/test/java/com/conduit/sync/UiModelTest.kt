@@ -13,6 +13,7 @@ class UiModelTest {
         assertTrue(isLinkRequestedState(LinkState.Retrying))
         assertTrue(isLinkRequestedState(LinkState.Pairing))
         assertTrue(isLinkRequestedState(LinkState.Connected))
+        assertEquals("Offline · auto reconnect on", LinkState.Waiting.label)
     }
 
     @Test

@@ -52,7 +52,7 @@ class LinkTileService : TileService() {
             LinkStatus.pairing -> "Pairing on LAN"
             paired == null -> "Open Conduit to pair"
             LinkStatus.state == LinkState.Connected -> "Linked to $peer"
-            LinkStatus.state == LinkState.Waiting -> "Waiting for $peer"
+            LinkStatus.state == LinkState.Waiting -> "$peer offline · auto reconnect on"
             LinkStatus.state == LinkState.Retrying -> "Reconnecting to $peer"
             linkRequested -> "Connecting to $peer"
             else -> "Not linked"
