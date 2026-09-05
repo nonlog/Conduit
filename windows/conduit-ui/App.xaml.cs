@@ -17,6 +17,11 @@ public partial class App : Application
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
+        // Packaged activations are one-shot. Capture the share payload before WinUI/Uno startup
+        // can observe activation state, then hand it to the page after the shell exists.
+        Microsoft.Windows.AppLifecycle.AppActivationArguments? activation = null;
+        try { activation = AppInstance.GetCurrent().GetActivatedEventArgs(); } catch { }
+
         MainWindow = new Window
         {
             Title = "Conduit",
@@ -31,8 +36,7 @@ public partial class App : Application
 
         try
         {
-            var activation = Microsoft.Windows.AppLifecycle.AppInstance.GetCurrent().GetActivatedEventArgs();
-            if (activation.Kind == ExtendedActivationKind.ShareTarget &&
+            if (activation?.Kind == ExtendedActivationKind.ShareTarget &&
                 activation.Data is Windows.ApplicationModel.Activation.ShareTargetActivatedEventArgs share)
             {
                 mainPage.QueueShare(share.ShareOperation);
