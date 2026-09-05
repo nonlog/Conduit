@@ -180,7 +180,9 @@ pub fn pairing_rendezvous(code: &str) -> String {
 }
 
 pub fn normalize_code(code: &str) -> String {
-    code.chars().filter(|value| value.is_ascii_digit()).collect()
+    code.chars()
+        .filter(|value| value.is_ascii_digit())
+        .collect()
 }
 
 pub fn format_code(code: &str) -> String {
@@ -196,7 +198,8 @@ fn generate_code() -> Result<String> {
     let params = "Noise_XX_25519_ChaChaPoly_BLAKE2s".parse()?;
     let random = snow::Builder::new(params).generate_keypair()?;
     let digest = Sha256::digest(&random.public);
-    let value = u32::from_be_bytes(digest[..4].try_into().expect("SHA-256 is 32 bytes")) % 1_000_000;
+    let value =
+        u32::from_be_bytes(digest[..4].try_into().expect("SHA-256 is 32 bytes")) % 1_000_000;
     Ok(format!("{value:06}"))
 }
 
