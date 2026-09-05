@@ -16,7 +16,7 @@ public partial class App : Application
         InitializeComponent();
     }
 
-    protected override void OnLaunched(LaunchActivatedEventArgs args)
+    protected override void OnLaunched(Microsoft.UI.Xaml.LaunchActivatedEventArgs args)
     {
         // Packaged activations are one-shot. Capture the share payload before WinUI/Uno startup
         // can observe activation state, then hand it to the page after the shell exists.
