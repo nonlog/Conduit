@@ -2,7 +2,7 @@
 <assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
   <assemblyIdentity version="1.0.0.0" name="Conduit.Windows.app"/>
   <msix xmlns="urn:schemas-microsoft-com:msix.v1"
-        publisher="CN=Conduit, OID.2.25.81792453051849154465310160651671107432=1"
+        publisher="CN=Conduit, OID.2.25.311729368913984317654407730594956997722=1"
         packageName="Conduit.Desktop.ShareTarget"
         applicationId="Conduit" />
 
