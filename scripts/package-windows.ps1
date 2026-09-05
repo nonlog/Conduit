@@ -45,6 +45,15 @@ Copy-Item -Path (Join-Path $ui '*') -Destination $stage -Recurse -Force
 # data folder, excluding it here prevents an overlay from replacing Scoop's persisted data junction.
 Remove-Item -LiteralPath (Join-Path $stage 'data') -Recurse -Force -ErrorAction SilentlyContinue
 
+# Windows App SDK's MRT resource lookup currently treats a sparse/external-location process as fully
+# packaged and asks for the conventional resources.pri name. Keep Uno's module-named Conduit.pri for
+# normal unpackaged launch, and ship an identical alias so the same executable also starts with the
+# sparse Share Target identity.
+$modulePri = Join-Path $stage 'Conduit.pri'
+if (Test-Path -LiteralPath $modulePri -PathType Leaf) {
+    Copy-Item -LiteralPath $modulePri -Destination (Join-Path $stage 'resources.pri') -Force
+}
+
 foreach ($name in $requiredRust) {
     Copy-Item -LiteralPath (Join-Path $rust $name) -Destination (Join-Path $stage $name) -Force
 }

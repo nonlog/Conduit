@@ -146,7 +146,7 @@ if ($hasPublishedUi) {
     }
 }
 if ($hasPublishedUi) {
-    foreach ($name in @('Conduit.dll', 'Conduit.pri')) {
+    foreach ($name in @('Conduit.dll', 'Conduit.pri', 'resources.pri')) {
         $from = Join-Path $source $name
         $to = Join-Path $installDir $name
         if (-not (Test-Path -LiteralPath $to -PathType Leaf)) {
