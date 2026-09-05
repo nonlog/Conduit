@@ -29,7 +29,8 @@ private const val NAME_PREFIX = "Screenshot_"
 class Screenshots(private val context: Context, private val link: Link) {
 
     /** Existing screenshots are not news when the service starts. */
-    private val since = System.currentTimeMillis() / 1000
+    private var since = 0L
+    private var active = false
 
     /** Last row consumed, touched only by the sender thread through [next]. */
     private var lastId = 0L
@@ -43,6 +44,10 @@ class Screenshots(private val context: Context, private val link: Link) {
     }
 
     fun start() {
+        if (active) return
+        // Do not replay screenshots captured while the desktop was offline.
+        since = System.currentTimeMillis() / 1000
+        lastId = 0L
         if (!Photos.granted(context)) {
             Log.w(TAG, "${Photos.READ} not granted, so screenshots cannot be read")
         }
@@ -51,10 +56,15 @@ class Screenshots(private val context: Context, private val link: Link) {
             true,
             observer,
         )
+        active = true
         Log.i(TAG, "watching $PATH for screenshots added after $since")
     }
 
-    fun stop() = context.contentResolver.unregisterContentObserver(observer)
+    fun stop() {
+        if (!active) return
+        context.contentResolver.unregisterContentObserver(observer)
+        active = false
+    }
 
     /** The oldest new screenshot not yet consumed, or null when this callback was unrelated. */
     private fun next(): Images.Payload? {

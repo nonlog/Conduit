@@ -45,7 +45,8 @@ class Photos(private val context: Context, private val link: Link) {
      * started are not news, and mirroring a library on first launch would be the worst
      * possible first impression.
      */
-    private val since = System.currentTimeMillis() / 1000
+    private var since = 0L
+    private var active = false
 
     /**
      * Highest MediaStore id already sent. Touched only from inside the load lambda, which
@@ -65,6 +66,10 @@ class Photos(private val context: Context, private val link: Link) {
     }
 
     fun start() {
+        if (active) return
+        // Captures taken while the desktop was offline are not a backlog to replay later.
+        since = System.currentTimeMillis() / 1000
+        lastId = 0L
         if (!granted(context)) {
             // Not fatal, and not worth refusing to register over: the permission can be
             // granted while the service runs, and this is then the only clue as to why
@@ -77,10 +82,15 @@ class Photos(private val context: Context, private val link: Link) {
             true,
             observer,
         )
+        active = true
         Log.i(TAG, "watching for photos added after $since")
     }
 
-    fun stop() = context.contentResolver.unregisterContentObserver(observer)
+    fun stop() {
+        if (!active) return
+        context.contentResolver.unregisterContentObserver(observer)
+        active = false
+    }
 
     /** The newest camera photo not yet sent, downscaled, or null if there is nothing new. */
     private fun next(): Images.Payload? {

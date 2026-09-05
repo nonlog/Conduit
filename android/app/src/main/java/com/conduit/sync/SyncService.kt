@@ -122,6 +122,8 @@ class SyncService : Service() {
     private var relayEndpoints: List<RelayEndpoint> = emptyList()
     private val main = Handler(Looper.getMainLooper())
     private var foregroundVisible = false
+    /** Clipboard/capture/wallpaper observers are useful only while a Noise session is linked. */
+    private var syncObserversActive = false
     private val uploadProgressGate = TransferProgressGate()
     private val downloadProgressGate = TransferProgressGate()
 
@@ -283,7 +285,14 @@ class SyncService : Service() {
                 override fun onState(state: LinkState, peer: String?) {
                     LinkStatus.state = state
                     LinkStatus.peer = peer
-                    ClipboardAccessibilityService.setLinkActive(state == LinkState.Connected)
+                    val linked = state == LinkState.Connected
+                    ClipboardAccessibilityService.setLinkActive(linked)
+                    // NotificationListenerService is system-owned and cannot be unregistered cheaply,
+                    // so make its hot path a single null check while the desktop is offline.
+                    activeLink = if (linked) link else null
+                    main.post {
+                        if (!destroyed) setSyncObserversActive(linked)
+                    }
                     LinkTileService.refresh(this@SyncService)
                     when (state) {
                         // A completed handshake is the only proof the path works, so it is
@@ -481,12 +490,13 @@ class SyncService : Service() {
                 }
             },
         )
-        photos = Photos(this, link).apply { start() }
-        screenshots = Screenshots(this, link).apply { start() }
-        activeLink = link
-        wallpaperManager.addOnColorsChangedListener(wallpaperListener, main)
+        // These observers are intentionally constructed now but registered only after Noise is up.
+        // A parked Relay socket therefore does not make clipboard, MediaStore or wallpaper changes
+        // wake Conduit while the desktop is offline.
+        photos = Photos(this, link)
+        screenshots = Screenshots(this, link)
+        activeLink = null
 
-        clipboard.addPrimaryClipChangedListener(clipListener)
         // The default network, not a transport-filtered set: see [network].
         connectivity.registerDefaultNetworkCallback(network)
     }
@@ -558,10 +568,8 @@ class SyncService : Service() {
         // is being torn down.
         activeLink = null
         ClipboardAccessibilityService.setLinkActive(false)
-        clipboard.removePrimaryClipChangedListener(clipListener)
+        setSyncObserversActive(false)
         connectivity.unregisterNetworkCallback(network)
-        screenshots.stop()
-        photos.stop()
         discovery.stop()
         link.close()
         FileTransfers.clearAll()
@@ -966,7 +974,31 @@ class SyncService : Service() {
         sendLocalClip(intent.clipData, "accessibility")
     }
 
-    private fun onLocalClip() = sendLocalClip(clipboard.primaryClip, "listener")
+    private fun onLocalClip() {
+        // unregisterContentObserver/listener callbacks can already be queued when a session drops.
+        // Never read the clipboard after the authenticated desktop is gone.
+        if (LinkStatus.state != LinkState.Connected) return
+        sendLocalClip(clipboard.primaryClip, "listener")
+    }
+
+    private fun setSyncObserversActive(active: Boolean) {
+        if (active == syncObserversActive) return
+        syncObserversActive = active
+        if (active) {
+            clipboard.addPrimaryClipChangedListener(clipListener)
+            photos.start()
+            screenshots.start()
+            wallpaperManager.addOnColorsChangedListener(wallpaperListener, main)
+            Log.i(TAG, "linked: clipboard/capture/wallpaper observers enabled")
+        } else {
+            runCatching { clipboard.removePrimaryClipChangedListener(clipListener) }
+            runCatching { photos.stop() }
+            runCatching { screenshots.stop() }
+            runCatching { wallpaperManager.removeOnColorsChangedListener(wallpaperListener) }
+            main.removeCallbacks(wallpaperRefresh)
+            Log.i(TAG, "offline: clipboard/capture/wallpaper observers suspended")
+        }
+    }
 
     private fun sendLocalClip(clip: ClipData?, source: String) {
         val item = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)
