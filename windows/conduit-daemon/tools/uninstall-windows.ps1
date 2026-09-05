@@ -24,17 +24,24 @@ Get-AppxPackage -Name 'Conduit.Desktop.ShareTarget' -ErrorAction SilentlyContinu
     }
 
     if (-not [string]::IsNullOrWhiteSpace($thumbprint)) {
-        $store = [Security.Cryptography.X509Certificates.X509Store]::new(
+        # Current builds leave no trust entry behind. These removals also clean up any residue from
+        # development builds that used either CurrentUser or LocalMachine certificate stores.
+        & certutil.exe -delstore TrustedPeople $thumbprint | Out-Null
+        foreach ($storeName in @(
             [Security.Cryptography.X509Certificates.StoreName]::TrustedPeople,
-            [Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser)
-        try {
-            $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-            @($store.Certificates.Find(
-                [Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
-                $thumbprint,
-                $false)) | ForEach-Object { $store.Remove($_) }
+            [Security.Cryptography.X509Certificates.StoreName]::Root)) {
+            $store = [Security.Cryptography.X509Certificates.X509Store]::new(
+                $storeName,
+                [Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser)
+            try {
+                $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+                @($store.Certificates.Find(
+                    [Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
+                    $thumbprint,
+                    $false)) | ForEach-Object { $store.Remove($_) }
+            }
+            finally { $store.Dispose() }
         }
-        finally { $store.Dispose() }
     }
 }
 $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
