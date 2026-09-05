@@ -223,7 +223,11 @@ Set-ItemProperty -Path $aumidKey -Name IconBackgroundColor -Value '00000000'
 Set-ItemProperty -Path $aumidKey -Name ShowInActionCenter -Type DWord -Value 1
 
 if ($hadAutostart) {
-    New-Item -Force -Path $runKey | Out-Null
+    # Registry-provider `New-Item -Force` recreates an existing key and drops its values.
+    # Only create Run when it is genuinely absent so other applications keep their autostarts.
+    if (-not (Test-Path -LiteralPath $runKey)) {
+        New-Item -Path $runKey | Out-Null
+    }
     Set-ItemProperty -Path $runKey -Name Conduit -Value ('"{0}"' -f $daemonExe)
 }
 
