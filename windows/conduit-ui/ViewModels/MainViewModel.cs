@@ -121,6 +121,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public bool HasNotifications { get => _hasNotifications; private set => SetProperty(ref _hasNotifications, value); }
     public bool HasLinks { get => _hasLinks; private set => SetProperty(ref _hasLinks, value); }
     public string DataDirectory => _dataDir;
+    public string ApplicationVersion { get; } = BuildApplicationVersion();
     public string? StartupSendError { get; }
 
     private string DaemonPath => Path.Combine(AppContext.BaseDirectory, "conduit-daemon.exe");
@@ -750,6 +751,25 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         var configured = key?.GetValue(downloadsId, null, RegistryValueOptions.DoNotExpandEnvironmentNames) as string;
         if (!string.IsNullOrWhiteSpace(configured)) return Environment.ExpandEnvironmentVariables(configured);
         return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+    }
+
+    private static string BuildApplicationVersion()
+    {
+        try
+        {
+            var process = Environment.ProcessPath;
+            if (!string.IsNullOrWhiteSpace(process))
+            {
+                var info = System.Diagnostics.FileVersionInfo.GetVersionInfo(process);
+                var raw = info.ProductVersion ?? info.FileVersion;
+                var version = raw?.Split('+', 2)[0].Trim();
+                if (!string.IsNullOrWhiteSpace(version)) return $"Version {version}";
+            }
+        }
+        catch { }
+
+        var fallback = typeof(MainViewModel).Assembly.GetName().Version?.ToString(3) ?? "unknown";
+        return $"Version {fallback}";
     }
 
     private static string? ReadStartupSendError()

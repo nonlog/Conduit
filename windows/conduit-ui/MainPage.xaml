@@ -346,7 +346,7 @@
                                                   HorizontalScrollMode="Disabled">
                                         <StackPanel Spacing="4">
                                             <TextBlock Text="About" Margin="0,0,0,8" FontSize="28" FontWeight="SemiBold" />
-                                            <wuc:SettingsCard Header="Conduit" Description="Version 0.1.0">
+                                            <wuc:SettingsCard Header="Conduit" Description="{Binding ApplicationVersion}">
                                                 <wuc:SettingsCard.HeaderIcon><FontIcon Glyph="&#xE946;" /></wuc:SettingsCard.HeaderIcon>
                                             </wuc:SettingsCard>
                                             <wuc:SettingsCard Header="GitHub repository" Description="nonlog/Conduit"

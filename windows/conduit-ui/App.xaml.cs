@@ -51,8 +51,6 @@ public partial class App : Application
             // A normal unpackaged launch has no package activation context. Share-target identity
             // is optional, so falling back to the ordinary control window is intentional.
         }
-        ApplyThemeIcon();
-
         try
         {
             MainWindow.AppWindow.Resize(new SizeInt32(1280, 760));
@@ -60,6 +58,11 @@ public partial class App : Application
         catch { }
 
         MainWindow.Activate();
+        // Package/Shell identity is finalized when the first taskbar button is created. Reapply
+        // the themed Win32 icon only after activation so the sparse ShareTarget identity cannot
+        // replace a dark-taskbar white icon with the executable's default black icon.
+        ApplyThemeIcon();
+        MainWindow.DispatcherQueue.TryEnqueue(ApplyThemeIcon);
     }
 
     private static void ApplyThemeIcon()

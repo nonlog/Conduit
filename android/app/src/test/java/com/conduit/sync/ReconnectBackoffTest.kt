@@ -5,6 +5,14 @@ import org.junit.Test
 
 class ReconnectBackoffTest {
     @Test
+    fun relayLanRecheckRunsOncePerNetworkAndOnlyOnLan() {
+        assertEquals(true, shouldRecheckLanAfterRelay(true, true, false))
+        assertEquals(false, shouldRecheckLanAfterRelay(true, true, true))
+        assertEquals(false, shouldRecheckLanAfterRelay(true, false, false))
+        assertEquals(false, shouldRecheckLanAfterRelay(false, true, false))
+    }
+
+    @Test
     fun provenGoodSessionRecoveryUsesShortCeilingOnlyInsideItsWindow() {
         val now = 1_000_000L
         val recoveryUntil = now + 10 * 60 * 1000L

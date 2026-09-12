@@ -75,6 +75,13 @@ internal fun completedPairingPath(viaRelay: Boolean, relayId: String?): String =
         relayId?.trim()?.takeIf(String::isNotEmpty)?.let { "Relay · ${it.uppercase()}" } ?: "Relay"
     }
 
+/** One post-Relay LAN discovery burst per network; no polling and no periodic probe. */
+internal fun shouldRecheckLanAfterRelay(
+    connectedViaRelay: Boolean,
+    networkHasLan: Boolean,
+    alreadyChecked: Boolean,
+): Boolean = connectedViaRelay && networkHasLan && !alreadyChecked
+
 /** Sent by the UI. A disconnect has to be remembered, or START_STICKY undoes the user's tap. */
 const val ACTION_CONNECT = "com.conduit.sync.CONNECT"
 const val ACTION_DISCONNECT = "com.conduit.sync.DISCONNECT"
@@ -158,6 +165,11 @@ class SyncService : Service() {
     /** Set from the network callback, so a re-dial never has to ask the platform. */
     @Volatile private var networkUp = false
 
+    /** A Relay session gets exactly one LAN recheck on each default network. */
+    @Volatile private var relayLanRecheckDone = false
+    /** Suppresses the Relay teardown's retry while an intentional LAN handoff is queued. */
+    @Volatile private var lanHandoffInProgress = false
+
     /** The desktop we are paired with, so the relay rendezvous survives a restart. */
     @Volatile private var knownPeer: String? = null
 
@@ -236,6 +248,8 @@ class SyncService : Service() {
     private val network = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(net: Network) {
             networkUp = true
+            relayLanRecheckDone = false
+            lanHandoffInProgress = false
             // A different network is a genuinely new chance, not a repeat of the attempt
             // that just failed, so it starts from the floor instead of serving out a
             // backoff earned on a network that no longer exists.
@@ -248,6 +262,8 @@ class SyncService : Service() {
             // survive, so a reconnect reuses them instead of allocating a fresh set.
             Log.i(TAG, "network gone, suspending session")
             networkUp = false
+            relayLanRecheckDone = false
+            lanHandoffInProgress = false
             // Nothing to count down against; onAvailable is what resumes this.
             main.removeCallbacks(retry)
             link.disconnect()
@@ -319,7 +335,10 @@ class SyncService : Service() {
                                 )
                             }
                             cancelRetry()
-                            main.post { showLinkedNotification() }
+                            main.post {
+                                showLinkedNotification()
+                                maybeRecheckLanAfterRelay()
+                            }
                         }
                         // Every exit from the reader thread lands here, whether the
                         // handshake completed or not. That is the point: a dial refused by
@@ -336,6 +355,11 @@ class SyncService : Service() {
                             }
                             main.post {
                                 showPairingOrHideOfflineNotification()
+                                if (lanHandoffInProgress) {
+                                    lanHandoffInProgress = false
+                                    Log.i(TAG, "relay session closed for LAN handoff")
+                                    return@post
+                                }
                                 if (pairingActive()) {
                                     if (pairingRendezvous != null && endpoint != null) {
                                         relayAttempt = null
@@ -496,9 +520,19 @@ class SyncService : Service() {
         )
         discovery = Discovery(
             this,
-            onFound = { address -> link.connect(address) },
+            onFound = { address ->
+                main.post {
+                    if (LinkStatus.state == LinkState.Connected && relayAttemptConnected) {
+                        beginLanHandoff(address)
+                    } else {
+                        link.connect(address)
+                    }
+                }
+            },
             onEmpty = {
-                if (pairingActive()) {
+                if (LinkStatus.state == LinkState.Connected && relayAttemptConnected) {
+                    Log.i(TAG, "post-relay LAN recheck found nothing; keeping Relay")
+                } else if (pairingActive()) {
                     LinkStatus.state = LinkState.Pairing
                     LinkStatus.path = "LAN · No desktop found"
                     showPairingNotification()
@@ -702,6 +736,40 @@ class SyncService : Service() {
      * rather than run and waited out: eight seconds of multicast on a mobile network is
      * eight seconds of radio for a guaranteed miss.
      */
+    private fun networkHasLan(net: Network? = null): Boolean {
+        val caps = connectivity.getNetworkCapabilities(net ?: connectivity.activeNetwork)
+        return caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true ||
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true
+    }
+
+    /**
+     * A Relay connection proves the desktop is online. If this phone is also on a LAN, run one
+     * extra mDNS burst at that exact event so a startup/race miss can upgrade to LAN without any
+     * timer, recurring discovery, or user disconnect/reconnect.
+     */
+    private fun maybeRecheckLanAfterRelay() {
+        val viaRelay = relayAttemptConnected && relayAttempt != null
+        val lan = networkHasLan()
+        if (!shouldRecheckLanAfterRelay(viaRelay, lan, relayLanRecheckDone)) return
+        relayLanRecheckDone = true
+        Log.i(TAG, "relay linked on a LAN-capable network; checking once for direct desktop")
+        discovery.burst()
+    }
+
+    private fun beginLanHandoff(address: InetSocketAddress) {
+        if (!Settings.linkWanted || !networkUp ||
+            LinkStatus.state != LinkState.Connected || !relayAttemptConnected) return
+        Log.i(TAG, "LAN desktop appeared at $address; replacing Relay session")
+        lanHandoffInProgress = true
+        discovery.stop()
+        LinkStatus.path = "LAN"
+        link.disconnect()
+        clearRelayPlan()
+        // Link serializes both calls on its one sender executor, so teardown always completes
+        // before the direct dial begins. The first Idle callback is suppressed above.
+        link.connect(address)
+    }
+
     private fun redial(net: Network? = null) {
         if (!Settings.linkWanted) {
             Log.i(TAG, "not dialling; the user turned the link off")
@@ -719,10 +787,7 @@ class SyncService : Service() {
             stopSelf()
             return
         }
-        val caps = connectivity.getNetworkCapabilities(net ?: connectivity.activeNetwork)
-        val lan = caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true ||
-            caps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true
-        if (lan) {
+        if (networkHasLan(net)) {
             Log.i(TAG, "network up on a LAN, bursting")
             clearRelayPlan()
             LinkStatus.path = "LAN"
@@ -872,11 +937,8 @@ class SyncService : Service() {
 
     private fun searchPairingLan(net: Network? = null) {
         if (!pairingActive() || pairingRendezvous != null) return
-        val caps = connectivity.getNetworkCapabilities(net ?: connectivity.activeNetwork)
-        val lan = caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true ||
-            caps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true
         LinkStatus.state = LinkState.Pairing
-        if (!lan) {
+        if (!networkHasLan(net)) {
             LinkStatus.path = "Same Wi-Fi required"
             showPairingNotification()
             return
