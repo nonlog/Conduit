@@ -12,9 +12,7 @@ use std::sync::{mpsc, OnceLock};
 use std::thread;
 use std::time::Duration;
 use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, POINT, WPARAM};
-use windows_sys::Win32::System::LibraryLoader::{
-    FreeLibrary, GetModuleHandleW, GetProcAddress, LoadLibraryW,
-};
+use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, PROCESS_INFORMATION, STARTF_FORCEOFFFEEDBACK, STARTUPINFOW,
 };
@@ -334,7 +332,9 @@ unsafe fn apply_popup_menu_theme(hwnd: HWND) {
     // Native popup menus do not inherit dark mode merely because the taskbar is dark. Windows'
     // own Explorer menu path opts the process into dark menu rendering through UXTheme. Resolve
     // these long-lived ordinals dynamically so older Windows builds simply keep the default menu.
-    let module = LoadLibraryW(wide("uxtheme.dll").as_ptr());
+    // SetWindowTheme is imported from uxtheme.dll, so the module is already loaded. Borrow its
+    // existing handle instead of changing the DLL reference count on every context-menu open.
+    let module = GetModuleHandleW(wide("uxtheme.dll").as_ptr());
     if !module.is_null() {
         type SetPreferredAppMode = unsafe extern "system" fn(i32) -> i32;
         type FlushMenuThemes = unsafe extern "system" fn();
@@ -346,7 +346,6 @@ unsafe fn apply_popup_menu_theme(hwnd: HWND) {
             let flush: FlushMenuThemes = std::mem::transmute(raw);
             flush();
         }
-        FreeLibrary(module);
     }
     let theme = wide(if system_uses_light_theme() {
         "Explorer"
