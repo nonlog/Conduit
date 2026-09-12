@@ -36,7 +36,10 @@ public partial class App : Application
 
         var mainPage = new MainPage();
         mainPage.ActualThemeChanged += (_, _) => ApplyThemeIcon();
-        Microsoft.Win32.SystemEvents.UserPreferenceChanged += (_, _) =>
+        // UISettings reports shell palette changes even when the app theme is configured
+        // independently from the Windows/taskbar theme.
+        var uiSettings = new Windows.UI.ViewManagement.UISettings();
+        uiSettings.ColorValuesChanged += (_, _) =>
             MainWindow.DispatcherQueue.TryEnqueue(ApplyThemeIcon);
         MainWindow.Content = mainPage;
 
