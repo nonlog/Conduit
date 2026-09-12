@@ -15,10 +15,10 @@ use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, POINT, 
 use windows_sys::Win32::System::LibraryLoader::{
     FreeLibrary, GetModuleHandleW, GetProcAddress, LoadLibraryW,
 };
-use windows_sys::Win32::UI::Controls::SetWindowTheme;
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, PROCESS_INFORMATION, STARTF_FORCEOFFFEEDBACK, STARTUPINFOW,
 };
+use windows_sys::Win32::UI::Controls::SetWindowTheme;
 use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
 use windows_sys::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIM_ADD, NIM_DELETE,
