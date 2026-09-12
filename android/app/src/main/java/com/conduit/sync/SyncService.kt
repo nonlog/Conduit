@@ -737,9 +737,21 @@ class SyncService : Service() {
      * eight seconds of radio for a guaranteed miss.
      */
     private fun networkHasLan(net: Network? = null): Boolean {
+        fun isLan(caps: NetworkCapabilities?): Boolean =
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true ||
+                caps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true
+
         val caps = connectivity.getNetworkCapabilities(net ?: connectivity.activeNetwork)
-        return caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true ||
-            caps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true
+        if (isLan(caps)) return true
+        if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) != true) return false
+
+        // A VPN becomes Android's default network even when the phone and desktop still share
+        // the same Wi-Fi. Inspect currently-present physical transports only at this natural
+        // connect/reconnect event; no callback, timer, or scan is added.
+        return connectivity.allNetworks.asSequence()
+            .mapNotNull(connectivity::getNetworkCapabilities)
+            .filter { physical -> !physical.hasTransport(NetworkCapabilities.TRANSPORT_VPN) }
+            .any(::isLan)
     }
 
     /**

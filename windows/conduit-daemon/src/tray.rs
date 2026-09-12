@@ -12,7 +12,9 @@ use std::sync::{mpsc, OnceLock};
 use std::thread;
 use std::time::Duration;
 use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, POINT, WPARAM};
-use windows_sys::Win32::System::LibraryLoader::{FreeLibrary, GetModuleHandleW, GetProcAddress, LoadLibraryW};
+use windows_sys::Win32::System::LibraryLoader::{
+    FreeLibrary, GetModuleHandleW, GetProcAddress, LoadLibraryW,
+};
 use windows_sys::Win32::UI::Controls::SetWindowTheme;
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, PROCESS_INFORMATION, STARTF_FORCEOFFFEEDBACK, STARTUPINFOW,
@@ -346,7 +348,11 @@ unsafe fn apply_popup_menu_theme(hwnd: HWND) {
         }
         FreeLibrary(module);
     }
-    let theme = wide(if system_uses_light_theme() { "Explorer" } else { "DarkMode_Explorer" });
+    let theme = wide(if system_uses_light_theme() {
+        "Explorer"
+    } else {
+        "DarkMode_Explorer"
+    });
     let _ = SetWindowTheme(hwnd, theme.as_ptr(), null());
 }
 

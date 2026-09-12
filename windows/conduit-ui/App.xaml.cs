@@ -36,6 +36,8 @@ public partial class App : Application
 
         var mainPage = new MainPage();
         mainPage.ActualThemeChanged += (_, _) => ApplyThemeIcon();
+        Microsoft.Win32.SystemEvents.UserPreferenceChanged += (_, _) =>
+            MainWindow.DispatcherQueue.TryEnqueue(ApplyThemeIcon);
         MainWindow.Content = mainPage;
 
         try
