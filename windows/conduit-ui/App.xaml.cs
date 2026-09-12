@@ -10,6 +10,7 @@ namespace Conduit;
 public partial class App : Application
 {
     public static Window MainWindow { get; private set; } = null!;
+    private readonly Windows.UI.ViewManagement.UISettings _uiSettings = new();
 
     public App()
     {
@@ -38,8 +39,7 @@ public partial class App : Application
         mainPage.ActualThemeChanged += (_, _) => ApplyThemeIcon();
         // UISettings reports shell palette changes even when the app theme is configured
         // independently from the Windows/taskbar theme.
-        var uiSettings = new Windows.UI.ViewManagement.UISettings();
-        uiSettings.ColorValuesChanged += (_, _) =>
+        _uiSettings.ColorValuesChanged += (_, _) =>
             MainWindow.DispatcherQueue.TryEnqueue(ApplyThemeIcon);
         MainWindow.Content = mainPage;
 
