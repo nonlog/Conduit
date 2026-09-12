@@ -508,7 +508,10 @@ fn pump(
                                 let _ = hide(&evict);
                             }
                         }
-                        instances.entry(key.clone()).or_default().push(toast_key.clone());
+                        instances
+                            .entry(key.clone())
+                            .or_default()
+                            .push(toast_key.clone());
                         shapes.insert(
                             toast_key.clone(),
                             ToastShape {
