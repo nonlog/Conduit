@@ -727,7 +727,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private static string PrettyRoute(string path, string relay)
     {
-        var route = string.IsNullOrWhiteSpace(path) ? string.Empty : char.ToUpperInvariant(path[0]) + path[1..].ToLowerInvariant();
+        var route = string.IsNullOrWhiteSpace(path)
+            ? string.Empty
+            : path.Equals("lan", StringComparison.OrdinalIgnoreCase)
+                ? "LAN"
+                : char.ToUpperInvariant(path[0]) + path[1..].ToLowerInvariant();
         if (!route.Equals("Relay", StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(relay))
             return string.IsNullOrWhiteSpace(route) ? "Connected" : route;
         var host = relay.Split(':', 2)[0];
