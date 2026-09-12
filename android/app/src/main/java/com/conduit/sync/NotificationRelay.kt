@@ -17,7 +17,6 @@ import com.conduit.sync.proto.NotifAction
 import com.conduit.sync.proto.NotifActionDesc
 import com.conduit.sync.proto.NotifNew
 import com.conduit.sync.proto.NotifRemove
-import com.conduit.sync.proto.NotifUpdate
 import com.conduit.sync.proto.TextMessage
 import com.google.protobuf.ByteString
 import java.io.ByteArrayOutputStream
@@ -102,14 +101,21 @@ class NotificationRelay : NotificationListenerService() {
         }
     }
 
+    private data class NotificationSnapshot(
+        val postTime: Long,
+        val title: String,
+        val body: String,
+        val messages: List<TextMessage>,
+        val actions: List<NotifActionDesc>,
+    )
+
     /**
-     * Access-ordered so eviction drops the least recently touched key, not the oldest. Keeping the
-     * tiny bounded action descriptor list alongside the key lets us notice an action-list change
-     * without a binder query or a second cache. Ordinary title/body reposts still use lightweight
-     * NOTIF_UPDATE; only action changes rebuild the Windows toast XML.
+     * Last event payload per Android notification key. Chat apps routinely reuse one key while
+     * new messages arrive; those are separate user-visible events on Windows. The cache suppresses
+     * only an identical framework callback (same post time and payload), never a later message.
      */
-    private val posted = object : LinkedHashMap<String, List<NotifActionDesc>>(32, 0.75f, true) {
-        override fun removeEldestEntry(eldest: Map.Entry<String, List<NotifActionDesc>>) =
+    private val posted = object : LinkedHashMap<String, NotificationSnapshot>(32, 0.75f, true) {
+        override fun removeEldestEntry(eldest: Map.Entry<String, NotificationSnapshot>) =
             size > REMEMBERED_KEYS
     }
 
@@ -168,19 +174,19 @@ class NotificationRelay : NotificationListenerService() {
         val outBody = if (hide) "" else body
         val actionDescs = if (hide) emptyList() else actions(notification)
 
-        // The same key posting again is an update — a chat thread gaining a message, a
-        // download changing percentage — and must not pop a second toast. Actions are structural
-        // toast XML rather than NotificationData, so a changed list deliberately falls through to
-        // NOTIF_NEW with the same tag, replacing the existing toast with current buttons.
-        val previousActions = posted.put(sbn.key, actionDescs)
-        if (previousActions != null && previousActions == actionDescs) {
-            val update = NotifUpdate.newBuilder()
-                .setKey(sbn.key)
-                .setTitle(outTitle)
-                .setText(outBody)
-                .addAllMessages(messageDescs)
-                .build()
-            link.send(Kind.NOTIF_UPDATE, update.toByteArray(), "notif update")
+        // A repeated Android key is not necessarily the same event. Messaging apps keep one
+        // notification key for a conversation and repost it for each new message. Mirror each real
+        // repost as a new Windows event; only an identical framework callback is suppressed.
+        val snapshot = NotificationSnapshot(
+            postTime = sbn.postTime,
+            title = outTitle,
+            body = outBody,
+            messages = messageDescs,
+            actions = actionDescs,
+        )
+        val previous = posted.put(sbn.key, snapshot)
+        if (previous == snapshot) {
+            Log.d(TAG, "duplicate notification callback dropped for ${sbn.packageName}")
             return
         }
 
@@ -194,7 +200,7 @@ class NotificationRelay : NotificationListenerService() {
             .setText(outBody)
             .setTimestampMs(sbn.postTime)
             .addAllMessages(messageDescs)
-            .setSuppressPopup(previousActions != null)
+            .setSuppressPopup(false)
         // A contact photo is content too, so hiding covers it. The app icon is not — it
         // says no more than the source-app line already does.
         if (!hide) face(notification, messageRecords)?.let { new.largeIconPng = ByteString.copyFrom(it) }
@@ -204,7 +210,7 @@ class NotificationRelay : NotificationListenerService() {
         if (iconSent.put(sbn.packageName, true) == null) {
             appIcon(sbn.packageName)?.let { new.appIconPng = ByteString.copyFrom(it) }
         }
-        Log.i(TAG, "notif out ${sbn.packageName} ${outTitle.take(40)} messages=${messageDescs.size}")
+        Log.i(TAG, "notif out ${sbn.packageName} ${outTitle.take(40)} messages=${messageDescs.size} repost=${previous != null}")
         link.send(Kind.NOTIF_NEW, new.build().toByteArray(), "notif")
     }
 

@@ -423,6 +423,7 @@ impl Drop for Notifier {
 
 #[derive(Clone)]
 struct ToastShape {
+    source_key: String,
     app: String,
     logo: Option<PathBuf>,
     actions: Vec<pb::NotifActionDesc>,
@@ -446,6 +447,10 @@ fn pump(
     // Shape data is needed only when an update adds/removes a verification code, because toast
     // actions are XML and cannot be changed through NotificationData. Bounded like actionable.
     let mut shapes: HashMap<String, ToastShape> = HashMap::new();
+    // Android may reuse one notification key for multiple real arrivals. Each Show gets its own
+    // Windows toast tag, while this bounded map lets Update/Hide address the newest/all instances.
+    let mut instances: HashMap<String, Vec<String>> = HashMap::new();
+    let mut next_instance = 0u64;
     while let Ok(cmd) = rx.recv() {
         let result = match cmd {
             Cmd::Show {
@@ -460,6 +465,8 @@ fn pump(
                 actions,
                 suppress_popup,
             } => {
+                next_instance = next_instance.wrapping_add(1);
+                let toast_key = format!("{key}@conduit-event-{next_instance}");
                 // A cache write that fails costs the toast its picture, nothing more, so
                 // the logo is resolved leniently and the toast still shows.
                 let logo = cache
@@ -471,6 +478,7 @@ fn pump(
                 let code = verification_code::extract(&title, &body, &messages);
                 match show(
                     notifier,
+                    &toast_key,
                     &key,
                     &app,
                     &title,
@@ -484,15 +492,27 @@ fn pump(
                     &clipboard,
                 ) {
                     Ok(toast) => {
-                        if shapes.len() >= 256 && !shapes.contains_key(&key) {
+                        if shapes.len() >= 256 && !shapes.contains_key(&toast_key) {
                             if let Some(evict) = shapes.keys().next().cloned() {
-                                shapes.remove(&evict);
+                                if let Some(old) = shapes.remove(&evict) {
+                                    let mut remove_bucket = false;
+                                    if let Some(ids) = instances.get_mut(&old.source_key) {
+                                        ids.retain(|id| id != &evict);
+                                        remove_bucket = ids.is_empty();
+                                    }
+                                    if remove_bucket {
+                                        instances.remove(&old.source_key);
+                                    }
+                                }
                                 actionable.remove(&evict);
+                                let _ = hide(&evict);
                             }
                         }
+                        instances.entry(key.clone()).or_default().push(toast_key.clone());
                         shapes.insert(
-                            key.clone(),
+                            toast_key.clone(),
                             ToastShape {
+                                source_key: key.clone(),
                                 app,
                                 logo,
                                 actions,
@@ -500,9 +520,9 @@ fn pump(
                             },
                         );
                         if let Some(toast) = toast {
-                            actionable.insert(key, toast);
+                            actionable.insert(toast_key, toast);
                         } else {
-                            actionable.remove(&key);
+                            actionable.remove(&toast_key);
                         }
                         Ok(())
                     }
@@ -515,12 +535,18 @@ fn pump(
                 body,
                 messages,
             } => {
+                let toast_key = instances
+                    .get(&key)
+                    .and_then(|ids| ids.last())
+                    .cloned()
+                    .unwrap_or_else(|| key.clone());
                 let code = verification_code::extract(&title, &body, &messages);
-                let shape = shapes.get(&key).cloned();
+                let shape = shapes.get(&toast_key).cloned();
                 if let Some(shape) = shape {
                     if shape.code != code {
                         match show(
                             notifier,
+                            &toast_key,
                             &key,
                             &shape.app,
                             &title,
@@ -534,29 +560,42 @@ fn pump(
                             &clipboard,
                         ) {
                             Ok(toast) => {
-                                if let Some(shape) = shapes.get_mut(&key) {
+                                if let Some(shape) = shapes.get_mut(&toast_key) {
                                     shape.code = code;
                                 }
                                 if let Some(toast) = toast {
-                                    actionable.insert(key, toast);
+                                    actionable.insert(toast_key, toast);
                                 } else {
-                                    actionable.remove(&key);
+                                    actionable.remove(&toast_key);
                                 }
                                 Ok(())
                             }
                             Err(e) => Err(e),
                         }
                     } else {
-                        update(notifier, &key, &title, &body, &messages)
+                        update(notifier, &toast_key, &title, &body, &messages)
                     }
                 } else {
-                    update(notifier, &key, &title, &body, &messages)
+                    update(notifier, &toast_key, &title, &body, &messages)
                 }
             }
             Cmd::Hide { key } => {
-                actionable.remove(&key);
-                shapes.remove(&key);
-                hide(&key)
+                let targets = instances.remove(&key).unwrap_or_else(|| vec![key.clone()]);
+                let mut first_error = None;
+                for toast_key in targets {
+                    actionable.remove(&toast_key);
+                    shapes.remove(&toast_key);
+                    if let Err(error) = hide(&toast_key) {
+                        if first_error.is_none() {
+                            first_error = Some(error);
+                        }
+                    }
+                }
+                if let Some(error) = first_error {
+                    Err(error)
+                } else {
+                    Ok(())
+                }
             }
             Cmd::Photo { path } => show_capture(notifier, &path, &mut staged, false),
             Cmd::Screenshot { path } => show_capture(notifier, &path, &mut staged, true),
@@ -590,7 +629,8 @@ fn pump(
 /// [`update`] possible at all: `ToastNotifier::Update` can only touch bound values.
 fn show(
     notifier: &ToastNotifier,
-    key: &str,
+    toast_key: &str,
+    action_key: &str,
     app: &str,
     title: &str,
     body: &str,
@@ -606,14 +646,14 @@ fn show(
     xml.LoadXml(&HSTRING::from(show_xml(app, logo, actions, copy_code)))?;
 
     let toast = ToastNotification::CreateToastNotification(&xml)?;
-    let tag = tag_for(key);
+    let tag = tag_for(toast_key);
     toast.SetTag(&HSTRING::from(&tag))?;
     toast.SetGroup(&HSTRING::from(GROUP))?;
     toast.SetData(&data(title, body, messages)?)?;
     toast.SetSuppressPopup(suppress_popup)?;
     let has_copy_code = copy_code.is_some();
     if !actions.is_empty() || has_copy_code {
-        let key = key.to_owned();
+        let key = action_key.to_owned();
         let actions = actions.to_vec();
         let expected_copy_code = copy_code.map(str::to_owned);
         let action_tx = action_tx.clone();

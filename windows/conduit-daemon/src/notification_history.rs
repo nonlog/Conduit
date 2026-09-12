@@ -61,7 +61,8 @@ pub fn record_new(
         body: one_line(body, 1024),
     };
     let mut entries = read(dir);
-    entries.retain(|old| old.key != entry.key);
+    // A single Android notification key can represent multiple real arrivals (chat apps commonly
+    // reuse one conversation key). History is an event log, so every NOTIF_NEW keeps its own row.
     entries.insert(0, entry);
     write(dir, entries)
 }
@@ -178,7 +179,19 @@ mod tests {
     }
 
     #[test]
-    fn bounded_history_deduplicates_by_notification_key() {
+    fn repeated_key_keeps_each_new_event() {
+        let dir = scratch("repeated-key");
+        record_new(&dir, "same-key", "pkg", "App", "First", "one", 10).unwrap();
+        record_new(&dir, "same-key", "pkg", "App", "Second", "two", 20).unwrap();
+        let entries = read(&dir);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].title, "Second");
+        assert_eq!(entries[1].title, "First");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn bounded_history_keeps_newest_entries() {
         let dir = scratch("bounded");
         for index in 0..(MAX_ENTRIES + 20) {
             record_new(
