@@ -13,6 +13,7 @@ import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -63,6 +64,8 @@ private const val RECOVERY_RETRY_MAX_MS = 60_000L
 private const val RECOVERY_WINDOW_MS = 10L * 60L * 1000L
 private const val RELAY_FAILOVER_DELAY_MS = 150L
 private const val UNSTABLE_RELAY_SESSION_MS = 60_000L
+/** Bound, event-driven window for upgrading an already-linked Relay session to direct LAN. */
+private const val RELAY_LAN_HANDOFF_DISCOVERY_MS = 30_000L
 
 internal fun retryCeilingMs(nowUptimeMs: Long, recoveryUntilUptimeMs: Long): Long =
     if (nowUptimeMs < recoveryUntilUptimeMs) RECOVERY_RETRY_MAX_MS else RETRY_MAX_MS
@@ -75,7 +78,7 @@ internal fun completedPairingPath(viaRelay: Boolean, relayId: String?): String =
         relayId?.trim()?.takeIf(String::isNotEmpty)?.let { "Relay · ${it.uppercase()}" } ?: "Relay"
     }
 
-/** One post-Relay LAN discovery burst per network; no polling and no periodic probe. */
+/** One bounded Relay-to-LAN handoff window per Relay session / physical-LAN arrival. */
 internal fun shouldRecheckLanAfterRelay(
     connectedViaRelay: Boolean,
     networkHasLan: Boolean,
@@ -165,7 +168,7 @@ class SyncService : Service() {
     /** Set from the network callback, so a re-dial never has to ask the platform. */
     @Volatile private var networkUp = false
 
-    /** A Relay session gets exactly one LAN recheck on each default network. */
+    /** Guards duplicate callbacks while one bounded Relay-to-LAN discovery window is active/done. */
     @Volatile private var relayLanRecheckDone = false
     /** Suppresses the Relay teardown's retry while an intentional LAN handoff is queued. */
     @Volatile private var lanHandoffInProgress = false
@@ -270,6 +273,33 @@ class SyncService : Service() {
         }
     }
 
+    /**
+     * Watches physical LAN arrival independently of Android's default network. A VPN can remain
+     * the default while Wi-Fi comes and goes underneath it, so the default callback alone cannot
+     * trigger a Relay-to-LAN upgrade. This callback is event-driven; it performs no scans itself.
+     */
+    private val physicalLanNetworks = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(net: Network) {
+            if (!isPhysicalLanNetwork(net)) return
+            main.post {
+                if (destroyed) return@post
+                relayLanRecheckDone = false
+                Log.i(TAG, "physical LAN available: $net")
+                if (LinkStatus.state == LinkState.Connected && relayAttemptConnected) {
+                    maybeRecheckLanAfterRelay(net)
+                }
+            }
+        }
+
+        override fun onLost(net: Network) {
+            main.post {
+                if (destroyed) return@post
+                relayLanRecheckDone = false
+                Log.i(TAG, "physical LAN lost: $net")
+            }
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         val identity = Identity.loadOrCreate(filesDir)
@@ -325,6 +355,9 @@ class SyncService : Service() {
                         LinkState.Connected -> {
                             relayAttempt?.let { endpoint ->
                                 relayAttemptConnected = true
+                                // A newly-established Relay session is a fresh opportunity to
+                                // discover the same desktop directly on the physical LAN.
+                                relayLanRecheckDone = false
                                 relayConnectedAtMs = SystemClock.elapsedRealtime()
                                 val sessionUpMs = (relayConnectedAtMs - relayAttemptStartedAtMs).coerceAtLeast(1L)
                                 relayQuality.connected(
@@ -552,8 +585,15 @@ class SyncService : Service() {
         screenshots = Screenshots(this, link)
         activeLink = null
 
-        // The default network, not a transport-filtered set: see [network].
+        // The default network drives overall online/offline state. A second system callback only
+        // observes physical non-VPN LAN arrival so Relay can upgrade without polling.
         connectivity.registerDefaultNetworkCallback(network)
+        connectivity.registerNetworkCallback(
+            NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+                .build(),
+            physicalLanNetworks,
+        )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -626,7 +666,8 @@ class SyncService : Service() {
         activeLink = null
         ClipboardAccessibilityService.setLinkActive(false)
         setSyncObserversActive(false)
-        connectivity.unregisterNetworkCallback(network)
+        runCatching { connectivity.unregisterNetworkCallback(network) }
+        runCatching { connectivity.unregisterNetworkCallback(physicalLanNetworks) }
         discovery.stop()
         link.close()
         FileTransfers.clearAll()
@@ -736,36 +777,39 @@ class SyncService : Service() {
      * rather than run and waited out: eight seconds of multicast on a mobile network is
      * eight seconds of radio for a guaranteed miss.
      */
-    private fun networkHasLan(net: Network? = null): Boolean {
-        fun isLan(caps: NetworkCapabilities?): Boolean =
-            caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true ||
-                caps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true
-
-        val caps = connectivity.getNetworkCapabilities(net ?: connectivity.activeNetwork)
-        if (isLan(caps)) return true
-        if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) != true) return false
-
-        // A VPN becomes Android's default network even when the phone and desktop still share
-        // the same Wi-Fi. Inspect currently-present physical transports only at this natural
-        // connect/reconnect event; no callback, timer, or scan is added.
-        return connectivity.allNetworks.asSequence()
-            .mapNotNull(connectivity::getNetworkCapabilities)
-            .filter { physical -> !physical.hasTransport(NetworkCapabilities.TRANSPORT_VPN) }
-            .any(::isLan)
+    private fun isPhysicalLanNetwork(net: Network): Boolean {
+        val caps = connectivity.getNetworkCapabilities(net) ?: return false
+        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return false
+        return caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
     }
 
     /**
-     * A Relay connection proves the desktop is online. If this phone is also on a LAN, run one
-     * extra mDNS burst at that exact event so a startup/race miss can upgrade to LAN without any
-     * timer, recurring discovery, or user disconnect/reconnect.
+     * Returns the actual physical LAN Network, not merely "LAN exists". Android reports a VPN as
+     * the default network (and may even expose WIFI|VPN on its capabilities), but NSD must be bound
+     * to the underlying Wi-Fi/Ethernet Network or multicast discovery can disappear into the VPN.
      */
-    private fun maybeRecheckLanAfterRelay() {
+    private fun physicalLanNetwork(preferred: Network? = null): Network? {
+        preferred?.takeIf(::isPhysicalLanNetwork)?.let { return it }
+        val active = connectivity.activeNetwork
+        if (active != null && active != preferred && isPhysicalLanNetwork(active)) return active
+        return connectivity.allNetworks.asSequence().firstOrNull(::isPhysicalLanNetwork)
+    }
+
+    private fun networkHasLan(net: Network? = null): Boolean = physicalLanNetwork(net) != null
+
+    /**
+     * A Relay connection proves the desktop is online. If a physical LAN is present, open one
+     * bounded NSD window on that exact Network. Thirty seconds is long enough to survive a missed
+     * multicast/advertisement race without turning discovery into a periodic background activity.
+     */
+    private fun maybeRecheckLanAfterRelay(preferredLan: Network? = null) {
         val viaRelay = relayAttemptConnected && relayAttempt != null
-        val lan = networkHasLan()
-        if (!shouldRecheckLanAfterRelay(viaRelay, lan, relayLanRecheckDone)) return
+        val lan = physicalLanNetwork(preferredLan)
+        if (!shouldRecheckLanAfterRelay(viaRelay, lan != null, relayLanRecheckDone) || lan == null) return
         relayLanRecheckDone = true
-        Log.i(TAG, "relay linked on a LAN-capable network; checking once for direct desktop")
-        discovery.burst()
+        Log.i(TAG, "relay linked with physical LAN available; opening bounded direct-handoff discovery on $lan")
+        discovery.burst(lan, RELAY_LAN_HANDOFF_DISCOVERY_MS)
     }
 
     private fun beginLanHandoff(address: InetSocketAddress) {
@@ -799,11 +843,12 @@ class SyncService : Service() {
             stopSelf()
             return
         }
-        if (networkHasLan(net)) {
-            Log.i(TAG, "network up on a LAN, bursting")
+        val lan = physicalLanNetwork(net)
+        if (lan != null) {
+            Log.i(TAG, "network up on a LAN, bursting on $lan")
             clearRelayPlan()
             LinkStatus.path = "LAN"
-            discovery.burst()
+            discovery.burst(lan)
         } else {
             Log.i(TAG, "network up off-LAN, going straight to the relay")
             dialRelay()
@@ -950,14 +995,15 @@ class SyncService : Service() {
     private fun searchPairingLan(net: Network? = null) {
         if (!pairingActive() || pairingRendezvous != null) return
         LinkStatus.state = LinkState.Pairing
-        if (!networkHasLan(net)) {
+        val lan = physicalLanNetwork(net)
+        if (lan == null) {
             LinkStatus.path = "Same Wi-Fi required"
             showPairingNotification()
             return
         }
         LinkStatus.path = "LAN · Pairing"
-        Log.i(TAG, "pairing window active; running one mDNS burst")
-        discovery.burst()
+        Log.i(TAG, "pairing window active; running one mDNS burst on $lan")
+        discovery.burst(lan)
     }
 
     private fun cancelPairing(resumeOldPeer: Boolean) {

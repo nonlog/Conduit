@@ -1,8 +1,10 @@
 package com.conduit.sync
 
 import android.content.Context
+import android.net.Network
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -32,6 +34,7 @@ class Discovery(
     private val onEmpty: () -> Unit = {},
 ) {
     private val nsd = context.getSystemService(NsdManager::class.java)
+    private val executor = context.mainExecutor
     private val handler = Handler(Looper.getMainLooper())
     private val deadline = Runnable {
         Log.d(TAG, "burst found nothing")
@@ -42,7 +45,7 @@ class Discovery(
     /** Guarded by `this`; the platform's callbacks arrive on its own threads. */
     private var listener: NsdManager.DiscoveryListener? = null
 
-    fun burst() {
+    fun burst(network: Network? = null, durationMs: Long = BURST_MS) {
         synchronized(this) {
             if (listener != null) {
                 Log.d(TAG, "burst already running")
@@ -50,8 +53,21 @@ class Discovery(
             }
             val fresh = Listener()
             listener = fresh
-            handler.postDelayed(deadline, BURST_MS)
-            nsd.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, fresh)
+            handler.postDelayed(deadline, durationMs.coerceAtLeast(1L))
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && network != null) {
+                Log.d(TAG, "burst starting on $network for " + durationMs + "ms")
+                nsd.discoverServices(
+                    SERVICE_TYPE,
+                    NsdManager.PROTOCOL_DNS_SD,
+                    network,
+                    executor,
+                    fresh,
+                )
+            } else {
+                Log.d(TAG, "burst starting on default discovery path for " + durationMs + "ms")
+                @Suppress("DEPRECATION")
+                nsd.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, fresh)
+            }
         }
     }
 
@@ -69,8 +85,13 @@ class Discovery(
     private inner class Listener : NsdManager.DiscoveryListener {
         override fun onServiceFound(info: NsdServiceInfo) {
             Log.d(TAG, "found ${info.serviceName}")
-            @Suppress("DEPRECATION") // registerServiceInfoCallback is API 34; minSdk is 29.
-            nsd.resolveService(info, Resolver())
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                @Suppress("DEPRECATION") // Kept for minSdk 29 compatibility; callback is bounded.
+                nsd.resolveService(info, executor, Resolver())
+            } else {
+                @Suppress("DEPRECATION")
+                nsd.resolveService(info, Resolver())
+            }
         }
 
         override fun onServiceLost(info: NsdServiceInfo) {

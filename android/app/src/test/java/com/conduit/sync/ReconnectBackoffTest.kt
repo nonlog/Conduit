@@ -5,7 +5,7 @@ import org.junit.Test
 
 class ReconnectBackoffTest {
     @Test
-    fun relayLanRecheckRunsOncePerNetworkAndOnlyOnLan() {
+    fun relayLanHandoffWindowRequiresRelayLanAndNoActiveWindow() {
         assertEquals(true, shouldRecheckLanAfterRelay(true, true, false))
         assertEquals(false, shouldRecheckLanAfterRelay(true, true, true))
         assertEquals(false, shouldRecheckLanAfterRelay(true, false, false))
