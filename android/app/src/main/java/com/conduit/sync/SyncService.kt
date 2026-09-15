@@ -1085,6 +1085,9 @@ class SyncService : Service() {
     }
 
     private fun cancelPairing(resumeOldPeer: Boolean) {
+        // A trusted peer hello arrives on every normal reconnect. Pairing cleanup is allowed to
+        // touch discovery/foreground state only when a real Pair-new window is actually open.
+        if (!pairingActive()) return
         pairingUntilUptimeMs = 0L
         pairingRendezvous = null
         LinkStatus.pairing = false
@@ -1138,8 +1141,8 @@ class SyncService : Service() {
                 .onSuccess { Log.i(TAG, "paired with $deviceId, relay rendezvous stored") }
                 .onFailure { Log.w(TAG, "could not store the peer id; relay stays unavailable", it) }
         }
-        cancelPairing(resumeOldPeer = false)
         if (completedPairing) {
+            cancelPairing(resumeOldPeer = false)
             LinkStatus.path = completedPairingPath(completedViaRelay, completedRelayId)
         }
     }
