@@ -5,11 +5,12 @@ import org.junit.Test
 
 class ReconnectBackoffTest {
     @Test
-    fun vpnUnderlyingRouteChangesAreDistinct() {
-        assertEquals("vpn-wifi", routeClassForTransports(true, true, false, false))
-        assertEquals("vpn-cellular", routeClassForTransports(true, false, false, true))
-        assertEquals("wifi", routeClassForTransports(false, true, false, false))
-        assertEquals("cellular", routeClassForTransports(false, false, false, true))
+    fun onlyProvenLiveSessionGetsImmediateForegroundRecovery() {
+        assertEquals(true, shouldRecoverEstablishedLinkImmediately(true, true, true, false))
+        assertEquals(false, shouldRecoverEstablishedLinkImmediately(false, true, true, false))
+        assertEquals(false, shouldRecoverEstablishedLinkImmediately(true, false, true, false))
+        assertEquals(false, shouldRecoverEstablishedLinkImmediately(true, true, false, false))
+        assertEquals(false, shouldRecoverEstablishedLinkImmediately(true, true, true, true))
     }
 
     @Test
