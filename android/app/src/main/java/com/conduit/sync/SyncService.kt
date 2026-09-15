@@ -62,6 +62,13 @@ private const val RETRY_MAX_MS = 300_000L
  */
 private const val RECOVERY_RETRY_MAX_MS = 60_000L
 private const val RECOVERY_WINDOW_MS = 10L * 60L * 1000L
+/**
+ * Keep an already-foreground link continuously foreground across a short reconnect/Relay
+ * rendezvous. Dropping foreground for even a second here makes some OEM freezers classify the
+ * process as background before Noise finishes, which can kill the brand-new session. If the peer
+ * really is offline, this one-shot grace expires and the notification is removed as requested.
+ */
+private const val TRANSIENT_RECONNECT_FOREGROUND_GRACE_MS = 15_000L
 private const val RELAY_FAILOVER_DELAY_MS = 150L
 private const val UNSTABLE_RELAY_SESSION_MS = 60_000L
 /** Bound, event-driven window for upgrading an already-linked Relay session to direct LAN. */
@@ -69,6 +76,15 @@ private const val RELAY_LAN_HANDOFF_DISCOVERY_MS = 30_000L
 
 internal fun retryCeilingMs(nowUptimeMs: Long, recoveryUntilUptimeMs: Long): Long =
     if (nowUptimeMs < recoveryUntilUptimeMs) RECOVERY_RETRY_MAX_MS else RETRY_MAX_MS
+
+internal fun shouldHoldForegroundForTransientReconnect(
+    foregroundVisible: Boolean,
+    pairing: Boolean,
+    state: LinkState,
+): Boolean =
+    foregroundVisible &&
+        !pairing &&
+        (state == LinkState.Waiting || state == LinkState.Retrying)
 
 /** Once pairing succeeds, the route chip describes the live transport instead of pairing state. */
 internal fun completedPairingPath(viaRelay: Boolean, relayId: String?): String =
@@ -232,6 +248,15 @@ class SyncService : Service() {
      * therefore cannot keep the phone or radio awake merely because wall-clock time is passing.
      */
     private var recoveryUntilUptimeMs = 0L
+    private var offlineDemoteScheduled = false
+    private val offlineDemote = Runnable {
+        offlineDemoteScheduled = false
+        if (destroyed || !Settings.linkWanted || pairingActive() || LinkStatus.state == LinkState.Connected) {
+            return@Runnable
+        }
+        Log.i(TAG, "transient reconnect grace expired; entering notification-free offline mode")
+        hideLinkNotification()
+    }
     private val retry = Runnable {
         if (destroyed || !Settings.linkWanted || pairingActive()) return@Runnable
         Log.i(TAG, "retrying the link")
@@ -382,6 +407,7 @@ class SyncService : Service() {
                             }
                             cancelRetry()
                             main.post {
+                                cancelOfflineDemotion()
                                 showLinkedNotification()
                                 maybeRecheckLanAfterRelay()
                             }
@@ -468,6 +494,7 @@ class SyncService : Service() {
                                     main.removeCallbacks(retry)
                                     retryMs = RETRY_MIN_MS
                                     showConnectingNotification()
+                                    scheduleOfflineDemotion()
                                     Log.i(TAG, "established session lost; trying one immediate recovery")
                                     redial()
                                     return@post
@@ -491,7 +518,22 @@ class SyncService : Service() {
                             }
                         }
                         LinkState.Waiting, LinkState.Retrying -> main.post {
-                            showPairingOrHideOfflineNotification()
+                            if (pairingActive()) {
+                                showPairingNotification()
+                            } else if (shouldHoldForegroundForTransientReconnect(
+                                    foregroundVisible,
+                                    pairing = false,
+                                    state = state,
+                                )
+                            ) {
+                                // Relay emits Waiting as soon as its socket is parked, before Noise has
+                                // had a chance to complete. That is a transient rendezvous state, not proof
+                                // that the desktop is offline. Keep the existing FGS continuous briefly.
+                                showConnectingNotification()
+                                scheduleOfflineDemotion()
+                            } else {
+                                hideLinkNotification()
+                            }
                         }
                         LinkState.Pairing -> main.post { showPairingNotification() }
                     }
@@ -692,6 +734,7 @@ class SyncService : Service() {
         // retry cannot fire against a [Link] that close() is about to spend.
         destroyed = true
         main.removeCallbacks(retry)
+        cancelOfflineDemotion()
         main.removeCallbacks(pairingTimeout)
         main.removeCallbacks(pairingRetry)
         main.removeCallbacks(wallpaperRefresh)
@@ -1281,6 +1324,7 @@ class SyncService : Service() {
 
     private fun showPairingNotification() {
         if (!pairingActive()) return
+        cancelOfflineDemotion()
         showLinkNotification("Pairing · sync paused")
     }
 
@@ -1297,6 +1341,7 @@ class SyncService : Service() {
 
     private fun showLinkedNotification() {
         if (LinkStatus.state != LinkState.Connected) return
+        cancelOfflineDemotion()
         val peer = knownPeerName ?: LinkStatus.peerName ?: "desktop"
         showLinkNotification("Linked to $peer")
     }
@@ -1327,7 +1372,24 @@ class SyncService : Service() {
         if (LinkStatus.state == LinkState.Connected) showLinkedNotification()
     }
 
+    private fun scheduleOfflineDemotion() {
+        if (offlineDemoteScheduled || !foregroundVisible || pairingActive() ||
+            LinkStatus.state == LinkState.Connected
+        ) {
+            return
+        }
+        offlineDemoteScheduled = true
+        main.postDelayed(offlineDemote, TRANSIENT_RECONNECT_FOREGROUND_GRACE_MS)
+    }
+
+    private fun cancelOfflineDemotion() {
+        if (!offlineDemoteScheduled) return
+        offlineDemoteScheduled = false
+        main.removeCallbacks(offlineDemote)
+    }
+
     private fun hideLinkNotification() {
+        cancelOfflineDemotion()
         if (foregroundVisible) {
             stopForeground(STOP_FOREGROUND_REMOVE)
             foregroundVisible = false

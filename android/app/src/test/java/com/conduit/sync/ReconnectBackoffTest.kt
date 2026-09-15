@@ -5,6 +5,50 @@ import org.junit.Test
 
 class ReconnectBackoffTest {
     @Test
+    fun parkedRelayDoesNotDropAnExistingForegroundRecovery() {
+        assertEquals(
+            true,
+            shouldHoldForegroundForTransientReconnect(
+                foregroundVisible = true,
+                pairing = false,
+                state = LinkState.Waiting,
+            ),
+        )
+        assertEquals(
+            true,
+            shouldHoldForegroundForTransientReconnect(
+                foregroundVisible = true,
+                pairing = false,
+                state = LinkState.Retrying,
+            ),
+        )
+        assertEquals(
+            false,
+            shouldHoldForegroundForTransientReconnect(
+                foregroundVisible = false,
+                pairing = false,
+                state = LinkState.Waiting,
+            ),
+        )
+        assertEquals(
+            false,
+            shouldHoldForegroundForTransientReconnect(
+                foregroundVisible = true,
+                pairing = true,
+                state = LinkState.Waiting,
+            ),
+        )
+        assertEquals(
+            false,
+            shouldHoldForegroundForTransientReconnect(
+                foregroundVisible = true,
+                pairing = false,
+                state = LinkState.Connected,
+            ),
+        )
+    }
+
+    @Test
     fun onlyProvenLiveSessionGetsImmediateForegroundRecovery() {
         assertEquals(true, shouldRecoverEstablishedLinkImmediately(true, true, true, false))
         assertEquals(false, shouldRecoverEstablishedLinkImmediately(false, true, true, false))
