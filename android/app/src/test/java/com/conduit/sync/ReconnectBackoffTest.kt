@@ -5,6 +5,14 @@ import org.junit.Test
 
 class ReconnectBackoffTest {
     @Test
+    fun vpnUnderlyingRouteChangesAreDistinct() {
+        assertEquals("vpn-wifi", routeClassForTransports(true, true, false, false))
+        assertEquals("vpn-cellular", routeClassForTransports(true, false, false, true))
+        assertEquals("wifi", routeClassForTransports(false, true, false, false))
+        assertEquals("cellular", routeClassForTransports(false, false, false, true))
+    }
+
+    @Test
     fun relayLanHandoffWindowRequiresRelayLanAndNoActiveWindow() {
         assertEquals(true, shouldRecheckLanAfterRelay(true, true, false))
         assertEquals(false, shouldRecheckLanAfterRelay(true, true, true))

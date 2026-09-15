@@ -85,6 +85,23 @@ internal fun shouldRecheckLanAfterRelay(
     alreadyChecked: Boolean,
 ): Boolean = connectedViaRelay && networkHasLan && !alreadyChecked
 
+/** Stable transport fingerprint used to notice an in-place VPN underlying-network handover. */
+internal fun routeClassForTransports(
+    vpn: Boolean,
+    wifi: Boolean,
+    ethernet: Boolean,
+    cellular: Boolean,
+): String = when {
+    vpn && wifi -> "vpn-wifi"
+    vpn && ethernet -> "vpn-ethernet"
+    vpn && cellular -> "vpn-cellular"
+    vpn -> "vpn"
+    wifi -> "wifi"
+    ethernet -> "ethernet"
+    cellular -> "cellular"
+    else -> "other"
+}
+
 /** Sent by the UI. A disconnect has to be remembered, or START_STICKY undoes the user's tap. */
 const val ACTION_CONNECT = "com.conduit.sync.CONNECT"
 const val ACTION_DISCONNECT = "com.conduit.sync.DISCONNECT"
@@ -167,6 +184,13 @@ class SyncService : Service() {
 
     /** Set from the network callback, so a re-dial never has to ask the platform. */
     @Volatile private var networkUp = false
+    /** Android may keep one VPN Network object while its underlying route changes Wi-Fi <-> cellular. */
+    @Volatile private var defaultNetwork: Network? = null
+    @Volatile private var defaultRouteClass: String? = null
+    /** Suppresses the old reader's Idle callback while an event-driven route replacement is queued. */
+    @Volatile private var networkRedialInProgress = false
+    /** Prevents an intentional transport replacement from looking like an unexpected session loss. */
+    @Volatile private var suppressNextSessionLostRecovery = false
 
     /** Guards duplicate callbacks while one bounded Relay-to-LAN discovery window is active/done. */
     @Volatile private var relayLanRecheckDone = false
@@ -250,6 +274,10 @@ class SyncService : Service() {
      */
     private val network = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(net: Network) {
+            val previous = defaultNetwork
+            val route = routeClass(connectivity.getNetworkCapabilities(net))
+            defaultNetwork = net
+            defaultRouteClass = route
             networkUp = true
             relayLanRecheckDone = false
             lanHandoffInProgress = false
@@ -257,17 +285,54 @@ class SyncService : Service() {
             // that just failed, so it starts from the floor instead of serving out a
             // backoff earned on a network that no longer exists.
             cancelRetry()
-            if (pairingActive()) retryPairing(net) else redial(net)
+            if (previous != null && previous != net && LinkStatus.state != LinkState.Idle) {
+                restartForNetwork(net, "default network changed $previous -> $net ($route)")
+            } else if (pairingActive()) {
+                retryPairing(net)
+            } else {
+                redial(net)
+            }
+        }
+
+        override fun onCapabilitiesChanged(net: Network, caps: NetworkCapabilities) {
+            if (net != defaultNetwork) return
+            val previous = defaultRouteClass
+            val route = routeClass(caps)
+            defaultRouteClass = route
+            networkUp = true
+            if (previous == null || previous == route) return
+            // VPN apps commonly preserve the same Android Network while changing their
+            // underlying path from Wi-Fi to cellular (or back). Existing TCP belongs to the old
+            // route, so replace it at this system event instead of waiting for a socket timeout.
+            restartForNetwork(net, "default route changed $previous -> $route")
         }
 
         override fun onLost(net: Network) {
-            // Suspend, not destroy: the socket is dead but [Link] and its sender thread
-            // survive, so a reconnect reuses them instead of allocating a fresh set.
-            Log.i(TAG, "network gone, suspending session")
+            if (defaultNetwork != null && net != defaultNetwork) {
+                Log.d(TAG, "ignoring stale default-network loss for $net")
+                return
+            }
+            defaultNetwork = null
+            defaultRouteClass = null
+
+            // A replacement may already be active by the time Android delivers onLost. Do not
+            // overwrite that live state with networkUp=false and strand the reconnect in Doze.
+            val replacement = connectivity.activeNetwork
+            if (replacement != null && replacement != net) {
+                defaultNetwork = replacement
+                defaultRouteClass = routeClass(connectivity.getNetworkCapabilities(replacement))
+                networkUp = true
+                relayLanRecheckDone = false
+                lanHandoffInProgress = false
+                restartForNetwork(replacement, "lost $net; replacement already active")
+                return
+            }
+
+            // Suspend, not destroy: the socket is dead but [Link] and its sender thread survive.
+            Log.i(TAG, "default network gone, suspending session")
             networkUp = false
             relayLanRecheckDone = false
             lanHandoffInProgress = false
-            // Nothing to count down against; onAvailable is what resumes this.
             main.removeCallbacks(retry)
             link.disconnect()
         }
@@ -391,6 +456,11 @@ class SyncService : Service() {
                                 if (lanHandoffInProgress) {
                                     lanHandoffInProgress = false
                                     Log.i(TAG, "relay session closed for LAN handoff")
+                                    return@post
+                                }
+                                if (networkRedialInProgress) {
+                                    networkRedialInProgress = false
+                                    Log.i(TAG, "old session closed for network-route replacement")
                                     return@post
                                 }
                                 if (pairingActive()) {
@@ -542,11 +612,26 @@ class SyncService : Service() {
                 }
 
                 override fun onSessionLost() {
-                    // Deliberately does not dial: [onState] already scheduled a retry for
-                    // this same teardown, and a second dial here would race it. The backoff
-                    // was reset to its minimum when this session connected, so a link that
-                    // was working comes back on the short interval anyway.
-                    Log.i(TAG, "session lost")
+                    // A proven session loss is itself a wakeful event. Use that one opportunity
+                    // for an immediate recovery instead of relying on Handler.postDelayed: uptime
+                    // timers stop advancing in deep Doze, which used to leave a screen-off phone
+                    // disconnected until it woke again. A failed immediate attempt still falls
+                    // back to the ordinary bounded exponential retry path.
+                    main.post {
+                        if (suppressNextSessionLostRecovery) {
+                            suppressNextSessionLostRecovery = false
+                            Log.i(TAG, "session loss belongs to an intentional transport replacement")
+                            return@post
+                        }
+                        if (destroyed || !Settings.linkWanted || pairingActive() || !networkUp) {
+                            Log.i(TAG, "session lost; immediate recovery not applicable")
+                            return@post
+                        }
+                        main.removeCallbacks(retry)
+                        retryMs = RETRY_MIN_MS
+                        Log.i(TAG, "proven session lost; retrying immediately on current network")
+                        redial(defaultNetwork ?: connectivity.activeNetwork)
+                    }
                 }
             },
             openIncomingFile = { offer -> Files.Incoming.begin(contentResolver, offer) },
@@ -777,6 +862,34 @@ class SyncService : Service() {
      * rather than run and waited out: eight seconds of multicast on a mobile network is
      * eight seconds of radio for a guaranteed miss.
      */
+    private fun routeClass(caps: NetworkCapabilities?): String = routeClassForTransports(
+        vpn = caps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true,
+        wifi = caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true,
+        ethernet = caps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true,
+        cellular = caps?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true,
+    )
+
+    private fun restartForNetwork(net: Network, reason: String) = main.post {
+        if (destroyed || !Settings.linkWanted) return@post
+        val tracked = defaultNetwork
+        val active = connectivity.activeNetwork
+        if (tracked != null && net != tracked && net != active) return@post
+
+        Log.i(TAG, "network route replacement: $reason")
+        main.removeCallbacks(retry)
+        retryMs = RETRY_MIN_MS
+        relayLanRecheckDone = false
+        discovery.stop()
+
+        if (LinkStatus.state != LinkState.Idle) {
+            networkRedialInProgress = true
+            if (LinkStatus.state == LinkState.Connected) suppressNextSessionLostRecovery = true
+            link.disconnect()
+        }
+        clearRelayPlan()
+        if (pairingActive()) retryPairing(net) else redial(net)
+    }
+
     private fun isPhysicalLanNetwork(net: Network): Boolean {
         val caps = connectivity.getNetworkCapabilities(net) ?: return false
         if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return false
@@ -817,6 +930,7 @@ class SyncService : Service() {
             LinkStatus.state != LinkState.Connected || !relayAttemptConnected) return
         Log.i(TAG, "LAN desktop appeared at $address; replacing Relay session")
         lanHandoffInProgress = true
+        suppressNextSessionLostRecovery = true
         discovery.stop()
         LinkStatus.path = "LAN"
         link.disconnect()
