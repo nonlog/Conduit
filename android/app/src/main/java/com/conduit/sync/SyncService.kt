@@ -69,6 +69,11 @@ private const val RECOVERY_WINDOW_MS = 10L * 60L * 1000L
  * really is offline, this one-shot grace expires and the notification is removed as requested.
  */
 private const val TRANSIENT_RECONNECT_FOREGROUND_GRACE_MS = 15_000L
+/**
+ * Some OEM notification services apply stopForeground asynchronously. A second, guarded cancel
+ * after that state transition removes an otherwise stranded FGS notification without polling.
+ */
+private const val DETACHED_LINK_NOTIFICATION_CANCEL_DELAY_MS = 500L
 private const val RELAY_FAILOVER_DELAY_MS = 150L
 private const val UNSTABLE_RELAY_SESSION_MS = 60_000L
 /** Bound, event-driven window for upgrading an already-linked Relay session to direct LAN. */
@@ -85,6 +90,12 @@ internal fun shouldHoldForegroundForTransientReconnect(
     foregroundVisible &&
         !pairing &&
         (state == LinkState.Waiting || state == LinkState.Retrying)
+
+internal fun shouldCancelDetachedLinkNotification(
+    foregroundVisible: Boolean,
+    pairing: Boolean,
+    state: LinkState,
+): Boolean = !foregroundVisible && !pairing && state != LinkState.Connected
 
 /** Once pairing succeeds, the route chip describes the live transport instead of pairing state. */
 internal fun completedPairingPath(viaRelay: Boolean, relayId: String?): String =
@@ -256,6 +267,18 @@ class SyncService : Service() {
         }
         Log.i(TAG, "transient reconnect grace expired; entering notification-free offline mode")
         hideLinkNotification()
+    }
+    private val detachedLinkNotificationCancel = Runnable {
+        if (!shouldCancelDetachedLinkNotification(
+                foregroundVisible = foregroundVisible,
+                pairing = pairingActive(),
+                state = LinkStatus.state,
+            )
+        ) {
+            return@Runnable
+        }
+        Log.d(TAG, "clearing detached link notification after foreground demotion")
+        getSystemService(NotificationManager::class.java).cancel(LINK_NOTIFICATION_ID)
     }
     private val retry = Runnable {
         if (destroyed || !Settings.linkWanted || pairingActive()) return@Runnable
@@ -735,6 +758,7 @@ class SyncService : Service() {
         destroyed = true
         main.removeCallbacks(retry)
         cancelOfflineDemotion()
+        main.removeCallbacks(detachedLinkNotificationCancel)
         main.removeCallbacks(pairingTimeout)
         main.removeCallbacks(pairingRetry)
         main.removeCallbacks(wallpaperRefresh)
@@ -1350,6 +1374,7 @@ class SyncService : Service() {
     }
 
     private fun showLinkNotification(content: String) {
+        main.removeCallbacks(detachedLinkNotificationCancel)
         val notice = linkNotification(content)
         if (foregroundVisible) {
             getSystemService(NotificationManager::class.java).notify(LINK_NOTIFICATION_ID, notice)
@@ -1393,12 +1418,26 @@ class SyncService : Service() {
 
     private fun hideLinkNotification() {
         cancelOfflineDemotion()
+        main.removeCallbacks(detachedLinkNotificationCancel)
+        val manager = getSystemService(NotificationManager::class.java)
         if (foregroundVisible) {
             stopForeground(STOP_FOREGROUND_REMOVE)
             foregroundVisible = false
         }
-        // Defensive cancel for OEMs that leave the old foreground entry visible briefly.
-        getSystemService(NotificationManager::class.java).cancel(LINK_NOTIFICATION_ID)
+        // Cancel immediately, then once more after the foreground-state binder transition. Some
+        // OEM notification services ignore the first cancel while the old FGS flag is still live.
+        manager.cancel(LINK_NOTIFICATION_ID)
+        if (!destroyed && shouldCancelDetachedLinkNotification(
+                foregroundVisible = foregroundVisible,
+                pairing = pairingActive(),
+                state = LinkStatus.state,
+            )
+        ) {
+            main.postDelayed(
+                detachedLinkNotificationCancel,
+                DETACHED_LINK_NOTIFICATION_CANCEL_DELAY_MS,
+            )
+        }
     }
 
     private fun linkNotification(content: String): Notification {

@@ -49,6 +49,15 @@ class ReconnectBackoffTest {
     }
 
     @Test
+    fun detachedNotificationCleanupCannotDeleteALiveOrPairingNotification() {
+        assertEquals(true, shouldCancelDetachedLinkNotification(false, false, LinkState.Retrying))
+        assertEquals(true, shouldCancelDetachedLinkNotification(false, false, LinkState.Idle))
+        assertEquals(false, shouldCancelDetachedLinkNotification(true, false, LinkState.Retrying))
+        assertEquals(false, shouldCancelDetachedLinkNotification(false, true, LinkState.Retrying))
+        assertEquals(false, shouldCancelDetachedLinkNotification(false, false, LinkState.Connected))
+    }
+
+    @Test
     fun onlyProvenLiveSessionGetsImmediateForegroundRecovery() {
         assertEquals(true, shouldRecoverEstablishedLinkImmediately(true, true, true, false))
         assertEquals(false, shouldRecoverEstablishedLinkImmediately(false, true, true, false))
