@@ -18,12 +18,28 @@ internal static class TaskbarIdentity
     private const int SmCyIcon = 12;
     private const int SmCxSmIcon = 49;
     private const int SmCySmIcon = 50;
+    private const int SwRestore = 9;
     private static IntPtr _smallIcon;
     private static IntPtr _bigIcon;
 
     public static void SetProcessIdentity()
     {
         try { _ = SetCurrentProcessExplicitAppUserModelID(AppUserModelId); } catch { }
+    }
+
+    public static bool ActivateExistingWindow()
+    {
+        try
+        {
+            var hwnd = FindWindow(null, "Conduit");
+            if (hwnd == IntPtr.Zero) return false;
+            _ = ShowWindow(hwnd, SwRestore);
+            return SetForegroundWindow(hwnd);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     public static void Apply(Window window, string iconPath)
@@ -113,6 +129,15 @@ internal static class TaskbarIdentity
 
     [DllImport("user32.dll")]
     private static extern int GetSystemMetrics(int index);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr FindWindow(string? className, string? windowName);
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hwnd, int command);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hwnd);
 
     [DllImport("shell32.dll")]
     private static extern int SHGetPropertyStoreForWindow(

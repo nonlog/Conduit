@@ -11,10 +11,10 @@ use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 use std::sync::{mpsc, OnceLock};
 use std::thread;
 use std::time::Duration;
-use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows_sys::Win32::System::Threading::{
-    CreateProcessW, PROCESS_INFORMATION, STARTF_FORCEOFFFEEDBACK, STARTUPINFOW,
+    CreateProcessW, GetExitCodeProcess, PROCESS_INFORMATION, STARTF_FORCEOFFFEEDBACK, STARTUPINFOW,
 };
 use windows_sys::Win32::UI::Controls::SetWindowTheme;
 use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
@@ -36,6 +36,7 @@ static CONFIG_DIR: OnceLock<PathBuf> = OnceLock::new();
 static EXIT_TX: OnceLock<tokio::sync::mpsc::UnboundedSender<()>> = OnceLock::new();
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 static TRAY_ICON: AtomicIsize = AtomicIsize::new(0);
+static CONTROL_PROCESS: AtomicIsize = AtomicIsize::new(0);
 
 pub struct Tray {
     thread: Option<thread::JoinHandle<()>>,
@@ -270,6 +271,7 @@ unsafe fn run(ready: mpsc::SyncSender<std::result::Result<isize, String>>) -> Re
     if !current.is_null() {
         DestroyIcon(current);
     }
+    release_control_process_handle();
     Ok(())
 }
 
@@ -377,6 +379,7 @@ unsafe fn show_menu(hwnd: HWND) {
 }
 
 unsafe fn request_exit(hwnd: HWND) {
+    release_control_process_handle();
     let icon = TRAY_ICON.load(Ordering::Relaxed) as HICON;
     if !icon.is_null() {
         let _ = Shell_NotifyIconW(NIM_DELETE, &data(hwnd, icon));
@@ -385,6 +388,35 @@ unsafe fn request_exit(hwnd: HWND) {
         let _ = tx.send(());
     }
     DestroyWindow(hwnd);
+}
+
+unsafe fn release_control_process_handle() {
+    let handle = CONTROL_PROCESS.swap(0, Ordering::Relaxed) as HANDLE;
+    if !handle.is_null() {
+        CloseHandle(handle);
+    }
+}
+
+unsafe fn control_launch_in_progress() -> bool {
+    let handle = CONTROL_PROCESS.load(Ordering::Relaxed) as HANDLE;
+    if handle.is_null() {
+        return false;
+    }
+
+    let mut exit_code = 0u32;
+    if GetExitCodeProcess(handle, &mut exit_code) != 0 && exit_code == 259 {
+        return true;
+    }
+
+    release_control_process_handle();
+    false
+}
+
+unsafe fn remember_control_process(handle: HANDLE) {
+    let previous = CONTROL_PROCESS.swap(handle as isize, Ordering::Relaxed) as HANDLE;
+    if !previous.is_null() && previous != handle {
+        CloseHandle(previous);
+    }
 }
 
 unsafe fn open_control() {
@@ -398,18 +430,28 @@ unsafe fn open_control() {
         existing = FindWindowW(null(), title.as_ptr());
     }
     if !existing.is_null() {
+        release_control_process_handle();
         ShowWindow(existing, SW_RESTORE);
         let _ = SetForegroundWindow(existing);
         return;
     }
+
+    // Cold-starting the self-contained WinUI process can take long enough for Explorer to deliver
+    // another double-click before its first top-level window exists. Keep the child process handle
+    // and refuse duplicate launches while that exact process is alive. No timer or polling is used.
+    if control_launch_in_progress() {
+        return;
+    }
+
     if let Some(path) = CONTROL_PATH.get() {
-        if let Err(e) = launch_control(path) {
-            tracing::warn!(error = %e, "could not launch Conduit UI from tray");
+        match launch_control(path) {
+            Ok(process) => remember_control_process(process),
+            Err(e) => tracing::warn!(error = %e, "could not launch Conduit UI from tray"),
         }
     }
 }
 
-unsafe fn launch_control(path: &Path) -> Result<()> {
+unsafe fn launch_control(path: &Path) -> Result<HANDLE> {
     let application = wide(path.as_os_str());
     let mut startup = STARTUPINFOW::default();
     startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
@@ -440,8 +482,5 @@ unsafe fn launch_control(path: &Path) -> Result<()> {
     if !process.hThread.is_null() {
         CloseHandle(process.hThread);
     }
-    if !process.hProcess.is_null() {
-        CloseHandle(process.hProcess);
-    }
-    Ok(())
+    Ok(process.hProcess)
 }
