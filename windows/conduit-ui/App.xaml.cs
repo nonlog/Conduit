@@ -76,6 +76,10 @@ public partial class App : Application
         }
         catch { }
 
+        // Update the Start-menu/AUMID icon source before Explorer creates the taskbar button.
+        // The window icon is deliberately applied again after activation because sparse package
+        // identity can replace WM_SETICON during first taskbar-button creation.
+        ApplyThemeIcon();
         MainWindow.Activate();
         // Package/Shell identity is finalized when the first taskbar button is created. Reapply
         // the themed Win32 icon only after activation so the sparse ShareTarget identity cannot
@@ -171,6 +175,7 @@ public partial class App : Application
         }
         if (File.Exists(icon))
         {
+            TaskbarIdentity.PrepareShellIdentity(icon);
             try { MainWindow.AppWindow.SetIcon(icon); } catch { }
             TaskbarIdentity.Apply(MainWindow, icon);
         }

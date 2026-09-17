@@ -27,6 +27,59 @@ internal static class TaskbarIdentity
         try { _ = SetCurrentProcessExplicitAppUserModelID(AppUserModelId); } catch { }
     }
 
+    public static void PrepareShellIdentity(string iconPath)
+    {
+        if (string.IsNullOrWhiteSpace(iconPath) || !File.Exists(iconPath)) return;
+
+        // AppUserModelID is the grouping key Explorer uses for Conduit's taskbar button. Keep its
+        // icon source in sync with the shell palette instead of leaving the install-time choice
+        // pinned forever. This is invoked only at launch/theme-change events.
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(
+                @"Software\Classes\AppUserModelId\Conduit.Desktop");
+            key?.SetValue("DisplayName", "Conduit", Microsoft.Win32.RegistryValueKind.String);
+            key?.SetValue("IconUri", iconPath, Microsoft.Win32.RegistryValueKind.String);
+            key?.SetValue("IconBackgroundColor", "00000000", Microsoft.Win32.RegistryValueKind.String);
+            key?.SetValue("ShowInActionCenter", 1, Microsoft.Win32.RegistryValueKind.DWord);
+        }
+        catch { }
+
+        // The Start-menu shortcut carries the same AUMID and can override WM_SETICON for the
+        // taskbar group. Rewrite only its icon location when the palette actually changed.
+        object? comObject = null;
+        try
+        {
+            var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            if (string.IsNullOrWhiteSpace(appData)) return;
+            var shortcut = Path.Combine(appData, "Microsoft", "Windows", "Start Menu", "Programs", "Conduit.lnk");
+            if (!File.Exists(shortcut)) return;
+
+            var shellLink = (IShellLinkW)new ShellLinkClass();
+            comObject = shellLink;
+            var persist = (System.Runtime.InteropServices.ComTypes.IPersistFile)shellLink;
+            persist.Load(shortcut, 0);
+
+            var currentPath = new StringBuilder(1024);
+            shellLink.GetIconLocation(currentPath, currentPath.Capacity, out var currentIndex);
+            if (currentIndex == 0 && string.Equals(currentPath.ToString(), iconPath, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            shellLink.SetIconLocation(iconPath, 0);
+            persist.Save(shortcut, true);
+            SHChangeNotify(0x08000000, 0, IntPtr.Zero, IntPtr.Zero); // SHCNE_ASSOCCHANGED
+        }
+        catch
+        {
+            // The window's AppWindow/WM_SETICON path below still supplies a usable fallback.
+        }
+        finally
+        {
+            if (comObject is not null && Marshal.IsComObject(comObject))
+                Marshal.FinalReleaseComObject(comObject);
+        }
+    }
+
     public static bool ActivateExistingWindow()
     {
         try
@@ -117,6 +170,9 @@ internal static class TaskbarIdentity
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     private static extern int SetCurrentProcessExplicitAppUserModelID(string appId);
 
+    [DllImport("shell32.dll")]
+    private static extern void SHChangeNotify(uint eventId, uint flags, IntPtr item1, IntPtr item2);
+
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern IntPtr LoadImage(IntPtr instance, string name, uint type, int width, int height, uint flags);
 
@@ -163,6 +219,35 @@ internal static class TaskbarIdentity
     {
         [FieldOffset(0)] public ushort VariantType;
         [FieldOffset(8)] public IntPtr PointerValue;
+    }
+
+    [ComImport]
+    [Guid("00021401-0000-0000-C000-000000000046")]
+    private class ShellLinkClass { }
+
+    [ComImport]
+    [Guid("000214F9-0000-0000-C000-000000000046")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IShellLinkW
+    {
+        void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder file, int cch, IntPtr findData, uint flags);
+        void GetIDList(out IntPtr pidl);
+        void SetIDList(IntPtr pidl);
+        void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder name, int cch);
+        void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string name);
+        void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder dir, int cch);
+        void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string dir);
+        void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder args, int cch);
+        void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string args);
+        void GetHotkey(out short hotkey);
+        void SetHotkey(short hotkey);
+        void GetShowCmd(out int showCmd);
+        void SetShowCmd(int showCmd);
+        void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder iconPath, int cch, out int iconIndex);
+        void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string iconPath, int iconIndex);
+        void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string path, uint reserved);
+        void Resolve(IntPtr hwnd, uint flags);
+        void SetPath([MarshalAs(UnmanagedType.LPWStr)] string file);
     }
 
     [ComImport]
