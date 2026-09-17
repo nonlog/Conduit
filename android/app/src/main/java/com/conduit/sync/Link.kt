@@ -347,7 +347,7 @@ class Link(
         }
     }
 
-    /** Dials on the reader thread. A no-op while a connection is already up. */
+    /** Dials on the reader thread. An already-live session wins; an unwinding reader may be replaced. */
     fun connect(address: InetSocketAddress) = dial(address, null, null)
     /**
      * Parks at the relay under [rendezvous] and waits to be spliced onto the desktop.
@@ -360,9 +360,22 @@ class Link(
         dial(relay, rendezvous, fallbackIp)
 
     private fun dial(address: InetSocketAddress, rendezvous: String?, fallbackIp: String?) = sender.execute {
-        if (reader?.isAlive == true) {
-            Log.d(TAG, "already connected, ignoring dial to $address")
-            return@execute
+        val previousReader = reader
+        if (previousReader?.isAlive == true) {
+            if (session != null) {
+                Log.d(TAG, "already connected, ignoring dial to $address")
+                return@execute
+            }
+            // Idle is reported from the reader's finally block just before that thread exits. An
+            // event-driven recovery can therefore arrive here a few microseconds early. Wait only
+            // for that already-closing thread instead of discarding the recovery and falling back
+            // to a Doze-sensitive delayed retry.
+            previousReader.join(JOIN_TIMEOUT_MS)
+            if (previousReader.isAlive) {
+                Log.w(TAG, "previous reader is still closing; ignoring dial to $address")
+                return@execute
+            }
+            reader = null
         }
         events.onState(LinkState.Discovering, null)
         reader = Thread({ pump(address, rendezvous, fallbackIp) }, "conduit-recv").apply { start() }

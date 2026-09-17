@@ -10,6 +10,7 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $cargo = Get-Content -LiteralPath (Join-Path $repoRoot 'Cargo.toml') -Raw
 $android = Get-Content -LiteralPath (Join-Path $repoRoot 'android\app\build.gradle.kts') -Raw
 $desktop = Get-Content -LiteralPath (Join-Path $repoRoot 'windows\conduit-ui\Conduit.csproj') -Raw
+$mainPage = Get-Content -LiteralPath (Join-Path $repoRoot 'windows\conduit-ui\MainPage.xaml') -Raw
 
 $cargoMatch = [regex]::Match($cargo, '(?m)^version\s*=\s*"([^"]+)"')
 $androidMatch = [regex]::Match($android, '(?m)^\s*versionName\s*=\s*"([^"]+)"')
@@ -29,6 +30,10 @@ $bad = $versions.GetEnumerator() | Where-Object { $_.Value -ne $ExpectedVersion 
 if ($bad) {
     $details = ($versions.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ', '
     throw "Release tag version $ExpectedVersion does not match project versions: $details"
+}
+
+if ($mainPage -match 'Description="Version\s+\d+\.\d+\.\d+"') {
+    throw 'About page contains a hard-coded release version; bind it to the running binary version instead'
 }
 
 [pscustomobject]@{
