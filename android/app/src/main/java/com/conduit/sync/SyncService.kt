@@ -126,6 +126,7 @@ internal fun shouldRecoverEstablishedLinkImmediately(
 
 /** Sent by the UI. A disconnect has to be remembered, or START_STICKY undoes the user's tap. */
 const val ACTION_CONNECT = "com.conduit.sync.CONNECT"
+const val ACTION_BOOT_CONNECT = "com.conduit.sync.BOOT_CONNECT"
 const val ACTION_DISCONNECT = "com.conduit.sync.DISCONNECT"
 const val ACTION_PAIR = "com.conduit.sync.PAIR"
 const val ACTION_CANCEL_PAIR = "com.conduit.sync.CANCEL_PAIR"
@@ -711,9 +712,9 @@ class SyncService : Service() {
                 return START_STICKY
             }
         }
-        // User-initiated starts arrive through startForegroundService() and must enter foreground
-        // promptly. A START_STICKY restart has a null intent; keep that restart background-only so
-        // an offline desktop never resurrects a persistent notification by itself.
+        // Explicit UI actions and BOOT_COMPLETED restoration arrive through startForegroundService()
+        // and must enter foreground promptly. A START_STICKY restart has a null intent; keep that
+        // restart background-only so an offline desktop never resurrects a notification by itself.
         if (intent != null && intent.action != ACTION_ACCESSIBILITY_CLIP) {
             ensureStartupForeground()
         }
@@ -738,6 +739,14 @@ class SyncService : Service() {
             intent?.action == ACTION_CONNECT -> {
                 Settings.linkWanted = true
                 cancelRetry()
+                redial()
+            }
+            // Boot restore is not the same as a Connect tap: it must never override a remembered
+            // Disconnect. BootReceiver already filters this, and the service checks again so a
+            // concurrent state change cannot resurrect a link the user turned off.
+            intent?.action == ACTION_BOOT_CONNECT && Settings.linkWanted -> {
+                cancelRetry()
+                Log.i(TAG, "boot completed; restoring companion link")
                 redial()
             }
             // A null intent is the system restarting us under START_STICKY. Respecting the

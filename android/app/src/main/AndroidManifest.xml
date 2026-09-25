@@ -3,6 +3,7 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <!-- connectedDevice, not dataSync: dataSync is capped at 6 h on Android 15. -->
@@ -109,6 +110,16 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/clipboard_accessibility" />
         </service>
+        <!-- Restore the companion link after a normal unlocked boot. The receiver itself reads
+             the persisted user intent first, so an explicit Disconnect remains authoritative. -->
+        <receiver
+            android:name=".BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
         <service
             android:name=".SyncService"
             android:exported="false"
