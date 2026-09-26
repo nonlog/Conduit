@@ -19,15 +19,15 @@ data class RelayEndpoint(
  * User/runtime relay inventory. It is intentionally a tiny app-private text file rather than a
  * service or discovery protocol: reading it happens only when SyncService starts and costs no idle
  * work. The production default is the deployed US / WA / TYO / JP fleet under stable Conduit-
- * specific DNS aliases; Android still chooses only one candidate at a time and learns only from
- * real connection/transfer events.
+ * specific DNS aliases. Built-in defaults intentionally do not embed origin IP addresses;
+ * Android chooses one candidate at a time and learns only from real connection/transfer events.
  */
 object RelayCatalog {
     val defaults = listOf(
-        RelayEndpoint("us", "conduit-us.414222.xyz", 41113, "23.19.228.125"),
-        RelayEndpoint("wa", "conduit-wa.414222.xyz", 41113, "104.36.86.42"),
-        RelayEndpoint("tyo", "conduit-tyo.414222.xyz", 41113, "138.3.214.175"),
-        RelayEndpoint("jp", "conduit-jp.414222.xyz", 41113, "150.230.197.10"),
+        RelayEndpoint("us", "conduit-us.414222.xyz", 41113),
+        RelayEndpoint("wa", "conduit-wa.414222.xyz", 41113),
+        RelayEndpoint("tyo", "conduit-tyo.414222.xyz", 41113),
+        RelayEndpoint("jp", "conduit-jp.414222.xyz", 41113),
     )
 
     fun load(dir: File): List<RelayEndpoint> {

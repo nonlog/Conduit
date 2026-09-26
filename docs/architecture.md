@@ -145,8 +145,10 @@ The implementation reads Android's optional app-private `files/relays.txt` once 
 id|hostname|port|optional-fallback-ipv4
 ```
 
-With no file (or no valid entries), Android defaults to the deployed US / TYO / WA production fleet. Windows accepts a
-comma/semicolon-separated `CONDUIT_RELAYS` and parks one independent responder task per endpoint;
+With no file (or no valid entries), Android defaults to the deployed US / WA / TYO / JP production
+fleet. The built-in entries contain only stable DNS names and ports; production origin IPs are
+not embedded. Windows accepts a comma/semicolon-separated `CONDUIT_RELAYS` and parks one
+independent responder task per endpoint;
 the older singular `CONDUIT_RELAY` remains a compatibility fallback. An explicitly empty
 `CONDUIT_RELAYS` disables Relay parking.
 
@@ -168,11 +170,12 @@ socket that still appears `ESTABLISHED`.
 
 Relay endpoints remain configured by hostname (`us.414222.xyz`, `tyo.414222.xyz`, `wa.414222.xyz`). On the tested phone, Bettbox uses
 the benchmark range `198.18.0.0/15` as fake-IP DNS. During an underlying Wi-Fi/cellular handover,
-that local fake mapping can accept a connect and fail it before any preamble reaches TYO. Android
-therefore treats **only** a `198.18/15` answer for the relay as synthetic and substitutes the
-relay's pinned public fallback (`138.3.214.175`). Ordinary public DNS answers are left untouched.
-The resulting socket is still a normal Android `Socket`, so VPN/routing policy continues to own
-the data path; the fallback bypasses the broken fake address, not the VPN.
+that local fake mapping can accept a connect and fail it before any preamble reaches the relay.
+Android therefore treats **only** a `198.18/15` relay answer as synthetic. Built-in production
+entries are domain-only and carry no origin fallback, so such a result fails that candidate and
+normal reconnect selection can advance to the next configured hostname. User-supplied relay
+entries may still opt into the documented fallback field. Ordinary public DNS answers are left
+untouched, and the resulting socket remains subject to Android/VPN routing.
 
 A network loss closes the active socket but preserves the Android `Link` object and its
 single sender executor.  This is deliberate: reconnecting reuses those resources instead of

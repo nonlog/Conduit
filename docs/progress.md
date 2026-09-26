@@ -469,12 +469,13 @@ now useful rather than blocked by relay/fake-DNS failures:
   not an accidental LAN success.
 - Before the repair, switching Wi-Fi on/off caused `Broken pipe` against Bettbox's
   `198.18.0.137` fake relay address. TYO recorded no matching phone arrivals. A direct probe to
-  `138.3.214.175:41113` from the same phone did arrive, isolating the fault to the VPN fake-IP
+  the relay origin from the same phone did arrive, isolating the fault to the VPN fake-IP
   mapping rather than Conduit's role-aware relay.
-- The installed repair preserves hostname DNS normally and substitutes `138.3.214.175` only when
-  the relay resolves into `198.18.0.0/15`. Device logs now show
-  `relay DNS ... -> fake 198.18.0.137; using 138.3.214.175`, followed by a real `session up` and
-  an explicit-role `legacy=false` splice at TYO.
+- The earlier repair used a pinned origin fallback only for `198.18.0.0/15` synthetic DNS.
+  Public builds no longer embed production origin IPs: built-in relays are domain-only, and a
+  synthetic answer without an explicit user fallback fails that candidate so reconnect can try
+  the next configured relay. Historical device testing confirmed a real `session up` and an
+  explicit-role `legacy=false` splice at TYO.
 - Six Wi-Fi↔cellular transitions across two three-cycle runs kept lifecycle counters balanced.
   One warm run finished Windows `created=17 closed=17` and Android `opened=4 closed=4`; TCP count
   returned to baseline. A later 30-second-settle run again ended at `19/19` and `6/6`.

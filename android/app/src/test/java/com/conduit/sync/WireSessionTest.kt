@@ -32,8 +32,8 @@ class WireSessionTest {
 
     @Test
     fun relayFakeIpFallbackIsNarrowAndDeterministic() {
-        val public = InetAddress.getByName("138.3.214.175")
-        val fallback = "138.3.214.175"
+        val public = InetAddress.getByName("203.0.113.10")
+        val fallback = "203.0.113.10"
         assertEquals(public, relayTargetAddress(public, "203.0.113.9"))
         assertFalse(isVpnFakeIp(public))
 

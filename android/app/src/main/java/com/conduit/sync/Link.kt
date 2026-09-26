@@ -74,9 +74,9 @@ private fun relayIdChar(c: Char): Boolean =
     c in 'A'..'Z' || c in 'a'..'z' || c in '0'..'9' || c == '-' || c == '_'
 
 /**
- * Replaces only Android/VPN benchmark-range fake DNS with the relay's known public fallback.
- * A normal public answer is returned unchanged, so the hostname remains authoritative whenever
- * the resolver is honest.
+ * Replaces Android/VPN benchmark-range fake DNS only when the user explicitly configured a
+ * fallback for that relay. Built-in production relays are domain-only, so a synthetic answer
+ * without a fallback fails this candidate and lets normal multi-relay reconnect try the next one.
  */
 internal fun relayTargetAddress(resolved: InetAddress, fallbackIp: String?): InetAddress {
     if (!isVpnFakeIp(resolved)) return resolved
@@ -471,10 +471,10 @@ class Link(
                 // The relay arrives as a hostname, and resolving it blocks. This is the
                 // one thread here that is allowed to, so it is resolved here rather than
                 // on the connectivity callback that asked for the dial. Some Android VPNs
-                // use 198.18/15 fake-IP DNS. That mapping can become a dead local TCP sink
-                // during an underlying network handover, so only that unmistakable result
-                // is replaced with the relay's pinned public fallback. The actual socket is
-                // still an ordinary Socket, so Android/VPN routing remains in force.
+                // use 198.18/15 fake-IP DNS. A user-supplied relay may carry an explicit
+                // fallback, but built-in production relays intentionally do not embed origin
+                // addresses. Without a fallback this candidate fails and reconnect selection
+                // advances normally. The socket still follows Android/VPN routing.
                 val target = if (address.isUnresolved) {
                     val host = address.hostString
                     val resolved = resolve(host)

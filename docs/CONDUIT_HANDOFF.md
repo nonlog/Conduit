@@ -239,11 +239,12 @@ See `docs/architecture.md` for full data flow and trust boundaries.
   counts back at baseline. It can also follow ADB transport changes by `ro.serialno`; a live
   `15557 → 15556` failover retained 100% Android sample coverage and a quiescent follow-up still
   ended with both lifecycle gaps at zero. This proves the collector works, not that M0 is complete.
-- Bettbox fake-IP handover fix: the relay hostname resolved to `198.18.0.137` and produced
-  `Broken pipe` after underlying-network changes without reaching TYO. Conduit now replaces only
-  a `198.18.0.0/15` relay answer with TYO's public fallback `138.3.214.175`; actual traffic still
-  follows Android/VPN routing. The device reconnects successfully with `legacy=false` after the
-  substitution, and the selection logic is JVM-tested.
+- Bettbox fake-IP handover history: the relay hostname resolved into `198.18.0.0/15` and could
+  produce `Broken pipe` after underlying-network changes without reaching the relay. Built-in
+  production relays now ship only stable DNS names and ports, with no embedded origin fallback.
+  A synthetic answer without an explicit user fallback fails that candidate so normal multi-relay
+  reconnect can advance to the next hostname. The selection logic remains JVM-tested with
+  documentation-only addresses.
 - M2 short-cycle evidence: six foreign-Wi-Fi↔cellular transitions kept lifecycle counters
   balanced. FD-class analysis proved apparent total-FD changes were APK/ashmem resource caching,
   not socket growth. A classified follow-up ended Windows threads 11→10, handles 264→261,

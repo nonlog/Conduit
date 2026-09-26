@@ -28,6 +28,7 @@ class RelaySelectionTest {
             ),
             RelayCatalog.defaults.map(RelayEndpoint::host),
         )
+        assertTrue(RelayCatalog.defaults.all { it.fallbackIpv4 == null })
         assertEquals(
             RelayEndpoint("wa", "wa.example", 41113, "192.0.2.2"),
             RelayCatalog.parse("wa|wa.example|41113|192.0.2.2"),

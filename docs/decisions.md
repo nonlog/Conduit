@@ -433,17 +433,18 @@ One target-device exception is now explicit. Bettbox's fake-IP mode resolves the
 hostname to `198.18.0.137` (inside RFC 2544's `198.18.0.0/15` benchmark range). That normally
 works through Bettbox's local mapping, but a real Wi-Fi↔cellular handover demonstrated a failure
 mode where TCP to the fake address returned `Broken pipe` and **no corresponding arrival existed
-in the TYO relay journal**. A direct probe to TYO's real `138.3.214.175:41113` from the same phone
-did reach the relay. Asking `Network.getAllByName` on Android's validated non-VPN cellular
-`Network` still returned the fake address, so selecting a physical `Network` for DNS was not an
+in the TYO relay journal**. A direct probe to the relay origin from the same phone did reach the
+relay. Asking `Network.getAllByName` on Android's validated non-VPN cellular `Network` still
+returned the fake address, so selecting a physical `Network` for DNS was not an
 escape from this VPN's resolver hook.
 
-The chosen repair is deliberately narrower than custom DNS: normal hostname answers remain
-authoritative; only an IPv4 answer inside `198.18.0.0/15` is treated as VPN-synthetic and replaced
-with the known TYO public fallback. The TCP socket itself is not bound to the physical network,
-so Android/Bettbox still route the actual relay traffic. The fallback is a deployment datum and
-must be updated if TYO's public address changes. A JVM regression test pins the exact fake range,
-normal-public-answer passthrough, IPv6 passthrough, and missing-fallback failure.
+The original repair was deliberately narrower than custom DNS: normal hostname answers remained
+authoritative, while an IPv4 answer inside `198.18.0.0/15` could use an explicitly configured
+fallback. Because the repository and binaries are public, built-in production relays no longer
+embed origin IP addresses. A synthetic answer without a user-supplied fallback fails that candidate
+and normal multi-relay reconnect advances to the next configured hostname. The TCP socket itself
+remains subject to Android/VPN routing. JVM coverage uses documentation-only addresses and still
+pins the fake range, normal-answer passthrough, IPv6 passthrough, and missing-fallback failure.
 
 `registerDefaultNetworkCallback`, not a transport-filtered request. Filtering would have made
 the single `networkUp` flag wrong the moment cellular was included: a Wi-Fi `onLost` while
