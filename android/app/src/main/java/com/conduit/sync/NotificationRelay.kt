@@ -146,7 +146,7 @@ class NotificationRelay : NotificationListenerService() {
         Log.w(TAG, "listener disconnected")
         if (live === this) live = null
         posted.clear()
-        iconSent.clear()
+        synchronized(iconSent) { iconSent.clear() }
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
@@ -190,28 +190,43 @@ class NotificationRelay : NotificationListenerService() {
             return
         }
 
-        val new = NotifNew.newBuilder()
-            .setKey(sbn.key)
-            .setPackage(sbn.packageName)
-            .setAppName(appLabel(sbn.packageName))
-            .setTag(sbn.tag.orEmpty())
-            .setGroupKey(notification.group.orEmpty())
-            .setTitle(outTitle)
-            .setText(outBody)
-            .setTimestampMs(sbn.postTime)
-            .addAllMessages(messageDescs)
-            .setSuppressPopup(false)
-        // A contact photo is content too, so hiding covers it. The app icon is not — it
-        // says no more than the source-app line already does.
-        if (!hide) face(notification, messageRecords)?.let { new.largeIconPng = ByteString.copyFrom(it) }
-        new.addAllActions(actionDescs)
-        // Marked sent even when the rasterise fails: the same package will fail the same
-        // way, and retrying it on every notification buys nothing but the work.
-        if (iconSent.put(sbn.packageName, true) == null) {
-            appIcon(sbn.packageName)?.let { new.appIconPng = ByteString.copyFrom(it) }
+        val key = sbn.key
+        val packageName = sbn.packageName
+        val tag = sbn.tag.orEmpty()
+        val groupKey = notification.group.orEmpty()
+        val timestampMs = sbn.postTime
+        Log.i(TAG, "notif out $packageName ${outTitle.take(40)} messages=${messageDescs.size} repost=${previous != null}")
+        // Keep the platform callback short. PackageManager/Icon loading and PNG encoding can
+        // block while the phone is dozing, and NotificationListenerService callbacks run on the
+        // main thread. Link builds this payload on its existing serialized sender thread.
+        link.send(Kind.NOTIF_NEW, "notif") {
+            val new = NotifNew.newBuilder()
+                .setKey(key)
+                .setPackage(packageName)
+                .setAppName(appLabel(packageName))
+                .setTag(tag)
+                .setGroupKey(groupKey)
+                .setTitle(outTitle)
+                .setText(outBody)
+                .setTimestampMs(timestampMs)
+                .addAllMessages(messageDescs)
+                .setSuppressPopup(false)
+            // A contact photo is content too, so hiding covers it. The app icon is not — it
+            // says no more than the source-app line already does.
+            if (!hide) face(notification, messageRecords)?.let {
+                new.largeIconPng = ByteString.copyFrom(it)
+            }
+            new.addAllActions(actionDescs)
+            // Marked sent even when the rasterise fails: the same package will fail the same
+            // way, and retrying it on every notification buys nothing but the work.
+            val firstIcon = synchronized(iconSent) {
+                iconSent.put(packageName, true) == null
+            }
+            if (firstIcon) {
+                appIcon(packageName)?.let { new.appIconPng = ByteString.copyFrom(it) }
+            }
+            new.build().toByteArray()
         }
-        Log.i(TAG, "notif out ${sbn.packageName} ${outTitle.take(40)} messages=${messageDescs.size} repost=${previous != null}")
-        link.send(Kind.NOTIF_NEW, new.build().toByteArray(), "notif")
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
@@ -419,10 +434,8 @@ class NotificationRelay : NotificationListenerService() {
     /**
      * Rasterises to a square PNG, or null if it came out over [ICON_MAX_BYTES].
      *
-     * Runs on the main thread, like every callback here — a 96 px bitmap and its PNG
-     * encode are a couple of milliseconds, and only on a notification that is new. The
-     * alternative is a thread to do two `draw` calls on, which is the sort of thing this
-     * project exists to not have.
+     * Runs on Link's existing sender thread so the notification callback never blocks on
+     * resource loading or PNG encoding while the phone is dozing.
      */
     private fun png(drawable: Drawable): ByteArray? {
         val bitmap = Bitmap.createBitmap(ICON_PX, ICON_PX, Bitmap.Config.ARGB_8888)

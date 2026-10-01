@@ -411,12 +411,19 @@ class Link(
      * Queues one already-encoded frame. [what] only names the payload in the log, so a
      * dropped notification is distinguishable from a dropped clip.
      */
-    fun send(kind: Kind, payload: ByteArray, what: String) = sender.execute {
+    fun send(kind: Kind, payload: ByteArray, what: String) =
+        send(kind, what) { payload }
+
+    /** Builds event payloads on the serialized sender thread, away from Android callbacks. */
+    fun send(kind: Kind, what: String, build: () -> ByteArray) = sender.execute {
         val live = session
         if (live == null) {
             Log.d(TAG, "$what dropped, no session")
             return@execute
         }
+        val payload = runCatching { build() }
+            .onFailure { Log.w(TAG, "$what could not be built", it) }
+            .getOrNull() ?: return@execute
         try {
             live.send(kind, payload)
         } catch (e: Exception) {

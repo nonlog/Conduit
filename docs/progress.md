@@ -1,27 +1,46 @@
 # Conduit development progress
 
-> **Snapshot date:** 2026-08-26
+> **Snapshot date:** 2026-10-01
 > **Meaning of “verified”:** an observed test/device result, not an assumption inferred from
 > source.  This record is intentionally more conservative than a feature checklist.
 
 ## Current position
 
 Conduit has functioning implementation paths beyond the original pre-M0 description, but it
-has **not** earned M0/M2 completion.  The central endurance requirement remains open: a
+has **not** earned M0/M2 completion. The central endurance requirement remains open: a
 48-hour run must show no net thread, handle/FD, or session-lifecycle growth.
 
-The latest functional implementation commit on local `master` is `62a4516`:
+The current published repository baseline is release `v0.1.4` at
+`8987c1b701a91894c133cffb1f3123ee49eee266`. Local `master` is based on that commit, with the
+documentation updates from this handoff and an uncommitted Android notification-latency fix.
+GitHub Actions run `36249356300` passed the master build and run `36249808688` passed the
+tag/release build; those runs predate the current notification change.
+The prior security cleanup is `43600c997e62fe2549d652cfc2028e514545f24d`; current built-in Relay
+entries contain hostnames and ports only, while old public history remains unchanged.
 
-```text
-Use MessagingStyle sender avatars
-```
+The protocol rollout is deployed on the tested path: the compatible Relay accepts explicit roles,
+and current Android/Windows clients use them. Legacy 47-byte inference remains enabled only as
+an upgrade bridge for older clients. The dated sections below are historical evidence; this
+release baseline and `docs/TODO.md` are authoritative for current status.
 
-Local `master` remains ahead of `origin/master`; do not treat the source commits as published.
-The protocol rollout itself **is deployed on the test/production path**: TYO now runs the
-compatible relay, and the installed Android/Windows endpoints now send explicit roles. Legacy
-47-byte inference remains enabled only as an upgrade bridge for older clients.
+### Notification latency investigation — 2026-10-01
+
+- The phone's notification arrived immediately while the Windows toast was more than ten seconds
+  late, with no file/image/clipboard transfer active. A synchronized Android/Windows clock read
+  differed by about 65 ms, so the delay is real rather than clock skew.
+- The Android listener was doing `PackageManager` icon lookup, `Icon.loadDrawable`, bitmap drawing,
+  and PNG encoding directly in `NotificationListenerService.onNotificationPosted`. Those calls
+  now run on Link's existing single sender executor; no polling, timer, wake lock, or new thread
+  was added.
+- Formal Android build and locked-screen reproduction remain the next verification step. Until
+  that evidence exists, Doze/LAN delivery remains a competing hypothesis if `notif out` is still
+  immediate but Windows receives the frame late.
 
 ## Test evidence
+
+The counts in this section are the latest recorded test/device observations from their dated
+checkpoints. They are evidence for those checkpoints, not a replacement for a fresh GitHub run
+or a new physical-device check after a later change.
 
 | Area | Last recorded result | What it establishes | Limitation |
 | --- | --- | --- | --- |

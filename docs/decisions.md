@@ -4,23 +4,30 @@ Supersedes `research-synthesis.md` wherever they conflict. The synthesis stays b
 API-level detail is verified and expensive to re-derive (hard caps, Noise pinning, toast
 AUMID mechanics, `CF_DIBV5` masks, the 7 risks). Everything below is a correction to it.
 
+The current published baseline is `v0.1.4` at
+`8987c1b701a91894c133cffb1f3123ee49eee266`. Formal Android, Windows and Relay builds are owned
+by GitHub Actions; the current workflow uses JDK 17, Rust 1.98, .NET 10 and the pinned Android
+Gradle wrapper.
+
 ## Names and paths
 
 | thing | value |
 |---|---|
-| repo root | `D:\Workspace\conduit` |
+| repo root | `D:\Workspace\Conduit` |
 | Android appId | `com.conduit.sync` (changeable until first install; it's the LSPosed hook's match key) |
 | Windows daemon | `conduit-daemon.exe` |
-| Windows AUMID | `Conduit.Daemon` (constant forever — see synthesis §6) |
-| crates | `conduit-daemon`, `conduit-relay`, `conduit-settings` |
+| Windows AUMID | `Conduit.Desktop` (constant for toast/taskbar identity) |
+| crates | `conduit-daemon`, `conduit-relay` |
 | proto | `proto/conduit.proto` |
-| settings | `%LOCALAPPDATA%\Conduit\conduit.toml` |
+| settings | `%LOCALAPPDATA%\Conduit\config.txt` plus app-private Android files |
 
 ## Reversals of the synthesis (your calls)
 
 1. **Relay ships in v1**, not "deferred indefinitely". Own minimal relay, not frp. Sequenced
    after LAN works (M2), because LAN is the thing that must be provably leak-free first.
-2. **Settings are TOML**, not `settings.json`.
+2. **Settings use the existing app-private text files and Windows `config.txt`**, not TOML or
+   `settings.json`. The Windows file is `%LOCALAPPDATA%\Conduit\config.txt`; Android keeps its
+   bounded settings/history files under `filesDir`.
 3. **Clipboard read uses an LSPosed hook, and the shell-UID `app_process` worker is dropped
    entirely.** The synthesis planned `FakeContext` + `WorkerService` + reflection into
    `ClipboardManager.mContext` + `UidObserver`/`linkToDeath` — a whole second always-on
@@ -40,8 +47,11 @@ AUMID mechanics, `CF_DIBV5` masks, the 7 risks). Everything below is a correctio
    This deletes from the plan: `worker/` module, `FakeContext.java`, `WorkerService.java`,
    `WorkerStarter.kt`, `WorkerManager.kt`, `ShizukuHelper.kt`, the NDK dependency, setup
    step 3, and synthesis risk #7.
-4. **AccessibilityService clipboard fallback is committed, not deferred indefinitely** — it
-   lands as M3, for the non-rooted phone. Until then it is dead code, so it is not in v1.
+4. **Automatic non-root clipboard fallback is platform-blocked and deferred.** Android 10+
+   background clipboard access requires input focus or default-IME status; an
+   AccessibilityService alone does not satisfy the contract. Do not add the former
+   AccessibilityService-only M3 plan unless Android exposes a suitable API or the product scope
+   explicitly changes to an input-method design.
 
 ## From the Phone Link teardown
 
@@ -83,18 +93,18 @@ See `../docs/` memory notes; the two findings that change design:
 | | scope | exit criteria |
 |---|---|---|
 | **M0** | LAN, text clipboard both directions, Noise XX, mDNS burst, metrics endpoint | synthesis §9 verbatim: 48h run, fd/handle/thread delta 0, `created==closed` |
-| **M1** | image clipboard (chunked 64 KiB) + notifications → toast with update/remove | no new threads vs M0 |
+| **M1** | image clipboard (chunked 32 KiB) + notifications → toast with update/remove | no new threads vs M0 |
 | **M2** | relay: outbound TCP from both ends, pair by `device_id`, forward opaque frames | survives 5G↔hotspot flap without a session leak |
-| **M3** | AccessibilityService clipboard fallback for non-rooted devices | works with LSPosed absent |
+| **M3** | platform-authorised non-root clipboard fallback, if Android provides one | works without LSPosed without replacing the user's IME |
 
-## Toolchain (resolved 2026-08-24)
+## Toolchain (repository/CI baseline, refreshed 2026-10-01)
 
 | thing | version | via |
 |---|---|---|
 | Rust | 1.98.0, `stable-x86_64-pc-windows-msvc` | `scoop install rustup` |
 | MSVC + Windows SDK | 14.44.35207 / 10.0.26100.0 | `scoop install portable-build-tools` |
 | protoc | 36.0 (Maven artifact `4.36.0`) | `scoop install protoc` |
-| JDK | 21.0.11 Temurin | already present |
+| JDK | 17 Temurin | GitHub Actions `actions/setup-java@v6`; matches the Android workflow |
 | Android SDK | `D:\Android\Sdk`, platforms 34/36/36.1/37.0 | already present, no `cmdline-tools` |
 | Gradle | wrapper pinned **8.14.3** | generated in a temp dir, see below |
 | AGP / Kotlin | 8.13.2 / 2.4.10 | |
@@ -242,7 +252,8 @@ Three ways out, in the order they were rejected:
    `signature|privileged`; using it means shipping the APK into `/system/priv-app` with a
    `privapp-permissions` overlay. Heavier and more fragile than the hook.
 2. An `AccessibilityService` can observe clipboard-bearing events, but it is a broad
-   capability granted for a narrow purpose. Kept as the M3 fallback for non-rooted phones.
+   capability granted for a narrow purpose and does not itself grant background clipboard reads.
+   It is therefore rejected as an automatic fallback and remains only as platform research.
 3. **An LSPosed module in the same APK**, hooking `clipboardAccessAllowed` inside
    system_server. Chosen: the phone is rooted with KernelSU + LSPosed, and Play Store policy
    was already sacrificed.
