@@ -3,8 +3,10 @@ package com.conduit.sync
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings as AndroidSettings
 import android.util.Log
 import androidx.activity.ComponentActivity
@@ -137,6 +139,7 @@ class MainActivity : ComponentActivity() {
      */
     private var clipboardMode by mutableStateOf(ClipboardSyncMode.Unavailable)
     private var clipboardAccessibilityEnabled by mutableStateOf(false)
+    private var batteryOptimizationIgnored by mutableStateOf(true)
 
     private val pairingScanner by lazy {
         val options = GmsBarcodeScannerOptions.Builder()
@@ -167,6 +170,7 @@ class MainActivity : ComponentActivity() {
         History.load(this)
         Settings.load(this)
         refreshClipboardAccessMode()
+        refreshBatteryOptimization()
         request()
         val appVersion = appVersionName()
         // A host on the launch intent pins the address and links straight away. It has to
@@ -193,6 +197,8 @@ class MainActivity : ComponentActivity() {
                     onOpenClipboardAccessibility = {
                         startActivity(Intent(AndroidSettings.ACTION_ACCESSIBILITY_SETTINGS))
                     },
+                    batteryOptimizationIgnored = batteryOptimizationIgnored,
+                    onRequestBatteryOptimization = ::requestBatteryOptimization,
                     onConnect = { send(ACTION_CONNECT) },
                     onDisconnect = { send(ACTION_DISCONNECT) },
                     onPair = ::sendPair,
@@ -257,6 +263,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         refreshClipboardAccessMode()
+        refreshBatteryOptimization()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -362,6 +369,25 @@ class MainActivity : ComponentActivity() {
         clipboardAccessibilityEnabled = ClipboardAccess.isAccessibilityEnabled(this)
         clipboardMode = ClipboardAccess.mode(this)
     }
+
+    private fun refreshBatteryOptimization() {
+        batteryOptimizationIgnored = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
+        } else {
+            true
+        }
+    }
+
+    private fun requestBatteryOptimization() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || batteryOptimizationIgnored) return
+        val request = Intent(AndroidSettings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+            .setData(Uri.parse("package:$packageName"))
+        runCatching { startActivity(request) }
+            .onFailure {
+                Log.w(TAG, "battery optimization request unavailable", it)
+                startActivity(Intent(AndroidSettings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            }
+    }
 }
 
 @Composable
@@ -400,6 +426,8 @@ private fun ConduitApp(
     clipboardMode: ClipboardSyncMode,
     clipboardAccessibilityEnabled: Boolean,
     onOpenClipboardAccessibility: () -> Unit,
+    batteryOptimizationIgnored: Boolean,
+    onRequestBatteryOptimization: () -> Unit,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
     onPair: (String?) -> Unit,
@@ -564,6 +592,8 @@ private fun ConduitApp(
                 clipboardMode = clipboardMode,
                 clipboardAccessibilityEnabled = clipboardAccessibilityEnabled,
                 onOpenClipboardAccessibility = onOpenClipboardAccessibility,
+                batteryOptimizationIgnored = batteryOptimizationIgnored,
+                onRequestBatteryOptimization = onRequestBatteryOptimization,
                 onPair = requestPair,
                 onCancelPair = onCancelPair,
                 onForget = onForget,
@@ -653,6 +683,8 @@ private fun SettingsTab(
     clipboardMode: ClipboardSyncMode,
     clipboardAccessibilityEnabled: Boolean,
     onOpenClipboardAccessibility: () -> Unit,
+    batteryOptimizationIgnored: Boolean,
+    onRequestBatteryOptimization: () -> Unit,
     onPair: () -> Unit,
     onCancelPair: () -> Unit,
     onForget: () -> Unit,
@@ -753,6 +785,34 @@ private fun SettingsTab(
                         onCheckedChange = onHideNotifications,
                     )
                 }
+            }
+        }
+        item {
+            Text(
+                "Background delivery",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                ),
+            ) {
+                PreferenceRow(
+                    icon = R.drawable.ic_settings,
+                    title = "Battery optimization",
+                    subtitle = if (batteryOptimizationIgnored) {
+                        "Ignored · screen-off delivery is allowed"
+                    } else {
+                        "Tap to allow Conduit to run while the screen is off"
+                    },
+                    onClick = onRequestBatteryOptimization,
+                )
             }
         }
         item {

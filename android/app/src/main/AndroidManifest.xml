@@ -8,6 +8,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <!-- connectedDevice, not dataSync: dataSync is capped at 6 h on Android 15. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- Lets the user approve Conduit for Android's standard screen-off battery exemption. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- Android 14+ will not start a connectedDevice service on FOREGROUND_SERVICE_CONNECTED_DEVICE
          alone; it also demands one permission that proves an actual device is involved.
          Multicast is the honest one here, because mDNS discovery is exactly what we do. -->

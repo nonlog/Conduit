@@ -26,7 +26,9 @@
   a timestamp conversion artifact. `NotificationRelay` previously loaded application/contact
   icons and encoded PNGs inside `onNotificationPosted`; the current uncommitted fix builds that
   payload on Link's existing serialized sender thread instead, keeping the system callback short.
-  This is not yet device-verified and no formal Android build has been run after the change.
+  The app now also exposes Android's standard `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` request in
+  Settings > Background delivery. The request is user-approved and supplements the OEM-specific
+  "allow background activity" setting; it cannot silently disable Oplus FastFreeze.
 - The current Windows control surface is the self-contained `windows/conduit-ui` Uno Platform /
   WinUI 3 application. The Rust `conduit-daemon` remains the resident transport and integration
   process; the UI is on-demand and owns no transport.

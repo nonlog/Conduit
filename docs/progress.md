@@ -35,6 +35,10 @@ release baseline and `docs/TODO.md` are authoritative for current status.
 - Formal Android build and locked-screen reproduction remain the next verification step. Until
   that evidence exists, Doze/LAN delivery remains a competing hypothesis if `notif out` is still
   immediate but Windows receives the frame late.
+- Device evidence then showed ColorOS/Oplus `OplusHansManager` freezing UID 10550 (`com.conduit.sync`)
+  during screen-off/FastFreeze even while its connected-device foreground service was active; the
+  process resumed on a later packet. The Settings screen now offers Android's standard battery
+  optimization exemption request. Oplus "allow background activity" remains a separate OEM setting.
 
 ## Test evidence
 
