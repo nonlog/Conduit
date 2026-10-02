@@ -48,6 +48,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -538,7 +539,12 @@ private fun ConduitApp(
             )
         },
         bottomBar = {
-            NavigationBar {
+            NavigationBar(
+                // Keep the system navigation gesture area on the same tonal surface as the bar.
+                // NavigationBar supplies the platform window insets; the item indicator remains
+                // the single expressive accent for the selected destination.
+                containerColor = MaterialTheme.colorScheme.surface,
+            ) {
                 MainTab.entries.forEach { item ->
                     val selected = item == tab
                     NavigationBarItem(
@@ -548,15 +554,31 @@ private fun ConduitApp(
                             Icon(
                                 painter = painterResource(
                                     when (item) {
-                                        MainTab.Home -> R.drawable.ic_home
-                                        MainTab.Settings -> R.drawable.ic_settings
+                                        MainTab.Home -> if (selected) {
+                                            R.drawable.ic_home
+                                        } else {
+                                            R.drawable.ic_home_outline
+                                        }
+                                        MainTab.Settings -> if (selected) {
+                                            R.drawable.ic_settings
+                                        } else {
+                                            R.drawable.ic_settings_outline
+                                        }
                                     },
                                 ),
-                                contentDescription = null,
+                                contentDescription = item.title,
                                 modifier = Modifier.size(24.dp),
                             )
                         },
                         label = { Text(item.title) },
+                        alwaysShowLabel = true,
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                            selectedTextColor = MaterialTheme.colorScheme.onSurface,
+                            indicatorColor = MaterialTheme.colorScheme.secondaryContainer,
+                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        ),
                     )
                 }
             }

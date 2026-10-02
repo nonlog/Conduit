@@ -1,6 +1,6 @@
 # Conduit development progress
 
-> **Snapshot date:** 2026-10-01
+> **Snapshot date:** 2026-10-02
 > **Meaning of “verified”:** an observed test/device result, not an assumption inferred from
 > source.  This record is intentionally more conservative than a feature checklist.
 
@@ -11,8 +11,10 @@ has **not** earned M0/M2 completion. The central endurance requirement remains o
 48-hour run must show no net thread, handle/FD, or session-lifecycle growth.
 
 The current published repository baseline is release `v0.1.4` at
-`8987c1b701a91894c133cffb1f3123ee49eee266`. Local `master` is based on that commit, with the
-documentation updates from this handoff and an uncommitted Android notification-latency fix.
+`8987c1b701a91894c133cffb1f3123ee49eee266`. Local `master` is two commits ahead of
+`origin/master` at `9bb6e76`; the Relay fake-IP fix and Android Material 3 navigation refresh are
+committed as `73252f3` on the temporary branch `codex/non-lan-relay-m3-20261002`; the worktree is
+clean.
 GitHub Actions run `36249356300` passed the master build and run `36249808688` passed the
 tag/release build; those runs predate the current notification change.
 The prior security cleanup is `43600c997e62fe2549d652cfc2028e514545f24d`; current built-in Relay
@@ -39,6 +41,20 @@ release baseline and `docs/TODO.md` are authoritative for current status.
   during screen-off/FastFreeze even while its connected-device foreground service was active; the
   process resumed on a later packet. The Settings screen now offers Android's standard battery
   optimization exemption request. Oplus "allow background activity" remains a separate OEM setting.
+
+### Non-LAN Relay reconnect and Material 3 navigation — 2026-10-02
+
+- Bettbox VPN DNS resolves `conduit-us`, `conduit-wa`, `conduit-tyo`, and `conduit-jp` to
+  `198.18.0.0/15` fake addresses. The phone reached each address on TCP `41113`, while the
+  Android client rejected every fake answer because built-in endpoints had no fallback IPv4.
+- `relayTargetAddress()` now preserves a fake address when no fallback is configured, allowing
+  the VPN's hostname mapping to route the socket. Explicit per-endpoint fallback values still
+  replace the fake address. The JVM test now covers both paths.
+- The bottom navigation now follows Material 3 navigation roles: filled selected icons, outlined
+  unselected icons, a `secondaryContainer` selection indicator, semantic labels, and no new
+  dependency. GitHub Actions run `36967899497` passed all three jobs. The resulting APK was
+  installed and a real off-LAN test linked through `conduit-wa.414222.xyz:41113`; after Wi-Fi was
+  restored, Windows returned to the direct LAN path.
 
 ## Test evidence
 

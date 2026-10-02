@@ -1,8 +1,8 @@
 # Conduit handoff
 
-**Prepared:** 2026-10-01
+**Prepared:** 2026-10-02
 **Repository:** `D:\Workspace\Conduit`  
-**Branch:** `master`  
+**Branch:** `codex/non-lan-relay-m3-20261002`  
 **Remote:** `https://github.com/nonlog/Conduit.git`
 
 > **Maintenance rule:** keep this handoff current during active development, not only when a
@@ -11,11 +11,10 @@
 > step. A new session should be able to resume safely from this file plus the linked docs even if
 > the previous conversation ended abruptly.
 
-## Current snapshot — 2026-10-01
+## Current snapshot — 2026-10-02
 
-- `master` is based on `8987c1b701a91894c133cffb1f3123ee49eee266`, tagged `v0.1.4`. The
-  working tree currently contains the four documentation updates from this handoff plus an
-  uncommitted Android notification-latency change in `Link.kt` and `NotificationRelay.kt`.
+- `codex/non-lan-relay-m3-20261002` is based on `9bb6e76` and contains commit `1f52b33`, pushed
+  to `origin/codex/non-lan-relay-m3-20261002`. The working tree is clean.
 - GitHub Actions master run `36249356300` and tag/release run `36249808688` both completed
   successfully. The GitHub Release contains the Android debug APK, Windows x64 package, Linux
   Relay binary and checksums. No local build output is authoritative.
@@ -29,6 +28,20 @@
   The app now also exposes Android's standard `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` request in
   Settings > Background delivery. The request is user-approved and supplements the OEM-specific
   "allow background activity" setting; it cannot silently disable Oplus FastFreeze.
+- The non-LAN reconnect failure found on 2026-10-02 was caused by Bettbox's VPN DNS returning
+  `198.18.0.0/15` fake addresses for every production Relay. `Link.kt` used to reject those
+  answers when no explicit fallback was configured, so the built-in hostname-only Relay catalog
+  could never dial. The fix preserves the fake address when no fallback is present so the VPN can
+  map it back to the hostname; an explicit user fallback still takes precedence. Device probes
+  reached all four Relay ports through the fake-IP mapping.
+- The Android bottom navigation now uses Material 3 selected/unselected Home and Settings icons,
+  semantic color roles, the selected `secondaryContainer` indicator, and explicit content
+  descriptions. This is a focused navigation refresh; it does not add a new UI dependency or
+  change the transport/service lifecycle.
+- GitHub Actions run `36967899497` passed the Android, Windows, and Relay jobs. Its Android debug
+  APK was installed on the test phone at 13:19. With Wi-Fi disabled, the phone linked through
+  `conduit-wa.414222.xyz:41113`; Windows reported `state=linked`, `path=relay`. Wi-Fi was then
+  re-enabled and the pair returned to `path=lan`.
 - The current Windows control surface is the self-contained `windows/conduit-ui` Uno Platform /
   WinUI 3 application. The Rust `conduit-daemon` remains the resident transport and integration
   process; the UI is on-demand and owns no transport.
