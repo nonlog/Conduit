@@ -1,13 +1,18 @@
 # conduit
 
-A deliberately small Android ↔ Windows companion. Three features, and it does not grow:
+A deliberately small Android ↔ Windows companion. The current release includes:
 
-1. **Text clipboard**, both directions, automatic — no send button.
-2. **Image clipboard**, both directions — Windows screenshot pastes on the phone, and back.
-3. **Android notifications → native Windows toasts**, including update and dismissal.
+1. **Text and image clipboard**, both directions, automatic where the platform permits.
+2. **Android notifications → native Windows toasts**, including updates, dismissal, bounded
+   actions and inline reply.
+3. **Explicit file transfer**, both directions, through Android sharing, Windows Explorer and
+   the Windows Share Target.
+4. **Phone photos and screenshots → Windows capture toasts**, with optional Snipping Tool
+   activation.
+5. **Webpage sharing**, pairing management, LAN mDNS and encrypted Relay fallback.
 
-That is the whole product. Telephony, SMS, screen mirroring, remote input, file browsing and
-media control are out of scope permanently, not "later".
+The product boundary remains small. Telephony, SMS, screen mirroring, remote input, media
+control and a mounted or browsable remote filesystem are out of scope.
 
 ## Why it exists
 
@@ -43,15 +48,20 @@ that machinery is precisely the leak this project exists to avoid.
 
 ## Status
 
-Pre-M0. See `docs/decisions.md` for the plan and `docs/research-synthesis.md` for the
-verified API-level research behind it.
+The current release is **v0.1.4**, tagged at `8987c1b` and built and published by GitHub
+Actions. The successful release workflow was run `36249808688`; the preceding master build was
+`36249356300`.
 
-| | Scope | Done when |
-|---|---|---|
-| M0 | LAN text clipboard, both directions | 48 h run, fd/handle/thread delta 0 |
-| M1 | Image clipboard + notifications → toast | no new threads vs M0 |
-| M2 | Relay on a VPS | survives cellular↔LAN flapping without leaking a session |
-| M3 | AccessibilityService clipboard fallback | works with LSPosed absent |
+The release has working clipboard, notification, file-transfer, capture-toast, webpage-share,
+pairing and Relay paths. The remaining evidence gates are deliberately separate from packaging:
+
+- M0 still needs a true same-LAN 48-hour endurance run with balanced lifecycle/resource counts.
+- M2 still needs a longer Wi-Fi/cellular/hotspot and Relay re-parking campaign.
+- Long-duration Relay/proxy stability, final light-theme visual proof, and a few natural-device
+  notification/camera checks remain open.
+
+See `docs/TODO.md` for the current checklist and `docs/CONDUIT_HANDOFF.md` for the resume
+checkpoint. Formal Android, Windows and Relay builds must continue to run in GitHub Actions.
 
 ## Provenance
 

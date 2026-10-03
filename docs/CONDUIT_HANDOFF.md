@@ -1,6 +1,6 @@
 # Conduit handoff
 
-**Prepared:** 2026-08-26
+**Prepared:** 2026-10-01
 **Repository:** `D:\Workspace\Conduit`  
 **Branch:** `master`  
 **Remote:** `https://github.com/nonlog/Conduit.git`
@@ -10,6 +10,35 @@
 > change, important verification result, root-cause discovery, or change to the recommended next
 > step. A new session should be able to resume safely from this file plus the linked docs even if
 > the previous conversation ended abruptly.
+
+## Current snapshot — 2026-10-01
+
+- `master` is based on `8987c1b701a91894c133cffb1f3123ee49eee266`, tagged `v0.1.4`. The
+  working tree currently contains the four documentation updates from this handoff plus an
+  uncommitted Android notification-latency change in `Link.kt` and `NotificationRelay.kt`.
+- GitHub Actions master run `36249356300` and tag/release run `36249808688` both completed
+  successfully. The GitHub Release contains the Android debug APK, Windows x64 package, Linux
+  Relay binary and checksums. No local build output is authoritative.
+- The release version is `0.1.4`; Android `versionCode` is `5`, Windows `ApplicationVersion` is
+  `5`, and the sparse Share Target package is `0.1.4.0`.
+- Notification-latency investigation on 2026-10-01 found the Android and Windows wall clocks
+  within about 65 ms during a synchronized read, so the observed ten-second-plus delay is not
+  a timestamp conversion artifact. `NotificationRelay` previously loaded application/contact
+  icons and encoded PNGs inside `onNotificationPosted`; the current uncommitted fix builds that
+  payload on Link's existing serialized sender thread instead, keeping the system callback short.
+  The app now also exposes Android's standard `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` request in
+  Settings > Background delivery. The request is user-approved and supplements the OEM-specific
+  "allow background activity" setting; it cannot silently disable Oplus FastFreeze.
+- The current Windows control surface is the self-contained `windows/conduit-ui` Uno Platform /
+  WinUI 3 application. The Rust `conduit-daemon` remains the resident transport and integration
+  process; the UI is on-demand and owns no transport.
+- Android built-in Relay defaults are `conduit-us`, `conduit-wa`, `conduit-tyo` and `conduit-jp`
+  on port `41113`, with no embedded production origin IPv4 fallback. Live node deployment must
+  be checked separately before claiming that every default endpoint is reachable.
+- Commit `43600c997e62fe2549d652cfc2028e514545f24d` removed the production Relay origin IPs from
+  the current source, tests and public documents. Older Git history is intentionally unchanged.
+- The dated entries below preserve historical evidence. When they conflict with this snapshot or
+  the current source, use this snapshot and the current code.
 
 ## Do this first on resumption
 
@@ -24,9 +53,10 @@
    git log --oneline --decorate -8
    ```
 
-3. The compatible relay migration is **deployed**. US / TYO / WA run the compatible server and the installed
-   Android/Windows endpoints use explicit roles; keep legacy inference for older clients until M2
-   evidence and deliberate retirement.
+3. The compatible Relay migration is **deployed on the tested path**. The installed Android/Windows
+   endpoints use explicit roles; keep legacy inference for older clients until M2 evidence and
+   deliberate retirement. The source catalog has four hostname-based defaults, but live reachability
+   of every endpoint must be verified separately.
 4. Windows Relay traffic is currently configured through `%LOCALAPPDATA%\Conduit\config.txt` to
    use local Mihomo/Clash Party at `socks5://127.0.0.1:7891`. LAN listener/direct LAN sessions do
    **not** use this proxy. Preserve Relay hostnames through SOCKS so Mihomo can apply
@@ -38,10 +68,11 @@
    P0 remains the actual endurance/flap evidence. `scripts/soak.ps1` is implemented and short-tested.
 7. Product-level constraint: Conduit exists because Link to Windows used excessive phone CPU and
    caused lag/heat/battery drain. Do not add periodic Android speed tests, Relay probes, polling, or
-   timer-driven scoring. Multi-Relay client selection is now implemented as passive quality learning
-   + sticky failover: Windows parks on US / TYO / WA; Android keeps one session and learns only from
-   real connection/session/content-transfer events, including real time-to-session-up EWMA. All three
-   production Relay endpoints are deployed and reachable; no periodic probe or speed-test was added.
+   timer-driven scoring. Multi-Relay client selection is implemented as passive quality learning
+   and sticky failover: Android keeps one active session and learns only from real
+   connection/session/content-transfer events, including real time-to-session-up EWMA. The source
+   defaults contain four hostname-based endpoints; confirm live deployment before treating the
+   whole catalog as reachable.
 8. Windows sign-in autostart is installed for the current user through HKCU Run. The installer
    preserves the user choice while rewriting the value to the current installed daemon path. The daemon binds 41112 before starting long-lived workers, so
    duplicate manual/login launches fail fast instead of owning a second clipboard/Relay stack.
@@ -53,11 +84,11 @@
     resolves the current notification only after a real click, and rejects stale action metadata.
     A real fixture E2E passed both reply text and a normal `Mark read` action through the encrypted
     session. Do not add a durable action queue across reconnects.
-11. `conduit-control.exe` has completed its lightweight Fluent pass. It is still raw Win32 and
-    on-demand only: no tray, WinUI/WebView runtime, timer, watcher, or transport ownership. It follows
-    the Windows app theme/system accent, handles the target 125% DPI correctly, and exits to zero
-    processes when closed. Preserve the immutable `OnceLock<Ui>` design; a mutex here caused a
-    synchronous Win32 color-callback deadlock during Refresh.
+11. The primary control surface is the self-contained `windows/conduit-ui` Uno Platform / WinUI 3
+    application. It is on-demand only: it owns no transport and does not add a resident UI process
+    after the window closes. The Rust `conduit-control` binary remains a source-level compatibility
+    path, but it is not the current packaged UI. Preserve the event-driven status/config seams and
+    the no-polling lifecycle.
 12. Automatic non-root clipboard mirroring is now explicitly platform-blocked/deferred rather than
     an implementation backlog item. Android 10+ background clipboard access requires input focus or
     default-IME status; AccessibilityService alone does not satisfy the contract. Making Conduit the
@@ -107,16 +138,17 @@ same authoritative state as the architecture/progress/backlog records.
 ## Repository state at handoff
 
 ```text
-latest functional commit: 25db650 Mirror MessagingStyle conversation history
-origin/master:             1c7e18c Send files from the share sheet, and stop toasting what the phone silenced
-recent feature commits:    d056b80 Fluent control surface; 7dd206d notification actions; 26427af control surface
+HEAD:                      8987c1b Release Conduit 0.1.4
+origin/master:             8987c1b Release Conduit 0.1.4
+tag:                       v0.1.4
+previous security cleanup: 43600c9 Remove embedded Relay origin IPs
 ```
 
-Local `master` includes the tested persistence fix, screenshot implementation, compatible relay
-migration, M0/M2 sampling, bidirectional file-transfer UX, long-transfer heartbeat fixes, Windows
-parked-socket keepalive, Windows Relay SOCKS5 support, notification actions/inline reply, and bounded MessagingStyle conversation history. None of these local commits has been
-pushed. The compatible TYO relay and installed endpoints were built from this local line. A future
-Git push is still outward-facing: obtain explicit approval unless requested in the same context.
+The published `master` line includes the tested persistence fix, screenshot implementation,
+compatible Relay migration, M0/M2 sampling, bidirectional file-transfer UX, long-transfer
+heartbeat fixes, Windows parked-socket keepalive, Windows Relay SOCKS5 support, notification
+actions/inline reply, bounded MessagingStyle conversation history, Android boot recovery and the
+production-origin cleanup. A future code change must still use the GitHub Actions build gate.
 
 At the current checkpoint, PC→phone CLI success means Android actually published the Downloads row.
 A real 1 MiB device test observed last-chunk send first, then `FILE_RESULT`, then CLI success about
@@ -156,11 +188,11 @@ history is independently verified.
   `%LOCALAPPDATA%\Conduit\config.txt` points this at local Mihomo SOCKS5. Parked Relay sockets enable TCP keepalive before
   blocking for a partner so a dead remote waiter cannot strand the parker forever.
 - **Control-surface seam:** `%LOCALAPPDATA%\Conduit\status.txt` is an event-written snapshot, not a
-  polled status service. `conduit-daemon status` currently reports daemon/link/phone/path/Relay state
-  on demand. Android announces its device name once per encrypted session (`OnePlus 12` on the test
-  phone). `conduit-control.exe` consumes this seam as an on-demand GUI and exits fully when its
-  window closes. Its Fluent pass is complete using native Win32/DWM/Common Controls only; do not turn
-  it into a tray app, background watcher, WinUI host, or second transport owner.
+  polled status service. `conduit-daemon status` reports daemon/link/phone/path/Relay state on
+  demand. Android announces its device name once per encrypted session. The packaged
+  `windows/conduit-ui` Uno/WinUI 3 surface consumes this seam as an on-demand GUI and exits fully
+  when its window closes; it does not own transport state. Keep the status/config seams event-driven
+  and do not turn the UI into a resident polling service.
 - **Wire/security:** `Noise_XX_25519_ChaChaPoly_BLAKE2s`, prologue `conduit/1`; encrypted
   protobuf envelopes; `MAX_FRAME = 65535`, usable plaintext `65519`.  Images/files use 32 KiB
   chunks to fit after protobuf framing.
@@ -220,6 +252,9 @@ See `docs/architecture.md` for full data flow and trust boundaries.
   logs alone.
 
 ## Latest evidence
+
+The following entries are dated historical evidence. They remain useful for reproducing checks, but
+the current release baseline is the snapshot at the top of this file.
 
 - Android JVM tests: **27 passed, 0 failed**.
 - Windows daemon normal test run: **53 passed, 3 ignored, 0 failed**. The added ignored test is an
