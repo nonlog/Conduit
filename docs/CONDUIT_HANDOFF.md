@@ -13,10 +13,9 @@
 
 ## Current snapshot — 2026-10-04
 
-- `codex/non-lan-relay-m3-20261002` contains local commit `ed9748b` with notification duplicate
-  suppression and the Android `remoteMessaging` foreground-service declaration. The documentation
-  update is part of the current local change; do not infer a pushed branch or CI result from the
-  local build.
+- `codex/non-lan-relay-m3-20261002` contains notification fix commit `ed9748b` and documentation
+  commit `d1efcf2`, and is pushed to `origin`. GitHub Actions run `37182119252` passed Android,
+  Windows x64, and Relay Linux for this branch.
 - The current live path is direct LAN: Windows `192.168.31.127:41112` ↔ phone
   `192.168.31.229:<ephemeral-port>`, with daemon status `state=linked,path=lan`. The historical
   phone ADB address `192.168.1.250:5555` is no longer on the current subnet. `127.0.0.1:15556`
@@ -34,8 +33,8 @@
   installed APK therefore contains the routing and duplicate fixes, but the device-specific
   delay still requires an OEM Hans/auto-freeze exemption or policy change.
 
-- The branch's earlier Relay/UI checkpoint was pushed before the current notification work. The
-  current notification commits have not been pushed and have no GitHub Actions result yet.
+- The branch's earlier Relay/UI checkpoint remains in the same pushed history; the current
+  notification commits and their successful CI run are recorded above.
 - GitHub Actions master run `36249356300` and tag/release run `36249808688` both completed
   successfully. The GitHub Release contains the Android debug APK, Windows x64 package, Linux
   Relay binary and checksums. No local build output is authoritative.

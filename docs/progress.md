@@ -12,8 +12,9 @@ has **not** earned M0/M2 completion. The central endurance requirement remains o
 
 The current published repository baseline is release `v0.1.4` at
 `8987c1b701a91894c133cffb1f3123ee49eee266`. The temporary branch
-`codex/non-lan-relay-m3-20261002` now contains the local notification fix commit `ed9748b` and
-the documentation update below; the current branch has no new CI result yet.
+`codex/non-lan-relay-m3-20261002` now contains notification fix commit `ed9748b` and
+documentation commit `d1efcf2`. GitHub Actions run `37182119252` passed Android, Windows x64,
+and Relay Linux for this branch.
 GitHub Actions run `36249356300` passed the master build and run `36249808688` passed the
 tag/release build; both predate the current notification change.
 The prior security cleanup is `43600c997e62fe2549d652cfc2028e514545f24d`; current built-in Relay
