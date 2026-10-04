@@ -1392,7 +1392,12 @@ class SyncService : Service() {
                 startForeground(
                     LINK_NOTIFICATION_ID,
                     notice,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING
+                        } else {
+                            0
+                        },
                 )
                 foregroundVisible = true
             } catch (e: IllegalStateException) {
