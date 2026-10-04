@@ -84,6 +84,8 @@ import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 
 private const val TAG = "conduit.ui"
+private const val OPPO_APP_FREEZE_FEATURE = "oplus.software.pms_app_frozen"
+private const val OPPO_APP_DISABLE_FEATURE = "oppo.appdisable.support"
 
 /** What the one screen has to say. */
 enum class LinkState(val label: String) {
@@ -142,6 +144,12 @@ class MainActivity : ComponentActivity() {
     private var clipboardAccessibilityEnabled by mutableStateOf(false)
     private var batteryOptimizationIgnored by mutableStateOf(true)
 
+    /** The public Settings page is only usable on Oplus builds that expose the freezer feature. */
+    private val oplusAppFreezeSupported: Boolean by lazy(LazyThreadSafetyMode.NONE) {
+        packageManager.hasSystemFeature(OPPO_APP_FREEZE_FEATURE) ||
+            packageManager.hasSystemFeature(OPPO_APP_DISABLE_FEATURE)
+    }
+
     private val pairingScanner by lazy {
         val options = GmsBarcodeScannerOptions.Builder()
             .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
@@ -199,6 +207,7 @@ class MainActivity : ComponentActivity() {
                         startActivity(Intent(AndroidSettings.ACTION_ACCESSIBILITY_SETTINGS))
                     },
                     batteryOptimizationIgnored = batteryOptimizationIgnored,
+                    oplusAppFreezeSupported = oplusAppFreezeSupported,
                     onRequestBatteryOptimization = ::requestBatteryOptimization,
                     onOpenOplusFreezeSettings = ::openOplusFreezeSettings,
                     onConnect = { send(ACTION_CONNECT) },
@@ -391,12 +400,33 @@ class MainActivity : ComponentActivity() {
             }
     }
 
-    /** Opens ColorOS's actual Hans/quick-freeze list; ordinary Android gets app details instead. */
+    /** Opens the OEM freezer when that feature exists, otherwise the usable per-app controls. */
     private fun openOplusFreezeSettings() {
+        // Some export builds keep this legacy Settings activity in the manifest but make it
+        // finish immediately because the app-freezer feature is disabled for that model/region.
+        // Open the standard page instead of appearing to do nothing. It contains this phone's
+        // "Allow background activity" switch.
+        if (!oplusAppFreezeSupported) {
+            openBackgroundDeliverySettings()
+            return
+        }
+
         val oplus = Intent("oplus.intent.action.settings.APP_FORZEN_OPLUS_SETTINGS")
+            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
         runCatching { startActivity(oplus) }
             .onFailure {
                 Log.i(TAG, "Oplus app-freeze settings unavailable", it)
+                openBackgroundDeliverySettings()
+            }
+    }
+
+    private fun openBackgroundDeliverySettings() {
+        val battery = Intent("android.settings.VIEW_ADVANCED_POWER_USAGE_DETAIL")
+            .setData(Uri.parse("package:$packageName"))
+            .putExtra("request_ignore_background_restriction", true)
+        runCatching { startActivity(battery) }
+            .onFailure {
+                Log.w(TAG, "per-app battery settings unavailable", it)
                 startActivity(
                     Intent(AndroidSettings.ACTION_APPLICATION_DETAILS_SETTINGS)
                         .setData(Uri.parse("package:$packageName")),
@@ -442,6 +472,7 @@ private fun ConduitApp(
     clipboardAccessibilityEnabled: Boolean,
     onOpenClipboardAccessibility: () -> Unit,
     batteryOptimizationIgnored: Boolean,
+    oplusAppFreezeSupported: Boolean,
     onRequestBatteryOptimization: () -> Unit,
     onOpenOplusFreezeSettings: () -> Unit,
     onConnect: () -> Unit,
@@ -630,6 +661,7 @@ private fun ConduitApp(
                 clipboardAccessibilityEnabled = clipboardAccessibilityEnabled,
                 onOpenClipboardAccessibility = onOpenClipboardAccessibility,
                 batteryOptimizationIgnored = batteryOptimizationIgnored,
+                oplusAppFreezeSupported = oplusAppFreezeSupported,
                 onRequestBatteryOptimization = onRequestBatteryOptimization,
                 onOpenOplusFreezeSettings = onOpenOplusFreezeSettings,
                 onPair = requestPair,
@@ -722,6 +754,7 @@ private fun SettingsTab(
     clipboardAccessibilityEnabled: Boolean,
     onOpenClipboardAccessibility: () -> Unit,
     batteryOptimizationIgnored: Boolean,
+    oplusAppFreezeSupported: Boolean,
     onRequestBatteryOptimization: () -> Unit,
     onOpenOplusFreezeSettings: () -> Unit,
     onPair: () -> Unit,
@@ -860,8 +893,16 @@ private fun SettingsTab(
                     HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
                     PreferenceRow(
                         icon = R.drawable.ic_settings,
-                        title = "ColorOS app freeze",
-                        subtitle = "Disable Quick Freeze for Conduit",
+                        title = if (oplusAppFreezeSupported) {
+                            "ColorOS app freeze"
+                        } else {
+                            "Background battery settings"
+                        },
+                        subtitle = if (oplusAppFreezeSupported) {
+                            "Disable Quick Freeze for Conduit"
+                        } else {
+                            "Allow Conduit to run while the screen is off"
+                        },
                         onClick = onOpenOplusFreezeSettings,
                     )
                 }
