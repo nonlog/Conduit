@@ -13,9 +13,9 @@
 
 ## Current snapshot — 2026-10-04
 
-- `codex/non-lan-relay-m3-20261002` contains notification fix commit `ed9748b` and documentation
-  commit `d1efcf2`, and is pushed to `origin`. GitHub Actions run `37182119252` passed Android,
-  Windows x64, and Relay Linux for this branch.
+- `codex/non-lan-relay-m3-20261002` is at HEAD `4da7bbd`, contains notification fix commit
+  `ed9748b` and the documented CI evidence, and is pushed to `origin`. GitHub Actions run
+  `37182119252` passed Android, Windows x64, and Relay Linux for this branch.
 - The current live path is direct LAN: Windows `192.168.31.127:41112` ↔ phone
   `192.168.31.229:<ephemeral-port>`, with daemon status `state=linked,path=lan`. The historical
   phone ADB address `192.168.1.250:5555` is no longer on the current subnet. `127.0.0.1:15556`
