@@ -1,6 +1,6 @@
 # Conduit development progress
 
-> **Snapshot date:** 2026-10-02
+> **Snapshot date:** 2026-10-04
 > **Meaning of “verified”:** an observed test/device result, not an assumption inferred from
 > source.  This record is intentionally more conservative than a feature checklist.
 
@@ -11,12 +11,11 @@ has **not** earned M0/M2 completion. The central endurance requirement remains o
 48-hour run must show no net thread, handle/FD, or session-lifecycle growth.
 
 The current published repository baseline is release `v0.1.4` at
-`8987c1b701a91894c133cffb1f3123ee49eee266`. Local `master` is two commits ahead of
-`origin/master` at `9bb6e76`; the Relay fake-IP fix and Android Material 3 navigation refresh are
-committed as `73252f3` on the temporary branch `codex/non-lan-relay-m3-20261002`; the worktree is
-clean.
+`8987c1b701a91894c133cffb1f3123ee49eee266`. The temporary branch
+`codex/non-lan-relay-m3-20261002` now contains the local notification fix commit `ed9748b` and
+the documentation update below; the current branch has no new CI result yet.
 GitHub Actions run `36249356300` passed the master build and run `36249808688` passed the
-tag/release build; those runs predate the current notification change.
+tag/release build; both predate the current notification change.
 The prior security cleanup is `43600c997e62fe2549d652cfc2028e514545f24d`; current built-in Relay
 entries contain hostnames and ports only, while old public history remains unchanged.
 
@@ -24,6 +23,33 @@ The protocol rollout is deployed on the tested path: the compatible Relay accept
 and current Android/Windows clients use them. Legacy 47-byte inference remains enabled only as
 an upgrade bridge for older clients. The dated sections below are historical evidence; this
 release baseline and `docs/TODO.md` are authoritative for current status.
+
+### Notification duplicates, route identity, and screen-off verification — 2026-10-04
+
+- The live notification session is direct LAN: Windows `192.168.31.127:41112` is established to
+  the phone `192.168.31.229:<ephemeral-port>`, and the daemon reports `state=linked,path=lan`.
+  The older `192.168.1.250:5555` address is an ADB address from a previous Wi-Fi subnet, not a
+  Conduit endpoint. `127.0.0.1:15556/15557` belongs to FRP STCP ADB visitors and is only the
+  diagnostic failover transport; Conduit notification frames never use it. The source's
+  `host=127.0.0.1` path is an explicit `adb reverse` debugging bypass only.
+- The Nagram XF key `0|fork.risin42.nagramx|1326238159|null|10618` produced seven identical
+  title/body rows in roughly fifteen seconds. `NotificationRelay` now compares the rendered
+  title, body, messages, and actions while retaining `postTime` only for the wire timestamp, so
+  an unchanged repost is dropped while a changed message on a reused key still passes. A JVM
+  regression test covers both cases.
+- A locked-screen repro measured the real delay before Conduit transport: Android posted the test
+  notification, but `onNotificationPosted` did not log until Oplus `Hans` unfroze UID 10550 with
+  reason `Packet`; one run was about 24.1 seconds. At the same time the desktop remained on the
+  direct LAN 41112 session. Android Doze whitelist, `RUN_ANY_IN_BACKGROUND=allow`, the connected
+  device foreground service, and the new `remoteMessaging` service type did not stop this
+  device's `OplusHansManager` from freezing the process (`isFreezeExempt=false`). This is an OEM
+  power-policy limit, not an ADB/15556 routing problem.
+- `:app:testDebugUnitTest` and `assembleDebug` passed. The resulting debug APK was installed on
+  the connected OnePlus test phone; `dumpsys` reported foreground-service types `0x210`
+  (`connectedDevice | remoteMessaging`). The remote-messaging declaration is a supported
+  classification for other Android/OEM builds, but it is not evidence that this ColorOS device
+  stopped freezing Conduit. The next proof requires changing the OEM's Hans/auto-freeze policy,
+  then repeating the same unique-marker lock-screen test.
 
 ### Notification latency investigation — 2026-10-01
 

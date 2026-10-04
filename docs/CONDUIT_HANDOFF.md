@@ -1,6 +1,6 @@
 # Conduit handoff
 
-**Prepared:** 2026-10-02
+**Prepared:** 2026-10-04
 **Repository:** `D:\Workspace\Conduit`  
 **Branch:** `codex/non-lan-relay-m3-20261002`  
 **Remote:** `https://github.com/nonlog/Conduit.git`
@@ -11,10 +11,31 @@
 > step. A new session should be able to resume safely from this file plus the linked docs even if
 > the previous conversation ended abruptly.
 
-## Current snapshot — 2026-10-02
+## Current snapshot — 2026-10-04
 
-- `codex/non-lan-relay-m3-20261002` is based on `9bb6e76` and contains commit `1f52b33`, pushed
-  to `origin/codex/non-lan-relay-m3-20261002`. The working tree is clean.
+- `codex/non-lan-relay-m3-20261002` contains local commit `ed9748b` with notification duplicate
+  suppression and the Android `remoteMessaging` foreground-service declaration. The documentation
+  update is part of the current local change; do not infer a pushed branch or CI result from the
+  local build.
+- The current live path is direct LAN: Windows `192.168.31.127:41112` ↔ phone
+  `192.168.31.229:<ephemeral-port>`, with daemon status `state=linked,path=lan`. The historical
+  phone ADB address `192.168.1.250:5555` is no longer on the current subnet. `127.0.0.1:15556`
+  and `15557` are FRP STCP ADB backup transports used by diagnostics; they are not Conduit
+  notification or Relay sockets. Conduit uses `127.0.0.1` only for the explicit `adb reverse`
+  debugging bypass documented in `docs/development.md`.
+- The repeated Nagram XF notification was reproduced under one Android key with identical
+  rendered content. `NotificationRelay` now ignores a changed `postTime` when comparing the
+  cached rendered payload, while still sending the original timestamp and allowing changed
+  content through. `NotificationRelayTest` and the Android JVM suite pass.
+- A locked-screen test showed the remaining ten-to-twenty-four-second delay occurs before
+  `NotificationRelay` runs: Oplus `Hans` freezes UID 10550 and later unfreezes it for a packet.
+  Android Doze whitelist, `RUN_ANY_IN_BACKGROUND=allow`, connected-device FGS, and the added
+  `remoteMessaging` FGS type all remained active while Hans still froze the process. The
+  installed APK therefore contains the routing and duplicate fixes, but the device-specific
+  delay still requires an OEM Hans/auto-freeze exemption or policy change.
+
+- The branch's earlier Relay/UI checkpoint was pushed before the current notification work. The
+  current notification commits have not been pushed and have no GitHub Actions result yet.
 - GitHub Actions master run `36249356300` and tag/release run `36249808688` both completed
   successfully. The GitHub Release contains the Android debug APK, Windows x64 package, Linux
   Relay binary and checksums. No local build output is authoritative.
@@ -23,8 +44,8 @@
 - Notification-latency investigation on 2026-10-01 found the Android and Windows wall clocks
   within about 65 ms during a synchronized read, so the observed ten-second-plus delay is not
   a timestamp conversion artifact. `NotificationRelay` previously loaded application/contact
-  icons and encoded PNGs inside `onNotificationPosted`; the current uncommitted fix builds that
-  payload on Link's existing serialized sender thread instead, keeping the system callback short.
+  icons and encoded PNGs inside `onNotificationPosted`; the committed fix builds that payload on
+  Link's existing serialized sender thread instead, keeping the system callback short.
   The app now also exposes Android's standard `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` request in
   Settings > Background delivery. The request is user-approved and supplements the OEM-specific
   "allow background activity" setting; it cannot silently disable Oplus FastFreeze.
