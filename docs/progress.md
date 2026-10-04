@@ -12,8 +12,8 @@ has **not** earned M0/M2 completion. The central endurance requirement remains o
 
 The current published repository baseline is release `v0.1.4` at
 `8987c1b701a91894c133cffb1f3123ee49eee266`. The temporary branch
-`codex/non-lan-relay-m3-20261002` is at HEAD `43ab4a1` and contains notification fix commit
-`ed9748b` plus the documented CI evidence. GitHub Actions run `37182119252` passed Android,
+`codex/non-lan-relay-m3-20261002` contains notification fix commit `ed9748b` and the ColorOS
+settings fallback implementation `9f728ec`, plus the documented CI evidence. GitHub Actions run `37182119252` passed Android,
 Windows x64, and Relay Linux for this branch.
 GitHub Actions run `36249356300` passed the master build and run `36249808688` passed the
 tag/release build; both predate the current notification change.
@@ -61,11 +61,11 @@ release baseline and `docs/TODO.md` are authoritative for current status.
   capabilities; they do not prove which Sefirah code path keeps every notification immediate.
 - A temporary device A/B check enabled Conduit's existing AccessibilityService while the screen
   was off. Hans still froze UID 10550 after about 26 seconds, so AccessibilityService is not a
-  reliable OEM exemption. The Android settings screen now adds a ColorOS-only **ColorOS app
-  freeze** entry that opens Oplus's protected app-freeze list; the debug APK with this entry was
-  installed locally. Disabling Quick Freeze there is the remaining user-level policy change that
-  can make the listener callback immediate. Ordinary devices fall back to Conduit's app-details
-  page.
+  reliable OEM exemption. The Android settings screen now checks whether the Oplus app-freezer
+  feature is actually exposed. This OnePlus does not expose it, so the entry opens the standard
+  per-app battery detail with `request_ignore_background_restriction` instead of launching a
+  protected page that immediately finishes; freezer-capable Oplus builds still get the OEM list.
+  The debug APK was installed through LAN ADB at `192.168.31.229:5555`.
 
 ### Notification latency investigation — 2026-10-01
 

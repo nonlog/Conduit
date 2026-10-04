@@ -13,8 +13,8 @@
 
 ## Current snapshot — 2026-10-04
 
-- `codex/non-lan-relay-m3-20261002` is at HEAD `43ab4a1`, contains notification fix commit
-  `ed9748b` and the documented CI evidence, and is pushed to `origin`. GitHub Actions run
+- `codex/non-lan-relay-m3-20261002` contains notification fix commit `ed9748b` and the
+  ColorOS settings fallback implementation `9f728ec`; both are pushed to `origin`. GitHub Actions run
   `37182119252` passed Android, Windows x64, and Relay Linux for this branch.
 - The current live path is direct LAN: Windows `192.168.31.127:41112` ↔ phone
   `192.168.31.229:<ephemeral-port>`, with daemon status `state=linked,path=lan`. The historical
@@ -37,13 +37,17 @@
   foreground network service, `WAKE_LOCK`, and Shizuku/worker bridge components. Conduit is a
   normal user UID without those vendor privileges, so its Hans freeze is an architectural
   compatibility gap rather than a LAN/ADB route selection issue.
-- The installed debug APK now adds **Settings > Background delivery > ColorOS app freeze**. It
-  declares the normal `oplus.permission.settings.SETTINGS_APPFROZEN` permission and opens
-  `oplus.intent.action.settings.APP_FORZEN_OPLUS_SETTINGS`; on non-Oplus devices it falls back to
-  Conduit's app-details page. A device A/B check also enabled Conduit's AccessibilityService for
-  one screen-off interval; Hans still froze UID 10550 after about 26 seconds, so accessibility is
-  not treated as a fix. The next device check is to disable Quick Freeze for Conduit in the Oplus
-  list, then repeat the unique-marker locked-screen notification test.
+- The installed debug APK now adds a usable **Settings > Background delivery** entry for this
+  OnePlus. The app checks `oplus.software.pms_app_frozen` and `oppo.appdisable.support` before
+  offering the legacy `oplus.intent.action.settings.APP_FORZEN_OPLUS_SETTINGS` page. This device
+  reports neither feature, so the row is labelled **Background battery settings** and opens
+  `android.settings.VIEW_ADVANCED_POWER_USAGE_DETAIL` for Conduit with the standard
+  `request_ignore_background_restriction` focus; the OEM app-freeze page remains available on
+  models that expose it. The APK was rebuilt and installed through the LAN ADB target
+  `192.168.31.229:5555`. A device A/B check also enabled Conduit's AccessibilityService for one
+  screen-off interval; Hans still froze UID 10550 after about 26 seconds, so accessibility is not
+  treated as a fix. After the user confirms the background setting, repeat the unique-marker
+  locked-screen notification test.
 
 - The branch's earlier Relay/UI checkpoint remains in the same pushed history; the current
   notification commits and their successful CI run are recorded above.
