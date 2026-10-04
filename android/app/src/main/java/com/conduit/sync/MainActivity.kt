@@ -200,6 +200,7 @@ class MainActivity : ComponentActivity() {
                     },
                     batteryOptimizationIgnored = batteryOptimizationIgnored,
                     onRequestBatteryOptimization = ::requestBatteryOptimization,
+                    onOpenOplusFreezeSettings = ::openOplusFreezeSettings,
                     onConnect = { send(ACTION_CONNECT) },
                     onDisconnect = { send(ACTION_DISCONNECT) },
                     onPair = ::sendPair,
@@ -389,6 +390,19 @@ class MainActivity : ComponentActivity() {
                 startActivity(Intent(AndroidSettings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
             }
     }
+
+    /** Opens ColorOS's actual Hans/quick-freeze list; ordinary Android gets app details instead. */
+    private fun openOplusFreezeSettings() {
+        val oplus = Intent("oplus.intent.action.settings.APP_FORZEN_OPLUS_SETTINGS")
+        runCatching { startActivity(oplus) }
+            .onFailure {
+                Log.i(TAG, "Oplus app-freeze settings unavailable", it)
+                startActivity(
+                    Intent(AndroidSettings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                        .setData(Uri.parse("package:$packageName")),
+                )
+            }
+    }
 }
 
 @Composable
@@ -429,6 +443,7 @@ private fun ConduitApp(
     onOpenClipboardAccessibility: () -> Unit,
     batteryOptimizationIgnored: Boolean,
     onRequestBatteryOptimization: () -> Unit,
+    onOpenOplusFreezeSettings: () -> Unit,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
     onPair: (String?) -> Unit,
@@ -616,6 +631,7 @@ private fun ConduitApp(
                 onOpenClipboardAccessibility = onOpenClipboardAccessibility,
                 batteryOptimizationIgnored = batteryOptimizationIgnored,
                 onRequestBatteryOptimization = onRequestBatteryOptimization,
+                onOpenOplusFreezeSettings = onOpenOplusFreezeSettings,
                 onPair = requestPair,
                 onCancelPair = onCancelPair,
                 onForget = onForget,
@@ -707,6 +723,7 @@ private fun SettingsTab(
     onOpenClipboardAccessibility: () -> Unit,
     batteryOptimizationIgnored: Boolean,
     onRequestBatteryOptimization: () -> Unit,
+    onOpenOplusFreezeSettings: () -> Unit,
     onPair: () -> Unit,
     onCancelPair: () -> Unit,
     onForget: () -> Unit,
@@ -835,6 +852,19 @@ private fun SettingsTab(
                     },
                     onClick = onRequestBatteryOptimization,
                 )
+                if (Build.MANUFACTURER.equals("oneplus", ignoreCase = true) ||
+                    Build.MANUFACTURER.equals("oppo", ignoreCase = true) ||
+                    Build.BRAND.equals("oneplus", ignoreCase = true) ||
+                    Build.BRAND.equals("oppo", ignoreCase = true)
+                ) {
+                    HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+                    PreferenceRow(
+                        icon = R.drawable.ic_settings,
+                        title = "ColorOS app freeze",
+                        subtitle = "Disable Quick Freeze for Conduit",
+                        onClick = onOpenOplusFreezeSettings,
+                    )
+                }
             }
         }
         item {

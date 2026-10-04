@@ -12,7 +12,7 @@ has **not** earned M0/M2 completion. The central endurance requirement remains o
 
 The current published repository baseline is release `v0.1.4` at
 `8987c1b701a91894c133cffb1f3123ee49eee266`. The temporary branch
-`codex/non-lan-relay-m3-20261002` is at HEAD `b54e16a` and contains notification fix commit
+`codex/non-lan-relay-m3-20261002` is at HEAD `267d959` and contains notification fix commit
 `ed9748b` plus the documented CI evidence. GitHub Actions run `37182119252` passed Android,
 Windows x64, and Relay Linux for this branch.
 GitHub Actions run `36249356300` passed the master build and run `36249808688` passed the
@@ -59,6 +59,13 @@ release baseline and `docs/TODO.md` are authoritative for current status.
   Shizuku/worker bridge components, and its process was not frozen in the same snapshot. These
   facts prove that Conduit lacks the OEM/privileged path and Sefirah has additional wake/bridge
   capabilities; they do not prove which Sefirah code path keeps every notification immediate.
+- A temporary device A/B check enabled Conduit's existing AccessibilityService while the screen
+  was off. Hans still froze UID 10550 after about 26 seconds, so AccessibilityService is not a
+  reliable OEM exemption. The Android settings screen now adds a ColorOS-only **ColorOS app
+  freeze** entry that opens Oplus's protected app-freeze list; the debug APK with this entry was
+  installed locally. Disabling Quick Freeze there is the remaining user-level policy change that
+  can make the listener callback immediate. Ordinary devices fall back to Conduit's app-details
+  page.
 
 ### Notification latency investigation — 2026-10-01
 

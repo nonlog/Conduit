@@ -13,7 +13,7 @@
 
 ## Current snapshot — 2026-10-04
 
-- `codex/non-lan-relay-m3-20261002` is at HEAD `b54e16a`, contains notification fix commit
+- `codex/non-lan-relay-m3-20261002` is at HEAD `267d959`, contains notification fix commit
   `ed9748b` and the documented CI evidence, and is pushed to `origin`. GitHub Actions run
   `37182119252` passed Android, Windows x64, and Relay Linux for this branch.
 - The current live path is direct LAN: Windows `192.168.31.127:41112` ↔ phone
@@ -37,6 +37,13 @@
   foreground network service, `WAKE_LOCK`, and Shizuku/worker bridge components. Conduit is a
   normal user UID without those vendor privileges, so its Hans freeze is an architectural
   compatibility gap rather than a LAN/ADB route selection issue.
+- The installed debug APK now adds **Settings > Background delivery > ColorOS app freeze**. It
+  declares the normal `oplus.permission.settings.SETTINGS_APPFROZEN` permission and opens
+  `oplus.intent.action.settings.APP_FORZEN_OPLUS_SETTINGS`; on non-Oplus devices it falls back to
+  Conduit's app-details page. A device A/B check also enabled Conduit's AccessibilityService for
+  one screen-off interval; Hans still froze UID 10550 after about 26 seconds, so accessibility is
+  not treated as a fix. The next device check is to disable Quick Freeze for Conduit in the Oplus
+  list, then repeat the unique-marker locked-screen notification test.
 
 - The branch's earlier Relay/UI checkpoint remains in the same pushed history; the current
   notification commits and their successful CI run are recorded above.

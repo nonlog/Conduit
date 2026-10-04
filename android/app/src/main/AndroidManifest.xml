@@ -13,6 +13,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
     <!-- Lets the user approve Conduit for Android's standard screen-off battery exemption. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- ColorOS exposes its app-freeze list through a normal permission. On other devices the
+         permission is unknown and the settings action falls back to this app's details page. -->
+    <uses-permission android:name="oplus.permission.settings.SETTINGS_APPFROZEN" />
     <!-- Android 14+ will not start a connectedDevice service on FOREGROUND_SERVICE_CONNECTED_DEVICE
          alone; it also demands one permission that proves an actual device is involved.
          Multicast is the honest one here, because mDNS discovery is exactly what we do. -->
