@@ -32,6 +32,11 @@
   `remoteMessaging` FGS type all remained active while Hans still froze the process. The
   installed APK therefore contains the routing and duplicate fixes, but the device-specific
   delay still requires an OEM Hans/auto-freeze exemption or policy change.
+- The comparison baseline is now recorded: this OnePlus's Phone Link path includes the system/
+  privileged `com.oplus.linker` package (UID 10159), while Sefirah 3.1.0 has a connected-device
+  foreground network service, `WAKE_LOCK`, and Shizuku/worker bridge components. Conduit is a
+  normal user UID without those vendor privileges, so its Hans freeze is an architectural
+  compatibility gap rather than a LAN/ADB route selection issue.
 
 - The branch's earlier Relay/UI checkpoint remains in the same pushed history; the current
   notification commits and their successful CI run are recorded above.

@@ -51,6 +51,14 @@ release baseline and `docs/TODO.md` are authoritative for current status.
   classification for other Android/OEM builds, but it is not evidence that this ColorOS device
   stopped freezing Conduit. The next proof requires changing the OEM's Hans/auto-freeze policy,
   then repeating the same unique-marker lock-screen test.
+- A comparison with the two alternatives explains the device-specific difference. The active
+  OnePlus cross-device stack includes `com.oplus.linker`, a system/privileged product package
+  (UID 10159) with vendor connectivity permissions and long-lived services; the Microsoft
+  `com.microsoft.appmanager` package is stopped in this image. Sefirah 3.1.0 is also on the
+  Android Doze whitelist, but its network service has `connectedDevice` FGS, `WAKE_LOCK`, and
+  Shizuku/worker bridge components, and its process was not frozen in the same snapshot. These
+  facts prove that Conduit lacks the OEM/privileged path and Sefirah has additional wake/bridge
+  capabilities; they do not prove which Sefirah code path keeps every notification immediate.
 
 ### Notification latency investigation — 2026-10-01
 
