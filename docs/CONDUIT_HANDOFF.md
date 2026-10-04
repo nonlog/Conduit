@@ -13,7 +13,7 @@
 
 ## Current snapshot — 2026-10-04
 
-- `codex/non-lan-relay-m3-20261002` is at HEAD `4da7bbd`, contains notification fix commit
+- `codex/non-lan-relay-m3-20261002` is at HEAD `b54e16a`, contains notification fix commit
   `ed9748b` and the documented CI evidence, and is pushed to `origin`. GitHub Actions run
   `37182119252` passed Android, Windows x64, and Relay Linux for this branch.
 - The current live path is direct LAN: Windows `192.168.31.127:41112` ↔ phone
