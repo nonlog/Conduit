@@ -12,7 +12,7 @@ has **not** earned M0/M2 completion. The central endurance requirement remains o
 
 The current published repository baseline is release `v0.1.4` at
 `8987c1b701a91894c133cffb1f3123ee49eee266`. The temporary branch
-`codex/non-lan-relay-m3-20261002` is at HEAD `267d959` and contains notification fix commit
+`codex/non-lan-relay-m3-20261002` is at HEAD `43ab4a1` and contains notification fix commit
 `ed9748b` plus the documented CI evidence. GitHub Actions run `37182119252` passed Android,
 Windows x64, and Relay Linux for this branch.
 GitHub Actions run `36249356300` passed the master build and run `36249808688` passed the
