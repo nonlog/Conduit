@@ -15,9 +15,11 @@
 
 - The user confirms the boot loop was caused by **another root module**, not Conduit, and has
   resolved it. Recovery is closed. Do not modify unrelated modules or repeat recovery experiments.
-- Git HEAD remains `97ca8a4` on `codex/non-lan-relay-m3-20261002`. The uncommitted work is
-  `ClipboardHook.kt`, `ConnectedProtectionListenersTest.kt`, and this handoff. Wake-lock and
-  self-binding experiments remain rejected and reverted.
+- Installed source fix is committed as **`dc03ff3`** on `codex/non-lan-relay-m3-20261002`,
+  based on `97ca8a4`. Any subsequent checkpoint commit changes only this handoff; use
+  `git rev-parse HEAD` for the full current documentation HEAD. The source, regression check,
+  and verified device results are committed locally. The worktree is clean at completion.
+  Wake-lock and self-binding experiments remain rejected and reverted.
 - The new debug APK was installed in place at **15:57:56** with SHA-256
   `EE1B020930E64F07B4728FC44D9500E79AE62E34D00CB3C192D64CD92D15D232`.
   Its signer matches the baseline; app-data inode **801765**, firstInstallTime, pairing, and
