@@ -1,6 +1,6 @@
 # Conduit handoff
 
-**Prepared:** 2026-10-04
+**Prepared:** 2026-10-05
 **Repository:** `D:\Workspace\Conduit`  
 **Branch:** `codex/non-lan-relay-m3-20261002`  
 **Remote:** `https://github.com/nonlog/Conduit.git`
@@ -11,7 +11,144 @@
 > step. A new session should be able to resume safely from this file plus the linked docs even if
 > the previous conversation ended abruptly.
 
-## Current snapshot — 2026-10-04
+## Resumption checkpoint — 2026-10-05
+
+- The user confirms the boot loop was caused by **another root module**, not Conduit, and has
+  resolved it. Recovery is closed. Do not modify unrelated modules or repeat recovery experiments.
+- Git HEAD remains `97ca8a4` on `codex/non-lan-relay-m3-20261002`. The uncommitted work is
+  `ClipboardHook.kt`, `ConnectedProtectionListenersTest.kt`, and this handoff. Wake-lock and
+  self-binding experiments remain rejected and reverted.
+- The new debug APK was installed in place at **15:57:56** with SHA-256
+  `EE1B020930E64F07B4728FC44D9500E79AE62E34D00CB3C192D64CD92D15D232`.
+  Its signer matches the baseline; app-data inode **801765**, firstInstallTime, pairing, and
+  settings are preserved. Current Conduit UID is **10061**, not historical 10550.
+- Primary ADB is `192.168.31.229:5555`. `127.0.0.1:15556` is only the backup ADB transport,
+  never a Conduit business route. The app is authenticated and `state=linked,path=lan` to
+  Windows `192.168.31.127:41112`, verified through the installed daemon's actual `status` CLI.
+- Windows runtime is `D:\Programs\Scoop\apps\conduit\current\conduit-daemon.exe` and its
+  actual identity/config/history directory is **`D:\Programs\Scoop\persist\conduit\data`**.
+  Preserve it. Uninstall rotated the phone identity; the resulting rapid EOF/reconnect loop
+  was fixed by explicitly pairing both sides over LAN at 15:18:58. The daemon was restarted
+  with the same binary/data and scoped logs captured in the diagnostic directory below.
+- The remaining 5–10-second locked delay was reproduced **before NotificationRelay's callback**
+  for UID 10061. A bounded 120-second root OEM lease prototype reduced a marker to **105 ms ±56 ms**
+  after another 45 seconds locked. This established the candidate interface; it was not deployed
+  as a resident worker. Immediate-after-screen-off tests are not acceptance evidence.
+- The installed fix extends the existing optional **legacy LSPosed** `ClipboardHook`.
+  It acquires ColorOS's `requestFrozenDelay(timeout=0)` only when Conduit's authenticated-link
+  clipboard listener is registered. PackageManager UID must equal the caller's UID. The final
+  listener removal or client Binder death cancels the lease. Firmware AIDL classes/constants
+  are reflected; unsupported devices fail harmlessly without altering clipboard registration.
+  Direct AIDL avoids the OEM manager's extra HandlerThread. There is no polling, wake lock,
+  timer renewal, zygote hook, or new persistent process. The low-idle-cost constraint remains.
+- Android `testDebugUnitTest`: **50 passed, 0 failed**; `assembleDebug` passed. The regression
+  check covers UID spoofing, duplicate listeners, final-listener release, death/removal
+  idempotence, reconnect, UID changes, and rejected acquisition. A read-only `app_process`
+  check also constructed the actual APK bridge on this firmware without requesting a lease.
+- Uninstall cleared LSPosed's Conduit module state/scope; `/data/adb/lspd/cli` is absent, so
+  no live DB edit was used. The user enabled **System Framework + Conduit** and rebooted.
+  New system_server at **16:06:24** logged 2 clipboard-access and **2 OEM protection hooks**;
+  the app logged its LSPosed marker at 16:06:52. The actual OEM lease query returns
+  **`Long.MAX_VALUE`**, confirming the connection-owned protection is loaded and active.
+- Installed runtime lifecycle checks passed: DISCONNECT -> lease **0**; CONNECT -> **MAX**;
+  app force-stop/Binder death -> **0**; launch -> **MAX**. For these explicit test actions,
+  `am start-service` must run through `su -c` because SyncService is not exported. An ordinary
+  shell rejection is not an OEM lease failure.
+- Production acceptance: after uninterrupted screen off from **16:13:25 to 16:18:51 (+08)**,
+  marker `CONDUIT_LOCKED_20261005_081851_742` reached Windows in **156 ms ±41 ms** and OEM
+  protection still reported **MAX**. The phone offset was refreshed to **+684 ms** after reboot.
+  Power state was Dozing/screen off, but DeviceIdle was ACTIVE because USB charging was present;
+  this is sustained lockscreen evidence, not deep-Doze evidence. The synthetic-marker fixture
+  `Test-LockedNotification.ps1` is bounded to 30 seconds and polls only Windows history.
+- A separate bounded **forced deep-Doze** acceptance run **passed**. Initial
+  `mForceIdle=false` and battery `UpdatesStopped=false` were verified; existing battery exemption
+  is `user,com.conduit.sync,10061`. The test uses `cmd deviceidle force-idle deep`, holds IDLE
+  for 90 seconds, measures one marker, and calls `unforce` in `finally`. With the screen still
+  off since 16:13:25, marker `CONDUIT_LOCKED_20261005_082300_113` arrived at **16:23:00** in
+  **114 ms ±41 ms**. Deep state was **IDLE before and after** the marker and lease remained MAX.
+  The original automatic policy was verified restored: **mForceIdle=false**, DeviceIdle ACTIVE,
+  screen still off. No battery override/whitelist was changed. Final clock offset +694.5 ms
+  (77 ms round trip) is consistent with the earlier +684 ms estimate within measurement bounds.
+- Local diagnostics are in `C:\Users\www\AppData\Local\Temp\ConduitRecovery-20261005`:
+  lease/clock outputs, baseline and installed APK checks, LSPosed snapshot, daemon logs,
+  `HansProbe.java`, and the bounded notification fixture. Raw logs may contain private data;
+  report only synthetic marker timing. `notifications.tsv`'s first column is Android post time,
+  not Windows receive time. Actual toast visibility has not been visually checked.
+- The installed fix passed sustained screen-off and controlled deep-Doze acceptance on this
+  firmware; disconnect/Binder-death cleanup was independently verified. Next: collect the
+  user's normal incoming-notification feedback during longer battery-powered use. Overnight
+  standby, non-LAN delivery with the new hook, and other OEM firmware are not established by
+  these two marker samples. Root scopes and Android's existing battery exemption are required
+  for the verified device path; do not claim generic non-root OEM-freeze immunity.
+## Historical recovery checkpoint — 2026-10-05
+
+The following entries describe the recovery investigation before the user's resolution above.
+They are retained as evidence; their unresolved state and next steps are superseded.
+
+- **Recovery is incomplete.** The user now reports normal boot still loops after uninstalling
+  Conduit, and Settings cannot open even after the safe-mode boot. Do not treat a safe-mode
+  desktop as restored normal phone operation or permanent module disable as the solution.
+  Respect the uninstall; do not reinstall Conduit without a renewed request. Current LAN ADB
+  dropped during the user's intervening phone actions; reconnect only when safe-mode boot
+  and Wi-Fi are available. USB/FRP have not become usable.
+- Settings failure was reproduced at 14:26:29 by `am start -W -a android.settings.SETTINGS`:
+  `com.android.settings` immediately crashed with `Resources$NotFoundException: String resource
+  ID #0x7f120e0e` from `TopLevelSmartServicePreferenceController.getCustomizedTitle`.
+  `Status: ok` from Activity Manager did not mean the UI remained open. Evidence:
+  `settings-crash-current.log`, `settings-package-current.txt`, `overlay-current.txt` and
+  `overlay-list-current.txt` in the recovery directory below. The active stock Settings
+  overlay is `/product/overlay/SettingsResCommon_Sys.apk`; no Material You overlay was listed
+  for Settings in the captured safe-mode state. Exact resource mismatch cause is unresolved.
+- `/data/adb/ksu/log` contains previous-boot `logcat.old.log` and `dmesg.old.log` plus Zygisk
+  `modules_info.old` / `znctx.old`. Preserve them as soon as ADB is restored. Attempts to
+  capture them were interrupted by ADB becoming offline; the local `ksu-logcat.old.log` is
+  empty and is not usable evidence. Similarly, no Settings APK/resource dump was retrieved.
+- **Phone has booted in KernelSU safe mode.** After an assistant-issued diagnostic reboot,
+  the user reported a repeated OnePlus/ColorOS logo boot loop. The user now confirms successful
+  boot after the KSU Volume Down gesture. LAN ADB `192.168.31.229:5555` is restored;
+  `sys.boot_completed=1` and system_server PID `3502` remained stable across checks. All 11 KSU
+  modules are disabled, verified by both the user and `ksud module list`. Keep them disabled
+  while identifying the trigger. Do not resume notification experiments, issue diagnostic
+  reboot commands, wipe data, flash firmware, or remove all root modules.
+- Repository HEAD remains `97ca8a4` on `codex/non-lan-relay-m3-20261002`. The rejected wake-lock
+  and self-binding experiments have been reverted in source. The phone's installed APK was
+  pulled and matched the saved self-binding experiment before rollback. It has now been
+  replaced with the clean `97ca8a4` APK via `adb install -r -t`, with matching signer verified.
+  The installed SHA-256 is `FB3D27241E6359A5A106101DC04011731808D934F3BD6EA1CBEBAB73A67326B8`.
+  The app data inode and original install time are unchanged; no uninstall or data clear
+  occurred. Only this handoff is modified in the tracked worktree.
+- Genuine locked-screen testing disproved the wake-lock and self-binding hypotheses: Hans
+  still froze UID 10550 in `LcdOff`; the wake lock was force-released by Oplus. One unique
+  notification marker logged at `12:31:51.715` reached `conduit.notif` at `12:31:56.288`,
+  just after a `Packet` unfreeze at `12:31:56.279`. Earlier baseline evidence recorded a
+  21.4-second callback delay. Immediate-after-screen-off tests are not acceptance evidence.
+- Boot-loop native tombstones are now preserved. Several `zygote64` crashes at 14:02–14:03
+  report `JNI FatalError called: (system_server) Not allowlisted (64)` for
+  `/my_product/cust/IN/overlay/GmsConfigOverlaySearchSelector/GmsConfigOverlaySearchSelector.apk`.
+  Camera/media services also abort because hwservicemanager is unavailable. These identify
+  the immediate fatal condition, but not the responsible module/configuration or its relation
+  to the Conduit experiment. The successful boot preceded the APK rollback; do not claim
+  that the rollback fixed the boot loop or blame a specific module without further evidence.
+- Evidence and APK backups are in
+  `C:\Users\www\AppData\Local\Temp\ConduitRecovery-20261005`: post-safe-mode crash/system/kernel
+  logs, module states, native tombstone headers, full zygote tombstones `00` and `12`, full
+  tombstones `13`–`15`, package dumps before/after rollback, and both APK variants. These
+  local diagnostic files may contain private data; do not publish raw logs. `/sys/fs/pstore`
+  was empty. USB ADB/fastboot remains absent; FRP backup ADB `127.0.0.1:15556` is offline.
+  Neither connection status is a Conduit business-route diagnosis.
+- User confirms **KernelSU / KernelSU Next**. The KernelSU built-in safe-mode
+  gesture is repeated **press-and-release** of Volume Down more than three times after
+  the first boot splash, before the boot animation. Earlier generic hold-Volume-Down
+  advice must not be substituted for this gesture. Kernel logs now explicitly confirm
+  `KEY_VOLUMEDOWN pressed max times, safe mode detected!`. The official
+  procedure is documented at `https://kernelsu.org/zh_CN/guide/rescue-from-bootloop.html`.
+- Safest next action: reconnect after safe-mode boot, preserve the previous-boot KSU logs,
+  inspect the actual Settings APK/resources and overlay state, then perform a scoped,
+  reversible repair and restore required root-module functions. Notification latency
+  remains unresolved; do not use immediate-after-screen-off tests or resume OEM freeze
+  experiments while phone boot stability is still being established.
+
+## Previous snapshot — 2026-10-04
 
 - `codex/non-lan-relay-m3-20261002` contains notification fix commit `ed9748b` and the
   ColorOS settings fallback implementation `9f728ec`; both are pushed to `origin`. GitHub Actions run
