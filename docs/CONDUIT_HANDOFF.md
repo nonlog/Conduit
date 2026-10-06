@@ -1,6 +1,6 @@
 # Conduit handoff
 
-**Prepared:** 2026-10-05
+**Prepared:** 2026-10-06
 **Repository:** `D:\Workspace\Conduit`  
 **Branch:** `codex/non-lan-relay-m3-20261002`  
 **Remote:** `https://github.com/nonlog/Conduit.git`
@@ -11,10 +11,54 @@
 > step. A new session should be able to resume safely from this file plus the linked docs even if
 > the previous conversation ended abruptly.
 
-## Resumption checkpoint — 2026-10-05
+## Settings launch incident — 2026-10-06
+
+- The user confirms **Settings still cannot open**. The prior user resolution was for the
+  boot loop; closing every recovery item, including Settings, was incorrect. Boot-loop recovery
+  stays closed, and Settings is tracked separately. No new reboot/root-module change was made.
+- Fresh launches at 16:23 reproduced `Resources$NotFoundException: String resource ID
+  #0x7f120e0e` in `TopLevelSmartServicePreferenceController.getCustomizedTitle`. Its decompiled
+  implementation reads the AI/Smart Service activity's **external package** resource metadata,
+  not a Settings string. Earlier overlay/Settings-APK guesses are not established causes.
+- A read-only framework probe identifies **`com.oplus.pantanal.ums` / AISettingActivity**:
+  PackageManager supplies `homepage_title_multiple=0x7f120e0e`, which is absent from its current
+  resources. The currently mounted, signed **UMS 16.59.6** APK's actual manifest declares
+  **0x7f120596**, and that resource resolves correctly to `string/title_content`. Package
+  registration and the current APK demonstrably disagree. The source of the mismatch is not
+  established; do not blame an unrelated module without evidence.
+- Settings APK `/system_ext/priv-app/Settings/Settings.apk` SHA-256 is
+  `621D6063FC5B071D5E1FE81B89F56BB1B178DE0A2EAB643B25FD55325461883D`, identical to the Oct 5
+  preserved copy. Session tool-call audit found Conduit notification-access and temporary
+  accessibility secure-setting writes, but no Settings APK replacement, Settings-data clear,
+  UMS install, or overlay/root-module modification. Conduit hooks are limited to system
+  clipboard/OEM lease and its own activation marker. Existing LuckyTool/COUIExpressive Settings
+  scopes were read but not altered and are not a verified cause.
+- Evidence and read-only probe are in
+  `C:\Users\www\AppData\Local\Temp\ConduitRecovery-20261006`: current Settings crash,
+  package/overlay snapshots, decompiled controller, UMS manifest, `settings-resource-probe.txt`,
+  and a copy of the currently mounted **UMS-current.apk** (SHA-256
+  `3247FA771EDB0083B23D3EF2AED5554482A0EB0CDE644DFC376569EC129B1656`, valid OPPO signer).
+- The user explicitly approved **data-preserving repair**. Registered UMS signer SHA-256
+  `159e6f37c336f2f41272542dbc1dc85721dd567ed4ac68ac13f2e43003ce0dce` matched the copied APK.
+  `adb install -r UMS-current.apk` succeeded at **16:39:58**; version remains **16.59.6**.
+  It is now a standard updated system app with an active copy under `/data/app`; no system
+  Settings APK was modified. UMS data inode **30597**, device-encrypted inode **30637**, and
+  firstInstallTime **2026-09-25 11:51:56** are preserved. Explicit user enabled state was
+  restored to **enabled=1**, matching the pre-install snapshot.
+- After reinstall, the actual framework probe reports metadata **0x7f120596** and resolves the
+  title resource correctly. Settings was force-stopped and cold-launched, with **no new Settings
+  crash** during the immediate observation interval. The user then unlocked and explicitly
+  confirmed **“设置主页已正常打开”**. Visible homepage restoration is therefore verified beyond
+  the `am start` return. Settings APK SHA-256 remains unchanged after repair, and UMS retains
+  SYSTEM / UPDATED_SYSTEM_APP / PRIVILEGED flags. There was no data clear, module edit,
+  resource patch, or reboot. This Settings incident is resolved; do not reopen boot-loop work
+  or disable unrelated root modules. The origin of the stale registration is still unproven.
+
+## Notification fix checkpoint — 2026-10-05
 
 - The user confirms the boot loop was caused by **another root module**, not Conduit, and has
-  resolved it. Recovery is closed. Do not modify unrelated modules or repeat recovery experiments.
+  resolved it. Boot-loop recovery is closed; Settings is separately unresolved above. Do not
+  modify unrelated modules or repeat recovery experiments.
 - Installed source fix is committed as **`dc03ff3`** on `codex/non-lan-relay-m3-20261002`,
   based on `97ca8a4`. Any subsequent checkpoint commit changes only this handoff; use
   `git rev-parse HEAD` for the full current documentation HEAD. The source, regression check,
