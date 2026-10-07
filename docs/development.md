@@ -301,15 +301,20 @@ adb -s $serial install -r `
   D:\Workspace\Conduit\android\app\build\outputs\apk\debug\app-debug.apk
 ```
 
-On Android versions that redact notification content from listeners, re-grant the permission
-after **every reinstall**:
+On Android versions that redact sensitive notification content from untrusted listeners, Conduit
+Settings now reports the AppOp state and can repair it on rooted devices. The manual fallback after
+a reinstall is:
 
 ```powershell
-adb -s $serial shell cmd appops set com.conduit.sync RECEIVE_SENSITIVE_NOTIFICATIONS allow
+adb -s $serial shell su -c 'cmd appops set com.conduit.sync RECEIVE_SENSITIVE_NOTIFICATIONS allow'
+adb -s $serial shell cmd notification disallow_listener com.conduit.sync/.NotificationRelay
+adb -s $serial shell cmd notification allow_listener com.conduit.sync/.NotificationRelay
+adb -s $serial shell cmd appops get com.conduit.sync RECEIVE_SENSITIVE_NOTIFICATIONS
 ```
 
-This AppOp only controls what Android exposes to `NotificationRelay`.  It is not the same as
-the in-app *Hide notification content* switch, which is user-controlled and defaults off.
+The final command must report `allow`. Rebinding the listener refreshes Android's trusted-listener
+state after the AppOp changes. This platform AppOp is separate from the in-app *Hide notification
+content* switch, which remains user-controlled and defaults off.
 
 ### Debug a direct socket
 

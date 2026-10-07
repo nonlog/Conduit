@@ -140,6 +140,8 @@ class MainActivity : ComponentActivity() {
     private var clipboardMode by mutableStateOf(ClipboardSyncMode.Unavailable)
     private var clipboardAccessibilityEnabled by mutableStateOf(false)
     private var batteryOptimizationIgnored by mutableStateOf(true)
+    private var sensitiveNotificationAccessAllowed by mutableStateOf(true)
+    private var repairingSensitiveNotificationAccess by mutableStateOf(false)
 
     private val pairingScanner by lazy {
         val options = GmsBarcodeScannerOptions.Builder()
@@ -171,6 +173,7 @@ class MainActivity : ComponentActivity() {
         Settings.load(this)
         refreshClipboardAccessMode()
         refreshBatteryOptimization()
+        refreshSensitiveNotificationAccess()
         request()
         val appVersion = appVersionName()
         // A host on the launch intent pins the address and links straight away. It has to
@@ -191,7 +194,13 @@ class MainActivity : ComponentActivity() {
                     toDesktop = FileTransfers.toDesktop,
                     toPhone = FileTransfers.toPhone,
                     hideNotifications = Settings.hideNotificationContent,
-                    onHideNotifications = { Settings.hideNotificationContent = it },
+                    onHideNotifications = {
+                        Settings.hideNotificationContent = it
+                        if (!it) refreshSensitiveNotificationAccess()
+                    },
+                    sensitiveNotificationAccessAllowed = sensitiveNotificationAccessAllowed,
+                    repairingSensitiveNotificationAccess = repairingSensitiveNotificationAccess,
+                    onRepairSensitiveNotificationAccess = ::repairSensitiveNotificationAccess,
                     clipboardMode = clipboardMode,
                     clipboardAccessibilityEnabled = clipboardAccessibilityEnabled,
                     onOpenClipboardAccessibility = {
@@ -260,10 +269,39 @@ class MainActivity : ComponentActivity() {
     private fun appVersionName(): String =
         packageManager.getPackageInfo(packageName, 0).versionName ?: "unknown"
 
+    private fun refreshSensitiveNotificationAccess() {
+        sensitiveNotificationAccessAllowed = SensitiveNotificationAccess.isAllowed(this)
+    }
+
+    private fun repairSensitiveNotificationAccess() {
+        if (repairingSensitiveNotificationAccess) return
+        repairingSensitiveNotificationAccess = true
+        Thread(
+            {
+                val repaired = SensitiveNotificationAccess.repairWithRoot(this)
+                runOnUiThread {
+                    repairingSensitiveNotificationAccess = false
+                    refreshSensitiveNotificationAccess()
+                    android.widget.Toast.makeText(
+                        this,
+                        if (repaired) {
+                            "Sensitive notification content access restored"
+                        } else {
+                            "Could not repair automatically. Grant root to Conduit or use ADB."
+                        },
+                        android.widget.Toast.LENGTH_LONG,
+                    ).show()
+                }
+            },
+            "conduit-sensitive-notification-repair",
+        ).start()
+    }
+
     override fun onResume() {
         super.onResume()
         refreshClipboardAccessMode()
         refreshBatteryOptimization()
+        refreshSensitiveNotificationAccess()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -423,6 +461,9 @@ private fun ConduitApp(
     toPhone: FileTransfer?,
     hideNotifications: Boolean,
     onHideNotifications: (Boolean) -> Unit,
+    sensitiveNotificationAccessAllowed: Boolean,
+    repairingSensitiveNotificationAccess: Boolean,
+    onRepairSensitiveNotificationAccess: () -> Unit,
     clipboardMode: ClipboardSyncMode,
     clipboardAccessibilityEnabled: Boolean,
     onOpenClipboardAccessibility: () -> Unit,
@@ -589,6 +630,9 @@ private fun ConduitApp(
                 historyCount = history.size,
                 hideNotifications = hideNotifications,
                 onHideNotifications = onHideNotifications,
+                sensitiveNotificationAccessAllowed = sensitiveNotificationAccessAllowed,
+                repairingSensitiveNotificationAccess = repairingSensitiveNotificationAccess,
+                onRepairSensitiveNotificationAccess = onRepairSensitiveNotificationAccess,
                 clipboardMode = clipboardMode,
                 clipboardAccessibilityEnabled = clipboardAccessibilityEnabled,
                 onOpenClipboardAccessibility = onOpenClipboardAccessibility,
@@ -680,6 +724,9 @@ private fun SettingsTab(
     historyCount: Int,
     hideNotifications: Boolean,
     onHideNotifications: (Boolean) -> Unit,
+    sensitiveNotificationAccessAllowed: Boolean,
+    repairingSensitiveNotificationAccess: Boolean,
+    onRepairSensitiveNotificationAccess: () -> Unit,
     clipboardMode: ClipboardSyncMode,
     clipboardAccessibilityEnabled: Boolean,
     onOpenClipboardAccessibility: () -> Unit,
@@ -780,10 +827,35 @@ private fun SettingsTab(
                     SwitchPreferenceRow(
                         icon = R.drawable.ic_notifications,
                         title = "Hide notification content",
-                        subtitle = "Show app names only on Windows",
+                        subtitle = when {
+                            hideNotifications -> "Show app names only on Windows"
+                            sensitiveNotificationAccessAllowed -> "Show full notification content on Windows"
+                            else -> "Full content requested · Android is still redacting some notifications"
+                        },
                         checked = hideNotifications,
                         onCheckedChange = onHideNotifications,
                     )
+                    if (!hideNotifications && !sensitiveNotificationAccessAllowed) {
+                        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+                        PreferenceRow(
+                            icon = R.drawable.ic_notifications,
+                            title = if (repairingSensitiveNotificationAccess) {
+                                "Repairing sensitive notification access"
+                            } else {
+                                "Sensitive notification access"
+                            },
+                            subtitle = if (repairingSensitiveNotificationAccess) {
+                                "Refreshing Android notification-listener trust"
+                            } else {
+                                "Android is hiding some content · Tap to repair with root"
+                            },
+                            onClick = if (repairingSensitiveNotificationAccess) {
+                                null
+                            } else {
+                                onRepairSensitiveNotificationAccess
+                            },
+                        )
+                    }
                 }
             }
         }

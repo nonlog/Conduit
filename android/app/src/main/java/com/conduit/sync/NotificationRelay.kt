@@ -68,6 +68,7 @@ internal const val ICON_MAX_BYTES = 24_000
  * app, the other is an appop — so they must not read the same.
  */
 private const val HIDDEN_TITLE = "Notification hidden by Conduit"
+private const val ANDROID_HIDDEN_TITLE = "Sensitive notification content hidden"
 
 /**
  * Mirrors the shade to the desktop.
@@ -160,6 +161,12 @@ class NotificationRelay : NotificationListenerService() {
         val body = notification.extras.text(Notification.EXTRA_TEXT)
             .ifEmpty { notification.extras.text(Notification.EXTRA_BIG_TEXT) }
             .take(NOTIF_MAX_TEXT)
+        if (!hide && title == ANDROID_HIDDEN_TITLE) {
+            Log.w(
+                TAG,
+                "Android redacted sensitive notification content; repair RECEIVE_SENSITIVE_NOTIFICATIONS in Conduit Settings",
+            )
+        }
         val messageRecords = if (hide) emptyList() else messagingMessages(notification)
         val messageDescs = textMessages(messageRecords)
         // Nothing to render. A media-session or progress-only notification lands here.

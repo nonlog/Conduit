@@ -18,12 +18,10 @@ private const val TAG = "conduit.settings"
  * launch. No error, no exception, and it looks exactly like a switch that was never touched.
  * `filesDir` demonstrably works there. Two booleans do not need a key-value store anyway.
  *
- * Note what is *not* here. Android decides on its own whether a notification listener may see
- * sensitive content, and when it decides no, it substitutes the string "Sensitive notification
- * content" before this app is ever called — so no setting here can turn that off. That one is
- * granted per-install with:
- *
- *   adb shell cmd appops set com.conduit.sync RECEIVE_SENSITIVE_NOTIFICATIONS allow
+ * Android separately decides whether a notification listener may see platform-marked sensitive
+ * content. When that AppOp is denied, Android substitutes "Sensitive notification content hidden"
+ * before this app is ever called. The in-app hide switch remains independent; Settings surfaces
+ * that platform state and offers a rooted one-shot repair, with ADB/root commands as the fallback.
  */
 object Settings {
 
