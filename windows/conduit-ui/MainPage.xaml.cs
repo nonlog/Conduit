@@ -29,20 +29,31 @@ public sealed partial class MainPage : Page, Microsoft.UI.Xaml.Markup.IComponent
         ActualThemeChanged += (_, _) => UpdateTitleBarIcon();
     }
 
-    // WinUI-generated Connect() does not report the XBF connection ID on a failed cast.
-    // The explicit interface implementation wraps that generated method only for diagnostic
-    // purposes; it preserves all generated event bindings and field assignments unchanged.
+    // The XAML generator supplies public Connect/GetBindingConnector only after its first
+    // analysis pass. Reflection avoids referencing those generated members at compile time,
+    // while exposing the failing XBF connection ID for startup-only diagnostics.
     void Microsoft.UI.Xaml.Markup.IComponentConnector.Connect(int connectionId, object target)
     {
-        try { Connect(connectionId, target); }
+        try
+        {
+            var generated = GetType().GetMethod("Connect", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+            if (generated is null) throw new MissingMethodException("Generated XAML Connect was not found");
+            generated.Invoke(this, new object[] { connectionId, target });
+        }
         catch (Exception ex)
         {
-            App.LogStartupException($"MainPage XAML Connect[{connectionId}] target={target?.GetType().FullName}", ex);
+            App.LogStartupException($"MainPage XAML Connect[{connectionId}] target={target?.GetType().FullName}",
+                ex.InnerException ?? ex);
             throw;
         }
     }
-    Microsoft.UI.Xaml.Markup.IComponentConnector Microsoft.UI.Xaml.Markup.IComponentConnector.GetBindingConnector(int connectionId, object target) =>
-        GetBindingConnector(connectionId, target);
+
+    Microsoft.UI.Xaml.Markup.IComponentConnector Microsoft.UI.Xaml.Markup.IComponentConnector.GetBindingConnector(int connectionId, object target)
+    {
+        var generated = GetType().GetMethod("GetBindingConnector", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+        if (generated is null) throw new MissingMethodException("Generated XAML GetBindingConnector was not found");
+        return (Microsoft.UI.Xaml.Markup.IComponentConnector)generated.Invoke(this, new object[] { connectionId, target })!;
+    }
     private void UpdateTitleBarIcon()
     {
         var file = ActualTheme == ElementTheme.Dark ? "conduit-icon-dark.png" : "conduit-icon-light.png";
