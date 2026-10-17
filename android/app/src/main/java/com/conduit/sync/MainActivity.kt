@@ -48,6 +48,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -83,6 +84,8 @@ import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 
 private const val TAG = "conduit.ui"
+private const val OPPO_APP_FREEZE_FEATURE = "oplus.software.pms_app_frozen"
+private const val OPPO_APP_DISABLE_FEATURE = "oppo.appdisable.support"
 
 /** What the one screen has to say. */
 enum class LinkState(val label: String) {
@@ -141,6 +144,12 @@ class MainActivity : ComponentActivity() {
     private var clipboardAccessibilityEnabled by mutableStateOf(false)
     private var batteryOptimizationIgnored by mutableStateOf(true)
 
+    /** The public Settings page is only usable on Oplus builds that expose the freezer feature. */
+    private val oplusAppFreezeSupported: Boolean by lazy(LazyThreadSafetyMode.NONE) {
+        packageManager.hasSystemFeature(OPPO_APP_FREEZE_FEATURE) ||
+            packageManager.hasSystemFeature(OPPO_APP_DISABLE_FEATURE)
+    }
+
     private val pairingScanner by lazy {
         val options = GmsBarcodeScannerOptions.Builder()
             .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
@@ -198,7 +207,9 @@ class MainActivity : ComponentActivity() {
                         startActivity(Intent(AndroidSettings.ACTION_ACCESSIBILITY_SETTINGS))
                     },
                     batteryOptimizationIgnored = batteryOptimizationIgnored,
+                    oplusAppFreezeSupported = oplusAppFreezeSupported,
                     onRequestBatteryOptimization = ::requestBatteryOptimization,
+                    onOpenOplusFreezeSettings = ::openOplusFreezeSettings,
                     onConnect = { send(ACTION_CONNECT) },
                     onDisconnect = { send(ACTION_DISCONNECT) },
                     onPair = ::sendPair,
@@ -388,6 +399,40 @@ class MainActivity : ComponentActivity() {
                 startActivity(Intent(AndroidSettings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
             }
     }
+
+    /** Opens the OEM freezer when that feature exists, otherwise the usable per-app controls. */
+    private fun openOplusFreezeSettings() {
+        // Some export builds keep this legacy Settings activity in the manifest but make it
+        // finish immediately because the app-freezer feature is disabled for that model/region.
+        // Open the standard page instead of appearing to do nothing. It contains this phone's
+        // "Allow background activity" switch.
+        if (!oplusAppFreezeSupported) {
+            openBackgroundDeliverySettings()
+            return
+        }
+
+        val oplus = Intent("oplus.intent.action.settings.APP_FORZEN_OPLUS_SETTINGS")
+            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        runCatching { startActivity(oplus) }
+            .onFailure {
+                Log.i(TAG, "Oplus app-freeze settings unavailable", it)
+                openBackgroundDeliverySettings()
+            }
+    }
+
+    private fun openBackgroundDeliverySettings() {
+        val battery = Intent("android.settings.VIEW_ADVANCED_POWER_USAGE_DETAIL")
+            .setData(Uri.parse("package:$packageName"))
+            .putExtra("request_ignore_background_restriction", true)
+        runCatching { startActivity(battery) }
+            .onFailure {
+                Log.w(TAG, "per-app battery settings unavailable", it)
+                startActivity(
+                    Intent(AndroidSettings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                        .setData(Uri.parse("package:$packageName")),
+                )
+            }
+    }
 }
 
 @Composable
@@ -427,7 +472,9 @@ private fun ConduitApp(
     clipboardAccessibilityEnabled: Boolean,
     onOpenClipboardAccessibility: () -> Unit,
     batteryOptimizationIgnored: Boolean,
+    oplusAppFreezeSupported: Boolean,
     onRequestBatteryOptimization: () -> Unit,
+    onOpenOplusFreezeSettings: () -> Unit,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
     onPair: (String?) -> Unit,
@@ -538,7 +585,12 @@ private fun ConduitApp(
             )
         },
         bottomBar = {
-            NavigationBar {
+            NavigationBar(
+                // Keep the system navigation gesture area on the same tonal surface as the bar.
+                // NavigationBar supplies the platform window insets; the item indicator remains
+                // the single expressive accent for the selected destination.
+                containerColor = MaterialTheme.colorScheme.surface,
+            ) {
                 MainTab.entries.forEach { item ->
                     val selected = item == tab
                     NavigationBarItem(
@@ -548,15 +600,31 @@ private fun ConduitApp(
                             Icon(
                                 painter = painterResource(
                                     when (item) {
-                                        MainTab.Home -> R.drawable.ic_home
-                                        MainTab.Settings -> R.drawable.ic_settings
+                                        MainTab.Home -> if (selected) {
+                                            R.drawable.ic_home
+                                        } else {
+                                            R.drawable.ic_home_outline
+                                        }
+                                        MainTab.Settings -> if (selected) {
+                                            R.drawable.ic_settings
+                                        } else {
+                                            R.drawable.ic_settings_outline
+                                        }
                                     },
                                 ),
-                                contentDescription = null,
+                                contentDescription = item.title,
                                 modifier = Modifier.size(24.dp),
                             )
                         },
                         label = { Text(item.title) },
+                        alwaysShowLabel = true,
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                            selectedTextColor = MaterialTheme.colorScheme.onSurface,
+                            indicatorColor = MaterialTheme.colorScheme.secondaryContainer,
+                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        ),
                     )
                 }
             }
@@ -593,7 +661,9 @@ private fun ConduitApp(
                 clipboardAccessibilityEnabled = clipboardAccessibilityEnabled,
                 onOpenClipboardAccessibility = onOpenClipboardAccessibility,
                 batteryOptimizationIgnored = batteryOptimizationIgnored,
+                oplusAppFreezeSupported = oplusAppFreezeSupported,
                 onRequestBatteryOptimization = onRequestBatteryOptimization,
+                onOpenOplusFreezeSettings = onOpenOplusFreezeSettings,
                 onPair = requestPair,
                 onCancelPair = onCancelPair,
                 onForget = onForget,
@@ -684,7 +754,9 @@ private fun SettingsTab(
     clipboardAccessibilityEnabled: Boolean,
     onOpenClipboardAccessibility: () -> Unit,
     batteryOptimizationIgnored: Boolean,
+    oplusAppFreezeSupported: Boolean,
     onRequestBatteryOptimization: () -> Unit,
+    onOpenOplusFreezeSettings: () -> Unit,
     onPair: () -> Unit,
     onCancelPair: () -> Unit,
     onForget: () -> Unit,
@@ -813,6 +885,27 @@ private fun SettingsTab(
                     },
                     onClick = onRequestBatteryOptimization,
                 )
+                if (Build.MANUFACTURER.equals("oneplus", ignoreCase = true) ||
+                    Build.MANUFACTURER.equals("oppo", ignoreCase = true) ||
+                    Build.BRAND.equals("oneplus", ignoreCase = true) ||
+                    Build.BRAND.equals("oppo", ignoreCase = true)
+                ) {
+                    HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+                    PreferenceRow(
+                        icon = R.drawable.ic_settings,
+                        title = if (oplusAppFreezeSupported) {
+                            "ColorOS app freeze"
+                        } else {
+                            "Background battery settings"
+                        },
+                        subtitle = if (oplusAppFreezeSupported) {
+                            "Disable Quick Freeze for Conduit"
+                        } else {
+                            "Allow Conduit to run while the screen is off"
+                        },
+                        onClick = onOpenOplusFreezeSettings,
+                    )
+                }
             }
         }
         item {

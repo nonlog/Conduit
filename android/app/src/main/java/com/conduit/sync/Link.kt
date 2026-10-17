@@ -18,7 +18,6 @@ import com.conduit.sync.proto.WallpaperPreview
 import java.net.InetSocketAddress
 import java.net.InetAddress
 import java.net.Socket
-import java.net.UnknownHostException
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
@@ -75,15 +74,12 @@ private fun relayIdChar(c: Char): Boolean =
 
 /**
  * Replaces Android/VPN benchmark-range fake DNS only when the user explicitly configured a
- * fallback for that relay. Built-in production relays are domain-only, so a synthetic answer
- * without a fallback fails this candidate and lets normal multi-relay reconnect try the next one.
+ * fallback for that relay. Without one, preserve the synthetic address: fake-IP VPNs route that
+ * address back to the requested hostname, so rejecting it would reject every production Relay.
  */
 internal fun relayTargetAddress(resolved: InetAddress, fallbackIp: String?): InetAddress {
     if (!isVpnFakeIp(resolved)) return resolved
-    return fallbackIp?.let(InetAddress::getByName)
-        ?: throw UnknownHostException(
-            "relay resolved to VPN fake IP ${resolved.hostAddress}; no fallback configured",
-        )
+    return fallbackIp?.let(InetAddress::getByName) ?: resolved
 }
 
 /** 198.18.0.0/15 is the benchmark range commonly used by Android fake-IP VPN DNS. */
@@ -480,8 +476,8 @@ class Link(
                 // on the connectivity callback that asked for the dial. Some Android VPNs
                 // use 198.18/15 fake-IP DNS. A user-supplied relay may carry an explicit
                 // fallback, but built-in production relays intentionally do not embed origin
-                // addresses. Without a fallback this candidate fails and reconnect selection
-                // advances normally. The socket still follows Android/VPN routing.
+                // addresses. Keep the fake address when there is no fallback: the VPN maps it
+                // back to the hostname, and the socket still follows Android/VPN routing.
                 val target = if (address.isUnresolved) {
                     val host = address.hostString
                     val resolved = resolve(host)

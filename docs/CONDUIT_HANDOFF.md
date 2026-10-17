@@ -1,8 +1,8 @@
 # Conduit handoff
 
-**Prepared:** 2026-10-01
+**Prepared:** 2026-10-06
 **Repository:** `D:\Workspace\Conduit`  
-**Branch:** `master`  
+**Branch:** `codex/non-lan-relay-m3-20261002`  
 **Remote:** `https://github.com/nonlog/Conduit.git`
 
 > **Maintenance rule:** keep this handoff current during active development, not only when a
@@ -11,11 +11,229 @@
 > step. A new session should be able to resume safely from this file plus the linked docs even if
 > the previous conversation ended abruptly.
 
-## Current snapshot — 2026-10-01
+## Settings launch incident — 2026-10-06
 
-- `master` is based on `8987c1b701a91894c133cffb1f3123ee49eee266`, tagged `v0.1.4`. The
-  working tree currently contains the four documentation updates from this handoff plus an
-  uncommitted Android notification-latency change in `Link.kt` and `NotificationRelay.kt`.
+- The user confirms **Settings still cannot open**. The prior user resolution was for the
+  boot loop; closing every recovery item, including Settings, was incorrect. Boot-loop recovery
+  stays closed, and Settings is tracked separately. No new reboot/root-module change was made.
+- Fresh launches at 16:23 reproduced `Resources$NotFoundException: String resource ID
+  #0x7f120e0e` in `TopLevelSmartServicePreferenceController.getCustomizedTitle`. Its decompiled
+  implementation reads the AI/Smart Service activity's **external package** resource metadata,
+  not a Settings string. Earlier overlay/Settings-APK guesses are not established causes.
+- A read-only framework probe identifies **`com.oplus.pantanal.ums` / AISettingActivity**:
+  PackageManager supplies `homepage_title_multiple=0x7f120e0e`, which is absent from its current
+  resources. The currently mounted, signed **UMS 16.59.6** APK's actual manifest declares
+  **0x7f120596**, and that resource resolves correctly to `string/title_content`. Package
+  registration and the current APK demonstrably disagree. The source of the mismatch is not
+  established; do not blame an unrelated module without evidence.
+- Settings APK `/system_ext/priv-app/Settings/Settings.apk` SHA-256 is
+  `621D6063FC5B071D5E1FE81B89F56BB1B178DE0A2EAB643B25FD55325461883D`, identical to the Oct 5
+  preserved copy. Session tool-call audit found Conduit notification-access and temporary
+  accessibility secure-setting writes, but no Settings APK replacement, Settings-data clear,
+  UMS install, or overlay/root-module modification. Conduit hooks are limited to system
+  clipboard/OEM lease and its own activation marker. Existing LuckyTool/COUIExpressive Settings
+  scopes were read but not altered and are not a verified cause.
+- Evidence and read-only probe are in
+  `C:\Users\www\AppData\Local\Temp\ConduitRecovery-20261006`: current Settings crash,
+  package/overlay snapshots, decompiled controller, UMS manifest, `settings-resource-probe.txt`,
+  and a copy of the currently mounted **UMS-current.apk** (SHA-256
+  `3247FA771EDB0083B23D3EF2AED5554482A0EB0CDE644DFC376569EC129B1656`, valid OPPO signer).
+- The user explicitly approved **data-preserving repair**. Registered UMS signer SHA-256
+  `159e6f37c336f2f41272542dbc1dc85721dd567ed4ac68ac13f2e43003ce0dce` matched the copied APK.
+  `adb install -r UMS-current.apk` succeeded at **16:39:58**; version remains **16.59.6**.
+  It is now a standard updated system app with an active copy under `/data/app`; no system
+  Settings APK was modified. UMS data inode **30597**, device-encrypted inode **30637**, and
+  firstInstallTime **2026-09-25 11:51:56** are preserved. Explicit user enabled state was
+  restored to **enabled=1**, matching the pre-install snapshot.
+- After reinstall, the actual framework probe reports metadata **0x7f120596** and resolves the
+  title resource correctly. Settings was force-stopped and cold-launched, with **no new Settings
+  crash** during the immediate observation interval. The user then unlocked and explicitly
+  confirmed **“设置主页已正常打开”**. Visible homepage restoration is therefore verified beyond
+  the `am start` return. Settings APK SHA-256 remains unchanged after repair, and UMS retains
+  SYSTEM / UPDATED_SYSTEM_APP / PRIVILEGED flags. There was no data clear, module edit,
+  resource patch, or reboot. This Settings incident is resolved; do not reopen boot-loop work
+  or disable unrelated root modules. The origin of the stale registration is still unproven.
+
+## Notification fix checkpoint — 2026-10-05
+
+- The user confirms the boot loop was caused by **another root module**, not Conduit, and has
+  resolved it. Boot-loop recovery is closed; Settings is separately unresolved above. Do not
+  modify unrelated modules or repeat recovery experiments.
+- Installed source fix is committed as **`dc03ff3`** on `codex/non-lan-relay-m3-20261002`,
+  based on `97ca8a4`. Any subsequent checkpoint commit changes only this handoff; use
+  `git rev-parse HEAD` for the full current documentation HEAD. The source, regression check,
+  and verified device results are committed locally. The worktree is clean at completion.
+  Wake-lock and self-binding experiments remain rejected and reverted.
+- The new debug APK was installed in place at **15:57:56** with SHA-256
+  `EE1B020930E64F07B4728FC44D9500E79AE62E34D00CB3C192D64CD92D15D232`.
+  Its signer matches the baseline; app-data inode **801765**, firstInstallTime, pairing, and
+  settings are preserved. Current Conduit UID is **10061**, not historical 10550.
+- Primary ADB is `192.168.31.229:5555`. `127.0.0.1:15556` is only the backup ADB transport,
+  never a Conduit business route. The app is authenticated and `state=linked,path=lan` to
+  Windows `192.168.31.127:41112`, verified through the installed daemon's actual `status` CLI.
+- Windows runtime is `D:\Programs\Scoop\apps\conduit\current\conduit-daemon.exe` and its
+  actual identity/config/history directory is **`D:\Programs\Scoop\persist\conduit\data`**.
+  Preserve it. Uninstall rotated the phone identity; the resulting rapid EOF/reconnect loop
+  was fixed by explicitly pairing both sides over LAN at 15:18:58. The daemon was restarted
+  with the same binary/data and scoped logs captured in the diagnostic directory below.
+- The remaining 5–10-second locked delay was reproduced **before NotificationRelay's callback**
+  for UID 10061. A bounded 120-second root OEM lease prototype reduced a marker to **105 ms ±56 ms**
+  after another 45 seconds locked. This established the candidate interface; it was not deployed
+  as a resident worker. Immediate-after-screen-off tests are not acceptance evidence.
+- The installed fix extends the existing optional **legacy LSPosed** `ClipboardHook`.
+  It acquires ColorOS's `requestFrozenDelay(timeout=0)` only when Conduit's authenticated-link
+  clipboard listener is registered. PackageManager UID must equal the caller's UID. The final
+  listener removal or client Binder death cancels the lease. Firmware AIDL classes/constants
+  are reflected; unsupported devices fail harmlessly without altering clipboard registration.
+  Direct AIDL avoids the OEM manager's extra HandlerThread. There is no polling, wake lock,
+  timer renewal, zygote hook, or new persistent process. The low-idle-cost constraint remains.
+- Android `testDebugUnitTest`: **50 passed, 0 failed**; `assembleDebug` passed. The regression
+  check covers UID spoofing, duplicate listeners, final-listener release, death/removal
+  idempotence, reconnect, UID changes, and rejected acquisition. A read-only `app_process`
+  check also constructed the actual APK bridge on this firmware without requesting a lease.
+- Uninstall cleared LSPosed's Conduit module state/scope; `/data/adb/lspd/cli` is absent, so
+  no live DB edit was used. The user enabled **System Framework + Conduit** and rebooted.
+  New system_server at **16:06:24** logged 2 clipboard-access and **2 OEM protection hooks**;
+  the app logged its LSPosed marker at 16:06:52. The actual OEM lease query returns
+  **`Long.MAX_VALUE`**, confirming the connection-owned protection is loaded and active.
+- Installed runtime lifecycle checks passed: DISCONNECT -> lease **0**; CONNECT -> **MAX**;
+  app force-stop/Binder death -> **0**; launch -> **MAX**. For these explicit test actions,
+  `am start-service` must run through `su -c` because SyncService is not exported. An ordinary
+  shell rejection is not an OEM lease failure.
+- Production acceptance: after uninterrupted screen off from **16:13:25 to 16:18:51 (+08)**,
+  marker `CONDUIT_LOCKED_20261005_081851_742` reached Windows in **156 ms ±41 ms** and OEM
+  protection still reported **MAX**. The phone offset was refreshed to **+684 ms** after reboot.
+  Power state was Dozing/screen off, but DeviceIdle was ACTIVE because USB charging was present;
+  this is sustained lockscreen evidence, not deep-Doze evidence. The synthetic-marker fixture
+  `Test-LockedNotification.ps1` is bounded to 30 seconds and polls only Windows history.
+- A separate bounded **forced deep-Doze** acceptance run **passed**. Initial
+  `mForceIdle=false` and battery `UpdatesStopped=false` were verified; existing battery exemption
+  is `user,com.conduit.sync,10061`. The test uses `cmd deviceidle force-idle deep`, holds IDLE
+  for 90 seconds, measures one marker, and calls `unforce` in `finally`. With the screen still
+  off since 16:13:25, marker `CONDUIT_LOCKED_20261005_082300_113` arrived at **16:23:00** in
+  **114 ms ±41 ms**. Deep state was **IDLE before and after** the marker and lease remained MAX.
+  The original automatic policy was verified restored: **mForceIdle=false**, DeviceIdle ACTIVE,
+  screen still off. No battery override/whitelist was changed. Final clock offset +694.5 ms
+  (77 ms round trip) is consistent with the earlier +684 ms estimate within measurement bounds.
+- Local diagnostics are in `C:\Users\www\AppData\Local\Temp\ConduitRecovery-20261005`:
+  lease/clock outputs, baseline and installed APK checks, LSPosed snapshot, daemon logs,
+  `HansProbe.java`, and the bounded notification fixture. Raw logs may contain private data;
+  report only synthetic marker timing. `notifications.tsv`'s first column is Android post time,
+  not Windows receive time. Actual toast visibility has not been visually checked.
+- The installed fix passed sustained screen-off and controlled deep-Doze acceptance on this
+  firmware; disconnect/Binder-death cleanup was independently verified. Next: collect the
+  user's normal incoming-notification feedback during longer battery-powered use. Overnight
+  standby, non-LAN delivery with the new hook, and other OEM firmware are not established by
+  these two marker samples. Root scopes and Android's existing battery exemption are required
+  for the verified device path; do not claim generic non-root OEM-freeze immunity.
+## Historical recovery checkpoint — 2026-10-05
+
+The following entries describe the recovery investigation before the user's resolution above.
+They are retained as evidence; their unresolved state and next steps are superseded.
+
+- **Recovery is incomplete.** The user now reports normal boot still loops after uninstalling
+  Conduit, and Settings cannot open even after the safe-mode boot. Do not treat a safe-mode
+  desktop as restored normal phone operation or permanent module disable as the solution.
+  Respect the uninstall; do not reinstall Conduit without a renewed request. Current LAN ADB
+  dropped during the user's intervening phone actions; reconnect only when safe-mode boot
+  and Wi-Fi are available. USB/FRP have not become usable.
+- Settings failure was reproduced at 14:26:29 by `am start -W -a android.settings.SETTINGS`:
+  `com.android.settings` immediately crashed with `Resources$NotFoundException: String resource
+  ID #0x7f120e0e` from `TopLevelSmartServicePreferenceController.getCustomizedTitle`.
+  `Status: ok` from Activity Manager did not mean the UI remained open. Evidence:
+  `settings-crash-current.log`, `settings-package-current.txt`, `overlay-current.txt` and
+  `overlay-list-current.txt` in the recovery directory below. The active stock Settings
+  overlay is `/product/overlay/SettingsResCommon_Sys.apk`; no Material You overlay was listed
+  for Settings in the captured safe-mode state. Exact resource mismatch cause is unresolved.
+- `/data/adb/ksu/log` contains previous-boot `logcat.old.log` and `dmesg.old.log` plus Zygisk
+  `modules_info.old` / `znctx.old`. Preserve them as soon as ADB is restored. Attempts to
+  capture them were interrupted by ADB becoming offline; the local `ksu-logcat.old.log` is
+  empty and is not usable evidence. Similarly, no Settings APK/resource dump was retrieved.
+- **Phone has booted in KernelSU safe mode.** After an assistant-issued diagnostic reboot,
+  the user reported a repeated OnePlus/ColorOS logo boot loop. The user now confirms successful
+  boot after the KSU Volume Down gesture. LAN ADB `192.168.31.229:5555` is restored;
+  `sys.boot_completed=1` and system_server PID `3502` remained stable across checks. All 11 KSU
+  modules are disabled, verified by both the user and `ksud module list`. Keep them disabled
+  while identifying the trigger. Do not resume notification experiments, issue diagnostic
+  reboot commands, wipe data, flash firmware, or remove all root modules.
+- Repository HEAD remains `97ca8a4` on `codex/non-lan-relay-m3-20261002`. The rejected wake-lock
+  and self-binding experiments have been reverted in source. The phone's installed APK was
+  pulled and matched the saved self-binding experiment before rollback. It has now been
+  replaced with the clean `97ca8a4` APK via `adb install -r -t`, with matching signer verified.
+  The installed SHA-256 is `FB3D27241E6359A5A106101DC04011731808D934F3BD6EA1CBEBAB73A67326B8`.
+  The app data inode and original install time are unchanged; no uninstall or data clear
+  occurred. Only this handoff is modified in the tracked worktree.
+- Genuine locked-screen testing disproved the wake-lock and self-binding hypotheses: Hans
+  still froze UID 10550 in `LcdOff`; the wake lock was force-released by Oplus. One unique
+  notification marker logged at `12:31:51.715` reached `conduit.notif` at `12:31:56.288`,
+  just after a `Packet` unfreeze at `12:31:56.279`. Earlier baseline evidence recorded a
+  21.4-second callback delay. Immediate-after-screen-off tests are not acceptance evidence.
+- Boot-loop native tombstones are now preserved. Several `zygote64` crashes at 14:02–14:03
+  report `JNI FatalError called: (system_server) Not allowlisted (64)` for
+  `/my_product/cust/IN/overlay/GmsConfigOverlaySearchSelector/GmsConfigOverlaySearchSelector.apk`.
+  Camera/media services also abort because hwservicemanager is unavailable. These identify
+  the immediate fatal condition, but not the responsible module/configuration or its relation
+  to the Conduit experiment. The successful boot preceded the APK rollback; do not claim
+  that the rollback fixed the boot loop or blame a specific module without further evidence.
+- Evidence and APK backups are in
+  `C:\Users\www\AppData\Local\Temp\ConduitRecovery-20261005`: post-safe-mode crash/system/kernel
+  logs, module states, native tombstone headers, full zygote tombstones `00` and `12`, full
+  tombstones `13`–`15`, package dumps before/after rollback, and both APK variants. These
+  local diagnostic files may contain private data; do not publish raw logs. `/sys/fs/pstore`
+  was empty. USB ADB/fastboot remains absent; FRP backup ADB `127.0.0.1:15556` is offline.
+  Neither connection status is a Conduit business-route diagnosis.
+- User confirms **KernelSU / KernelSU Next**. The KernelSU built-in safe-mode
+  gesture is repeated **press-and-release** of Volume Down more than three times after
+  the first boot splash, before the boot animation. Earlier generic hold-Volume-Down
+  advice must not be substituted for this gesture. Kernel logs now explicitly confirm
+  `KEY_VOLUMEDOWN pressed max times, safe mode detected!`. The official
+  procedure is documented at `https://kernelsu.org/zh_CN/guide/rescue-from-bootloop.html`.
+- Safest next action: reconnect after safe-mode boot, preserve the previous-boot KSU logs,
+  inspect the actual Settings APK/resources and overlay state, then perform a scoped,
+  reversible repair and restore required root-module functions. Notification latency
+  remains unresolved; do not use immediate-after-screen-off tests or resume OEM freeze
+  experiments while phone boot stability is still being established.
+
+## Previous snapshot — 2026-10-04
+
+- `codex/non-lan-relay-m3-20261002` contains notification fix commit `ed9748b` and the
+  ColorOS settings fallback implementation `9f728ec`; both are pushed to `origin`. GitHub Actions run
+  `37182119252` passed Android, Windows x64, and Relay Linux for this branch.
+- The current live path is direct LAN: Windows `192.168.31.127:41112` ↔ phone
+  `192.168.31.229:<ephemeral-port>`, with daemon status `state=linked,path=lan`. The historical
+  phone ADB address `192.168.1.250:5555` is no longer on the current subnet. `127.0.0.1:15556`
+  and `15557` are FRP STCP ADB backup transports used by diagnostics; they are not Conduit
+  notification or Relay sockets. Conduit uses `127.0.0.1` only for the explicit `adb reverse`
+  debugging bypass documented in `docs/development.md`.
+- The repeated Nagram XF notification was reproduced under one Android key with identical
+  rendered content. `NotificationRelay` now ignores a changed `postTime` when comparing the
+  cached rendered payload, while still sending the original timestamp and allowing changed
+  content through. `NotificationRelayTest` and the Android JVM suite pass.
+- A locked-screen test showed the remaining ten-to-twenty-four-second delay occurs before
+  `NotificationRelay` runs: Oplus `Hans` freezes UID 10550 and later unfreezes it for a packet.
+  Android Doze whitelist, `RUN_ANY_IN_BACKGROUND=allow`, connected-device FGS, and the added
+  `remoteMessaging` FGS type all remained active while Hans still froze the process. The
+  installed APK therefore contains the routing and duplicate fixes, but the device-specific
+  delay still requires an OEM Hans/auto-freeze exemption or policy change.
+- The comparison baseline is now recorded: this OnePlus's Phone Link path includes the system/
+  privileged `com.oplus.linker` package (UID 10159), while Sefirah 3.1.0 has a connected-device
+  foreground network service, `WAKE_LOCK`, and Shizuku/worker bridge components. Conduit is a
+  normal user UID without those vendor privileges, so its Hans freeze is an architectural
+  compatibility gap rather than a LAN/ADB route selection issue.
+- The installed debug APK now adds a usable **Settings > Background delivery** entry for this
+  OnePlus. The app checks `oplus.software.pms_app_frozen` and `oppo.appdisable.support` before
+  offering the legacy `oplus.intent.action.settings.APP_FORZEN_OPLUS_SETTINGS` page. This device
+  reports neither feature, so the row is labelled **Background battery settings** and opens
+  `android.settings.VIEW_ADVANCED_POWER_USAGE_DETAIL` for Conduit with the standard
+  `request_ignore_background_restriction` focus; the OEM app-freeze page remains available on
+  models that expose it. The APK was rebuilt and installed through the LAN ADB target
+  `192.168.31.229:5555`. A device A/B check also enabled Conduit's AccessibilityService for one
+  screen-off interval; Hans still froze UID 10550 after about 26 seconds, so accessibility is not
+  treated as a fix. After the user confirms the background setting, repeat the unique-marker
+  locked-screen notification test.
+
+- The branch's earlier Relay/UI checkpoint remains in the same pushed history; the current
+  notification commits and their successful CI run are recorded above.
 - GitHub Actions master run `36249356300` and tag/release run `36249808688` both completed
   successfully. The GitHub Release contains the Android debug APK, Windows x64 package, Linux
   Relay binary and checksums. No local build output is authoritative.
@@ -24,11 +242,25 @@
 - Notification-latency investigation on 2026-10-01 found the Android and Windows wall clocks
   within about 65 ms during a synchronized read, so the observed ten-second-plus delay is not
   a timestamp conversion artifact. `NotificationRelay` previously loaded application/contact
-  icons and encoded PNGs inside `onNotificationPosted`; the current uncommitted fix builds that
-  payload on Link's existing serialized sender thread instead, keeping the system callback short.
+  icons and encoded PNGs inside `onNotificationPosted`; the committed fix builds that payload on
+  Link's existing serialized sender thread instead, keeping the system callback short.
   The app now also exposes Android's standard `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` request in
   Settings > Background delivery. The request is user-approved and supplements the OEM-specific
   "allow background activity" setting; it cannot silently disable Oplus FastFreeze.
+- The non-LAN reconnect failure found on 2026-10-02 was caused by Bettbox's VPN DNS returning
+  `198.18.0.0/15` fake addresses for every production Relay. `Link.kt` used to reject those
+  answers when no explicit fallback was configured, so the built-in hostname-only Relay catalog
+  could never dial. The fix preserves the fake address when no fallback is present so the VPN can
+  map it back to the hostname; an explicit user fallback still takes precedence. Device probes
+  reached all four Relay ports through the fake-IP mapping.
+- The Android bottom navigation now uses Material 3 selected/unselected Home and Settings icons,
+  semantic color roles, the selected `secondaryContainer` indicator, and explicit content
+  descriptions. This is a focused navigation refresh; it does not add a new UI dependency or
+  change the transport/service lifecycle.
+- GitHub Actions run `36967899497` passed the Android, Windows, and Relay jobs. Its Android debug
+  APK was installed on the test phone at 13:19. With Wi-Fi disabled, the phone linked through
+  `conduit-wa.414222.xyz:41113`; Windows reported `state=linked`, `path=relay`. Wi-Fi was then
+  re-enabled and the pair returned to `path=lan`.
 - The current Windows control surface is the self-contained `windows/conduit-ui` Uno Platform /
   WinUI 3 application. The Rust `conduit-daemon` remains the resident transport and integration
   process; the UI is on-demand and owns no transport.

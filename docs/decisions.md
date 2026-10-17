@@ -452,10 +452,11 @@ escape from this VPN's resolver hook.
 The original repair was deliberately narrower than custom DNS: normal hostname answers remained
 authoritative, while an IPv4 answer inside `198.18.0.0/15` could use an explicitly configured
 fallback. Because the repository and binaries are public, built-in production relays no longer
-embed origin IP addresses. A synthetic answer without a user-supplied fallback fails that candidate
-and normal multi-relay reconnect advances to the next configured hostname. The TCP socket itself
-remains subject to Android/VPN routing. JVM coverage uses documentation-only addresses and still
-pins the fake range, normal-answer passthrough, IPv6 passthrough, and missing-fallback failure.
+embed origin IP addresses. The current client preserves a synthetic answer when no fallback is
+configured, because Bettbox maps that address back to the requested hostname; an explicit fallback
+still takes precedence when a stale mapping must be bypassed. The TCP socket itself remains
+subject to Android/VPN routing. JVM coverage pins the fake range, normal-answer passthrough, IPv6
+passthrough, and both fallback paths.
 
 `registerDefaultNetworkCallback`, not a transport-filtered request. Filtering would have made
 the single `networkUp` flag wrong the moment cellular was included: a Wi-Fi `onLost` while

@@ -12,8 +12,8 @@ const assets = path.resolve(here, '..', '..', 'assets');
 const brandSizes = [16, 20, 24, 30, 32, 36, 40, 48, 60, 64, 72, 80, 96, 256];
 const traySizes = [16, 20, 24, 32, 40, 48, 64];
 const explorerSizes = [16, 20, 24, 32, 40, 48];
-const darkGlyph = '#000000';
-const lightGlyph = '#FFFFFF';
+// Keep the original transparent, bidirectional mark; adopt CDS clay as its brand color.
+const clayGlyph = '#D97757';
 
 function arrowsSvg(color, strokeWidth = 2.15) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
@@ -69,12 +69,12 @@ function writeThemeIcon(stem, color) {
   fs.writeFileSync(path.join(assets, `${stem}.png`), render(svg, 512));
 }
 
-writeThemeIcon('conduit-icon-light', darkGlyph);
-writeThemeIcon('conduit-icon-dark', lightGlyph);
-writeThemeIcon('conduit-icon', darkGlyph);
+writeThemeIcon('conduit-icon-light', clayGlyph);
+writeThemeIcon('conduit-icon-dark', clayGlyph);
+writeThemeIcon('conduit-icon', clayGlyph);
 
-const trayLightSvg = arrowsSvg(darkGlyph);
-const trayDarkSvg = arrowsSvg(lightGlyph);
+const trayLightSvg = arrowsSvg(clayGlyph);
+const trayDarkSvg = arrowsSvg(clayGlyph);
 writeIco(
   path.join(assets, 'conduit-tray-light.ico'),
   traySizes.map((size) => ({ size, png: render(trayLightSvg, size) })),
@@ -84,8 +84,8 @@ writeIco(
   traySizes.map((size) => ({ size, png: render(trayDarkSvg, size) })),
 );
 
-const explorerLightSvg = explorerArrowsSvg(darkGlyph);
-const explorerDarkSvg = explorerArrowsSvg(lightGlyph);
+const explorerLightSvg = explorerArrowsSvg(clayGlyph);
+const explorerDarkSvg = explorerArrowsSvg(clayGlyph);
 writeIco(
   path.join(assets, 'conduit-explorer-light.ico'),
   explorerSizes.map((size) => ({ size, png: render(explorerLightSvg, size) })),

@@ -6,7 +6,6 @@ import java.io.DataOutputStream
 import java.io.PipedInputStream
 import java.io.PipedOutputStream
 import java.net.InetAddress
-import java.net.UnknownHostException
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -40,14 +39,14 @@ class WireSessionTest {
         for (fake in listOf("198.18.0.137", "198.19.255.254")) {
             val address = InetAddress.getByName(fake)
             assertTrue(isVpnFakeIp(address))
+            assertEquals(address, relayTargetAddress(address, null))
             assertEquals(public, relayTargetAddress(address, fallback))
         }
 
         assertFalse(isVpnFakeIp(InetAddress.getByName("198.20.0.1")))
-        assertFalse(isVpnFakeIp(InetAddress.getByName("2001:db8::1")))
-        assertThrows(UnknownHostException::class.java) {
-            relayTargetAddress(InetAddress.getByName("198.18.1.1"), null)
-        }
+        val ipv6 = InetAddress.getByName("2001:db8::1")
+        assertFalse(isVpnFakeIp(ipv6))
+        assertEquals(ipv6, relayTargetAddress(ipv6, fallback))
     }
 
     @Test

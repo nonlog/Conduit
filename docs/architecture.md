@@ -168,14 +168,12 @@ remains direct. A parked Windows responder enables kernel TCP keepalive before i
 this prevents a relay/NAT path that died silently from leaving `park()` blocked forever on a local
 socket that still appears `ESTABLISHED`.
 
-Relay endpoints remain configured by hostname (`us.414222.xyz`, `tyo.414222.xyz`, `wa.414222.xyz`). On the tested phone, Bettbox uses
-the benchmark range `198.18.0.0/15` as fake-IP DNS. During an underlying Wi-Fi/cellular handover,
-that local fake mapping can accept a connect and fail it before any preamble reaches the relay.
-Android therefore treats **only** a `198.18/15` relay answer as synthetic. Built-in production
-entries are domain-only and carry no origin fallback, so such a result fails that candidate and
-normal reconnect selection can advance to the next configured hostname. User-supplied relay
-entries may still opt into the documented fallback field. Ordinary public DNS answers are left
-untouched, and the resulting socket remains subject to Android/VPN routing.
+Relay endpoints remain configured by hostname (`us.414222.xyz`, `tyo.414222.xyz`, `wa.414222.xyz`).
+On the tested phone, Bettbox uses the benchmark range `198.18.0.0/15` as fake-IP DNS and maps
+those addresses back to the requested hostname. Android therefore preserves a `198.18/15`
+answer when no explicit fallback is configured; a user-supplied fallback still takes precedence
+when a stale fake mapping must be bypassed. Ordinary public DNS answers are left untouched, and
+the resulting socket remains subject to Android/VPN routing.
 
 A network loss closes the active socket but preserves the Android `Link` object and its
 single sender executor.  This is deliberate: reconnecting reuses those resources instead of

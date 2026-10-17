@@ -1,6 +1,6 @@
 # Conduit development progress
 
-> **Snapshot date:** 2026-10-01
+> **Snapshot date:** 2026-10-04
 > **Meaning of “verified”:** an observed test/device result, not an assumption inferred from
 > source.  This record is intentionally more conservative than a feature checklist.
 
@@ -11,10 +11,12 @@ has **not** earned M0/M2 completion. The central endurance requirement remains o
 48-hour run must show no net thread, handle/FD, or session-lifecycle growth.
 
 The current published repository baseline is release `v0.1.4` at
-`8987c1b701a91894c133cffb1f3123ee49eee266`. Local `master` is based on that commit, with the
-documentation updates from this handoff and an uncommitted Android notification-latency fix.
+`8987c1b701a91894c133cffb1f3123ee49eee266`. The temporary branch
+`codex/non-lan-relay-m3-20261002` contains notification fix commit `ed9748b` and the ColorOS
+settings fallback implementation `9f728ec`, plus the documented CI evidence. GitHub Actions run `37182119252` passed Android,
+Windows x64, and Relay Linux for this branch.
 GitHub Actions run `36249356300` passed the master build and run `36249808688` passed the
-tag/release build; those runs predate the current notification change.
+tag/release build; both predate the current notification change.
 The prior security cleanup is `43600c997e62fe2549d652cfc2028e514545f24d`; current built-in Relay
 entries contain hostnames and ports only, while old public history remains unchanged.
 
@@ -22,6 +24,48 @@ The protocol rollout is deployed on the tested path: the compatible Relay accept
 and current Android/Windows clients use them. Legacy 47-byte inference remains enabled only as
 an upgrade bridge for older clients. The dated sections below are historical evidence; this
 release baseline and `docs/TODO.md` are authoritative for current status.
+
+### Notification duplicates, route identity, and screen-off verification — 2026-10-04
+
+- The live notification session is direct LAN: Windows `192.168.31.127:41112` is established to
+  the phone `192.168.31.229:<ephemeral-port>`, and the daemon reports `state=linked,path=lan`.
+  The older `192.168.1.250:5555` address is an ADB address from a previous Wi-Fi subnet, not a
+  Conduit endpoint. `127.0.0.1:15556/15557` belongs to FRP STCP ADB visitors and is only the
+  diagnostic failover transport; Conduit notification frames never use it. The source's
+  `host=127.0.0.1` path is an explicit `adb reverse` debugging bypass only.
+- The Nagram XF key `0|fork.risin42.nagramx|1326238159|null|10618` produced seven identical
+  title/body rows in roughly fifteen seconds. `NotificationRelay` now compares the rendered
+  title, body, messages, and actions while retaining `postTime` only for the wire timestamp, so
+  an unchanged repost is dropped while a changed message on a reused key still passes. A JVM
+  regression test covers both cases.
+- A locked-screen repro measured the real delay before Conduit transport: Android posted the test
+  notification, but `onNotificationPosted` did not log until Oplus `Hans` unfroze UID 10550 with
+  reason `Packet`; one run was about 24.1 seconds. At the same time the desktop remained on the
+  direct LAN 41112 session. Android Doze whitelist, `RUN_ANY_IN_BACKGROUND=allow`, the connected
+  device foreground service, and the new `remoteMessaging` service type did not stop this
+  device's `OplusHansManager` from freezing the process (`isFreezeExempt=false`). This is an OEM
+  power-policy limit, not an ADB/15556 routing problem.
+- `:app:testDebugUnitTest` and `assembleDebug` passed. The resulting debug APK was installed on
+  the connected OnePlus test phone; `dumpsys` reported foreground-service types `0x210`
+  (`connectedDevice | remoteMessaging`). The remote-messaging declaration is a supported
+  classification for other Android/OEM builds, but it is not evidence that this ColorOS device
+  stopped freezing Conduit. The next proof requires changing the OEM's Hans/auto-freeze policy,
+  then repeating the same unique-marker lock-screen test.
+- A comparison with the two alternatives explains the device-specific difference. The active
+  OnePlus cross-device stack includes `com.oplus.linker`, a system/privileged product package
+  (UID 10159) with vendor connectivity permissions and long-lived services; the Microsoft
+  `com.microsoft.appmanager` package is stopped in this image. Sefirah 3.1.0 is also on the
+  Android Doze whitelist, but its network service has `connectedDevice` FGS, `WAKE_LOCK`, and
+  Shizuku/worker bridge components, and its process was not frozen in the same snapshot. These
+  facts prove that Conduit lacks the OEM/privileged path and Sefirah has additional wake/bridge
+  capabilities; they do not prove which Sefirah code path keeps every notification immediate.
+- A temporary device A/B check enabled Conduit's existing AccessibilityService while the screen
+  was off. Hans still froze UID 10550 after about 26 seconds, so AccessibilityService is not a
+  reliable OEM exemption. The Android settings screen now checks whether the Oplus app-freezer
+  feature is actually exposed. This OnePlus does not expose it, so the entry opens the standard
+  per-app battery detail with `request_ignore_background_restriction` instead of launching a
+  protected page that immediately finishes; freezer-capable Oplus builds still get the OEM list.
+  The debug APK was installed through LAN ADB at `192.168.31.229:5555`.
 
 ### Notification latency investigation — 2026-10-01
 
@@ -39,6 +83,20 @@ release baseline and `docs/TODO.md` are authoritative for current status.
   during screen-off/FastFreeze even while its connected-device foreground service was active; the
   process resumed on a later packet. The Settings screen now offers Android's standard battery
   optimization exemption request. Oplus "allow background activity" remains a separate OEM setting.
+
+### Non-LAN Relay reconnect and Material 3 navigation — 2026-10-02
+
+- Bettbox VPN DNS resolves `conduit-us`, `conduit-wa`, `conduit-tyo`, and `conduit-jp` to
+  `198.18.0.0/15` fake addresses. The phone reached each address on TCP `41113`, while the
+  Android client rejected every fake answer because built-in endpoints had no fallback IPv4.
+- `relayTargetAddress()` now preserves a fake address when no fallback is configured, allowing
+  the VPN's hostname mapping to route the socket. Explicit per-endpoint fallback values still
+  replace the fake address. The JVM test now covers both paths.
+- The bottom navigation now follows Material 3 navigation roles: filled selected icons, outlined
+  unselected icons, a `secondaryContainer` selection indicator, semantic labels, and no new
+  dependency. GitHub Actions run `36967899497` passed all three jobs. The resulting APK was
+  installed and a real off-LAN test linked through `conduit-wa.414222.xyz:41113`; after Wi-Fi was
+  restored, Windows returned to the direct LAN path.
 
 ## Test evidence
 

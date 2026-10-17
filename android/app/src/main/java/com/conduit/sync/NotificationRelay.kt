@@ -70,6 +70,32 @@ internal const val ICON_MAX_BYTES = 24_000
 private const val HIDDEN_TITLE = "Notification hidden by Conduit"
 
 /**
+ * The rendered notification content used to identify a repeated framework callback.
+ *
+ * Android may assign a fresh [StatusBarNotification.postTime] when an app reposts the
+ * same notification without changing what the user sees. That timestamp is kept on the
+ * wire, but deliberately does not participate in equality so such reposts do not become
+ * duplicate desktop toasts.
+ */
+internal data class NotificationSnapshot(
+    val postTime: Long,
+    val title: String,
+    val body: String,
+    val messages: List<TextMessage>,
+    val actions: List<NotifActionDesc>,
+) {
+    override fun equals(other: Any?): Boolean =
+        other is NotificationSnapshot &&
+            title == other.title &&
+            body == other.body &&
+            messages == other.messages &&
+            actions == other.actions
+
+    override fun hashCode(): Int =
+        (((title.hashCode() * 31 + body.hashCode()) * 31 + messages.hashCode()) * 31 + actions.hashCode())
+}
+
+/**
  * Mirrors the shade to the desktop.
  *
  * The system owns this service's lifecycle: it binds on boot and rebinds whenever it
@@ -101,18 +127,11 @@ class NotificationRelay : NotificationListenerService() {
         }
     }
 
-    private data class NotificationSnapshot(
-        val postTime: Long,
-        val title: String,
-        val body: String,
-        val messages: List<TextMessage>,
-        val actions: List<NotifActionDesc>,
-    )
-
     /**
      * Last event payload per Android notification key. Chat apps routinely reuse one key while
      * new messages arrive; those are separate user-visible events on Windows. The cache suppresses
-     * only an identical framework callback (same post time and payload), never a later message.
+     * only an identical rendered payload, even if Android refreshes its post time, never a later
+     * message.
      */
     private val posted = object : LinkedHashMap<String, NotificationSnapshot>(32, 0.75f, true) {
         override fun removeEldestEntry(eldest: Map.Entry<String, NotificationSnapshot>) =

@@ -9,13 +9,126 @@
                 <ToolkitResources xmlns="using:Uno.Toolkit.UI" />
             </ResourceDictionary.MergedDictionaries>
 
-            <SolidColorBrush x:Key="App.PageBackgroundBrush" Color="Transparent" />
+            <!-- Warm, layered surfaces adapted from Caho1/open-claude-ui's MIT-licensed
+                 Claude Design System reference. All controls remain native Uno/WinUI. -->
+            <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="Light">
+                    <SolidColorBrush x:Key="CdsWindowBrush" Color="#F7F5F1" />
+                    <SolidColorBrush x:Key="CdsSidebarBrush" Color="#F1EEE8" />
+                    <SolidColorBrush x:Key="CdsCanvasBrush" Color="#FFFEFC" />
+                    <SolidColorBrush x:Key="CdsCardBrush" Color="#FFFFFF" />
+                    <SolidColorBrush x:Key="CdsMutedSurfaceBrush" Color="#F7F4EF" />
+                    <SolidColorBrush x:Key="CdsSidebarSelectedBrush" Color="#E8E0D6" />
+                    <SolidColorBrush x:Key="CdsBorderBrush" Color="#E5DED4" />
+                    <SolidColorBrush x:Key="CdsTextBrush" Color="#2D2926" />
+                    <SolidColorBrush x:Key="CdsSecondaryTextBrush" Color="#756D65" />
+                    <SolidColorBrush x:Key="CdsSubtleTextBrush" Color="#8B8178" />
+                    <SolidColorBrush x:Key="CdsAccentTextBrush" Color="#B85F42" />
+                    <SolidColorBrush x:Key="CdsSuccessBrush" Color="#41836A" />
+                    <!-- Keep system checkbox, toggle and accent controls within the Clay palette. -->
+                    <Color x:Key="SystemAccentColor">#D97757</Color>
+                    <SolidColorBrush x:Key="AccentFillColorDefaultBrush" Color="#D97757" />
+                    <SolidColorBrush x:Key="AccentFillColorSecondaryBrush" Color="#C6694A" />
+                    <SolidColorBrush x:Key="AccentFillColorTertiaryBrush" Color="#A9563D" />
+                    <SolidColorBrush x:Key="CheckBoxCheckBackgroundFillChecked" Color="#D97757" />
+                    <SolidColorBrush x:Key="CheckBoxCheckBackgroundFillCheckedPointerOver" Color="#C6694A" />
+                    <SolidColorBrush x:Key="CheckBoxCheckBackgroundFillCheckedPressed" Color="#A9563D" />
+                    <SolidColorBrush x:Key="ToggleSwitchFillOn" Color="#D97757" />
+                    <SolidColorBrush x:Key="ToggleSwitchFillOnPointerOver" Color="#C6694A" />
+                    <SolidColorBrush x:Key="ToggleSwitchFillOnPressed" Color="#A9563D" />
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="Dark">
+                    <SolidColorBrush x:Key="CdsWindowBrush" Color="#191817" />
+                    <SolidColorBrush x:Key="CdsSidebarBrush" Color="#211F1D" />
+                    <SolidColorBrush x:Key="CdsCanvasBrush" Color="#171615" />
+                    <SolidColorBrush x:Key="CdsCardBrush" Color="#252321" />
+                    <SolidColorBrush x:Key="CdsMutedSurfaceBrush" Color="#2D2926" />
+                    <SolidColorBrush x:Key="CdsSidebarSelectedBrush" Color="#3A302B" />
+                    <SolidColorBrush x:Key="CdsBorderBrush" Color="#393531" />
+                    <SolidColorBrush x:Key="CdsTextBrush" Color="#EEE9E3" />
+                    <SolidColorBrush x:Key="CdsSecondaryTextBrush" Color="#B6AAA0" />
+                    <SolidColorBrush x:Key="CdsSubtleTextBrush" Color="#948A81" />
+                    <SolidColorBrush x:Key="CdsAccentTextBrush" Color="#E79B80" />
+                    <SolidColorBrush x:Key="CdsSuccessBrush" Color="#79B79A" />
+                    <!-- Keep system checkbox, toggle and accent controls within the Clay palette. -->
+                    <Color x:Key="SystemAccentColor">#D97757</Color>
+                    <SolidColorBrush x:Key="AccentFillColorDefaultBrush" Color="#D97757" />
+                    <SolidColorBrush x:Key="AccentFillColorSecondaryBrush" Color="#C6694A" />
+                    <SolidColorBrush x:Key="AccentFillColorTertiaryBrush" Color="#A9563D" />
+                    <SolidColorBrush x:Key="CheckBoxCheckBackgroundFillChecked" Color="#D97757" />
+                    <SolidColorBrush x:Key="CheckBoxCheckBackgroundFillCheckedPointerOver" Color="#C6694A" />
+                    <SolidColorBrush x:Key="CheckBoxCheckBackgroundFillCheckedPressed" Color="#A9563D" />
+                    <SolidColorBrush x:Key="ToggleSwitchFillOn" Color="#D97757" />
+                    <SolidColorBrush x:Key="ToggleSwitchFillOnPointerOver" Color="#C6694A" />
+                    <SolidColorBrush x:Key="ToggleSwitchFillOnPressed" Color="#A9563D" />
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="HighContrast">
+                    <SolidColorBrush x:Key="CdsWindowBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="CdsSidebarBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="CdsCanvasBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="CdsCardBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="CdsMutedSurfaceBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="CdsSidebarSelectedBrush" Color="{ThemeResource SystemColorHighlightColor}" />
+                    <SolidColorBrush x:Key="CdsBorderBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="CdsTextBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="CdsSecondaryTextBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="CdsSubtleTextBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="CdsAccentTextBrush" Color="{ThemeResource SystemColorHighlightTextColor}" />
+                    <SolidColorBrush x:Key="CdsSuccessBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                </ResourceDictionary>
+            </ResourceDictionary.ThemeDictionaries>
 
+            <SolidColorBrush x:Key="CdsClayBrush" Color="#D97757" />
+            <SolidColorBrush x:Key="CdsClayHoverBrush" Color="#C6694A" />
+            <SolidColorBrush x:Key="CdsClayPressedBrush" Color="#A9563D" />
+            <SolidColorBrush x:Key="CdsOnClayBrush" Color="#FFFFFF" />
+
+            <Style x:Key="CdsPrimaryButtonStyle" TargetType="Button">
+                <Setter Property="MinHeight" Value="38" />
+                <Setter Property="CornerRadius" Value="9" />
+                <Setter Property="Background" Value="{StaticResource CdsClayBrush}" />
+                <Setter Property="Foreground" Value="{StaticResource CdsOnClayBrush}" />
+                <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="Padding" Value="15,8" />
+                <Setter Property="FontSize" Value="13" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+            </Style>
+            <Style x:Key="CdsSecondaryButtonStyle" TargetType="Button">
+                <Setter Property="MinHeight" Value="36" />
+                <Setter Property="CornerRadius" Value="9" />
+                <Setter Property="Background" Value="{ThemeResource CdsMutedSurfaceBrush}" />
+                <Setter Property="Foreground" Value="{ThemeResource CdsTextBrush}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource CdsBorderBrush}" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="Padding" Value="12,7" />
+                <Setter Property="FontSize" Value="13" />
+            </Style>
+            <Style x:Key="CdsGhostButtonStyle" TargetType="Button">
+                <Setter Property="MinHeight" Value="32" />
+                <Setter Property="CornerRadius" Value="8" />
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="Foreground" Value="{ThemeResource CdsSecondaryTextBrush}" />
+                <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="Padding" Value="9,5" />
+                <Setter Property="FontSize" Value="12" />
+            </Style>
+            <Style x:Key="CdsNavigationButtonStyle" TargetType="Button">
+                <Setter Property="MinHeight" Value="42" />
+                <Setter Property="HorizontalAlignment" Value="Stretch" />
+                <Setter Property="HorizontalContentAlignment" Value="Left" />
+                <Setter Property="CornerRadius" Value="9" />
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="Foreground" Value="{ThemeResource CdsTextBrush}" />
+                <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="Padding" Value="14,8" />
+                <Setter Property="FontSize" Value="13" />
+            </Style>
             <Style x:Key="CompactIconButtonStyle" TargetType="Button">
                 <Setter Property="MinWidth" Value="32" />
                 <Setter Property="MinHeight" Value="32" />
                 <Setter Property="Padding" Value="6" />
             </Style>
+            <SolidColorBrush x:Key="App.PageBackgroundBrush" Color="Transparent" />
         </ResourceDictionary>
     </Application.Resources>
 </Application>
