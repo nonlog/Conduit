@@ -25,6 +25,17 @@
                     <SolidColorBrush x:Key="CdsSubtleTextBrush" Color="#8B8178" />
                     <SolidColorBrush x:Key="CdsAccentTextBrush" Color="#B85F42" />
                     <SolidColorBrush x:Key="CdsSuccessBrush" Color="#41836A" />
+                    <!-- Keep system checkbox, toggle and accent controls within the Clay palette. -->
+                    <Color x:Key="SystemAccentColor">#D97757</Color>
+                    <SolidColorBrush x:Key="AccentFillColorDefaultBrush" Color="#D97757" />
+                    <SolidColorBrush x:Key="AccentFillColorSecondaryBrush" Color="#C6694A" />
+                    <SolidColorBrush x:Key="AccentFillColorTertiaryBrush" Color="#A9563D" />
+                    <SolidColorBrush x:Key="CheckBoxCheckBackgroundFillChecked" Color="#D97757" />
+                    <SolidColorBrush x:Key="CheckBoxCheckBackgroundFillCheckedPointerOver" Color="#C6694A" />
+                    <SolidColorBrush x:Key="CheckBoxCheckBackgroundFillCheckedPressed" Color="#A9563D" />
+                    <SolidColorBrush x:Key="ToggleSwitchFillOn" Color="#D97757" />
+                    <SolidColorBrush x:Key="ToggleSwitchFillOnPointerOver" Color="#C6694A" />
+                    <SolidColorBrush x:Key="ToggleSwitchFillOnPressed" Color="#A9563D" />
                 </ResourceDictionary>
                 <ResourceDictionary x:Key="Dark">
                     <SolidColorBrush x:Key="CdsWindowBrush" Color="#191817" />
@@ -39,6 +50,17 @@
                     <SolidColorBrush x:Key="CdsSubtleTextBrush" Color="#948A81" />
                     <SolidColorBrush x:Key="CdsAccentTextBrush" Color="#E79B80" />
                     <SolidColorBrush x:Key="CdsSuccessBrush" Color="#79B79A" />
+                    <!-- Keep system checkbox, toggle and accent controls within the Clay palette. -->
+                    <Color x:Key="SystemAccentColor">#D97757</Color>
+                    <SolidColorBrush x:Key="AccentFillColorDefaultBrush" Color="#D97757" />
+                    <SolidColorBrush x:Key="AccentFillColorSecondaryBrush" Color="#C6694A" />
+                    <SolidColorBrush x:Key="AccentFillColorTertiaryBrush" Color="#A9563D" />
+                    <SolidColorBrush x:Key="CheckBoxCheckBackgroundFillChecked" Color="#D97757" />
+                    <SolidColorBrush x:Key="CheckBoxCheckBackgroundFillCheckedPointerOver" Color="#C6694A" />
+                    <SolidColorBrush x:Key="CheckBoxCheckBackgroundFillCheckedPressed" Color="#A9563D" />
+                    <SolidColorBrush x:Key="ToggleSwitchFillOn" Color="#D97757" />
+                    <SolidColorBrush x:Key="ToggleSwitchFillOnPointerOver" Color="#C6694A" />
+                    <SolidColorBrush x:Key="ToggleSwitchFillOnPressed" Color="#A9563D" />
                 </ResourceDictionary>
                 <ResourceDictionary x:Key="HighContrast">
                     <SolidColorBrush x:Key="CdsWindowBrush" Color="{ThemeResource SystemColorWindowColor}" />

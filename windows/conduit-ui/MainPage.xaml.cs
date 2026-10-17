@@ -11,7 +11,7 @@ using Windows.Storage.Streams;
 
 namespace Conduit;
 
-public sealed partial class MainPage : Page, Microsoft.UI.Xaml.Markup.IComponentConnector
+public sealed partial class MainPage : Page
 {
     private bool _loaded;
     private CancellationTokenSource? _pairingExpiryRefresh;
@@ -23,37 +23,11 @@ public sealed partial class MainPage : Page, Microsoft.UI.Xaml.Markup.IComponent
 
     public MainPage()
     {
-        try { InitializeComponent(); }
-        catch (Exception ex) { App.LogStartupException("MainPage.InitializeComponent", ex); throw; }
+        InitializeComponent();
         DataContext = ViewModel;
         ActualThemeChanged += (_, _) => UpdateTitleBarIcon();
     }
 
-    // The XAML generator supplies public Connect/GetBindingConnector only after its first
-    // analysis pass. Reflection avoids referencing those generated members at compile time,
-    // while exposing the failing XBF connection ID for startup-only diagnostics.
-    void Microsoft.UI.Xaml.Markup.IComponentConnector.Connect(int connectionId, object target)
-    {
-        try
-        {
-            var generated = GetType().GetMethod("Connect", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-            if (generated is null) throw new MissingMethodException("Generated XAML Connect was not found");
-            generated.Invoke(this, new object[] { connectionId, target });
-        }
-        catch (Exception ex)
-        {
-            App.LogStartupException($"MainPage XAML Connect[{connectionId}] target={target?.GetType().FullName}",
-                ex.InnerException ?? ex);
-            throw;
-        }
-    }
-
-    Microsoft.UI.Xaml.Markup.IComponentConnector Microsoft.UI.Xaml.Markup.IComponentConnector.GetBindingConnector(int connectionId, object target)
-    {
-        var generated = GetType().GetMethod("GetBindingConnector", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-        if (generated is null) throw new MissingMethodException("Generated XAML GetBindingConnector was not found");
-        return (Microsoft.UI.Xaml.Markup.IComponentConnector)generated.Invoke(this, new object[] { connectionId, target })!;
-    }
     private void UpdateTitleBarIcon()
     {
         var file = ActualTheme == ElementTheme.Dark ? "conduit-icon-dark.png" : "conduit-icon-light.png";
@@ -222,10 +196,10 @@ public sealed partial class MainPage : Page, Microsoft.UI.Xaml.Markup.IComponent
 
         GeneralSettingsPanel.Visibility = about ? Visibility.Collapsed : Visibility.Visible;
         AboutSettingsPanel.Visibility = about ? Visibility.Visible : Visibility.Collapsed;
-        SettingsGeneralButton.Style = (Style)Application.Current.Resources[
-            about ? "CdsGhostButtonStyle" : "CdsSecondaryButtonStyle"];
-        SettingsAboutButton.Style = (Style)Application.Current.Resources[
-            about ? "CdsSecondaryButtonStyle" : "CdsGhostButtonStyle"];
+        SettingsSectionTitle.Text = about ? "About" : "Settings";
+        SettingsSectionSubtitle.Text = about
+            ? "Version information and project details."
+            : "Make Conduit work the way you like.";
     }
 
     private void ShowNotifications_Click(object sender, RoutedEventArgs e) =>
@@ -240,11 +214,6 @@ public sealed partial class MainPage : Page, Microsoft.UI.Xaml.Markup.IComponent
     private void ShowAbout_Click(object sender, RoutedEventArgs e) =>
         NavigateTo(DesktopSection.About);
 
-    private void ShowSettingsGeneral_Click(object sender, RoutedEventArgs e) =>
-        NavigateTo(DesktopSection.General);
-
-    private void ShowSettingsAbout_Click(object sender, RoutedEventArgs e) =>
-        NavigateTo(DesktopSection.About);
 
     private void SharedLinksList_ItemClick(object sender, ItemClickEventArgs e)
     {

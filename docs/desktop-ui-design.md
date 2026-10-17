@@ -10,8 +10,10 @@ application. It contains no Claude or Anthropic logo, font, audio or proprietary
   `windows/conduit-daemon/tools/icon-render/render-icons.mjs`.
 - **Surfaces:** light canvas `#FFFEFC`, warm rail `#F1EEE8`, light cards white; dark
   canvas `#171615`, rail `#211F1D`, elevated cards `#252321`.
+- **Accent controls:** native checkboxes and toggle switches use Clay-filled theme resources;
+  high-contrast mode retains system-resolved colors.
 - **Hierarchy:** 246-pixel navigation rail; status shown with the paired device;
-  separate notifications, shared-links and settings/about surfaces.
+  separate notifications, shared-links, settings and about surfaces.
 - **Shapes:** 9-pixel buttons, 11–13-pixel cards, 1-pixel hairlines; neutral text
   hierarchy and Clay emphasis rather than colorful, heavy UI chrome.
 - **Behavior:** preserve existing view-model bindings, daemon IPC, all file/drop,
