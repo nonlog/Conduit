@@ -159,8 +159,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "conduit-daemon"
-version = "0.1.5"
+10.1.62
 dependencies = [
  "anyhow",
  "base64",
@@ -180,8 +179,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "conduit-relay"
-version = "0.1.5"
+10.1.62
 dependencies = [
  "anyhow",
  "socket2",

@@ -1,26 +1,35 @@
 # Conduit desktop visual system
 
-The Windows UI uses a native Uno/WinUI adaptation of the warm, layered design ideas
-published in [Caho1/open-claude-ui](https://github.com/Caho1/open-claude-ui)
-(MIT license). It is an original Conduit interface, not an embedded React or Electron
-application. It contains no Claude or Anthropic logo, font, audio or proprietary assets.
+Conduit is a native Uno/WinUI Windows application. The navigation and page
+layout introduced in PR #11 remains unchanged: 246-pixel sidebar, paired-device
+card, notifications, shared links, settings and about pages.
 
-- **Identity:** keep Conduit's transparent two-track bidirectional arrow glyph;
-  generate the brand, taskbar, tray and Explorer icons in CDS Clay `#D97757` via
-  `windows/conduit-daemon/tools/icon-render/render-icons.mjs`.
-- **Surfaces:** light canvas `#FFFEFC`, warm rail `#F1EEE8`, light cards white; dark
-  canvas `#171615`, rail `#211F1D`, elevated cards `#252321`.
-- **Accent controls:** native checkboxes and toggle switches use Clay-filled theme resources;
-  high-contrast mode retains system-resolved colors.
-- **Hierarchy:** 246-pixel navigation rail; status shown with the paired device;
-  separate notifications, shared-links, settings and about surfaces.
-- **Shapes:** 9-pixel buttons, 11–13-pixel cards, 1-pixel hairlines; neutral text
-  hierarchy and Clay emphasis rather than colorful, heavy UI chrome.
-- **Behavior:** preserve existing view-model bindings, daemon IPC, all file/drop,
-  notification, pairing and settings handlers, theme-aware Windows caption buttons,
-  share target and single-instance behavior. No periodic work or animation loop.
+## Windows Fluent / Mica
+- Real Mica: App.xaml.cs already applies MicaBackdrop. MainPage.xaml leaves the
+  page, caption root and sidebar transparent so the OS backdrop is visible.
+  The workspace uses the native LayerFillColorDefaultBrush translucent layer.
+- Native surfaces: CardBackgroundFillColorDefaultBrush and CardStrokeColorDefaultBrush
+  for cards, ControlFillColorDefaultBrush for subdued surfaces, and
+  ControlStrokeColorDefaultBrush for borders. Navigation selection uses
+  SubtleFillColorSecondaryBrush.
+- Native text and accent: TextFillColor*Brush, AccentTextFillColorPrimaryBrush,
+  AccentFillColorDefaultBrush and the built-in AccentButtonStyle. Native controls
+  follow the Windows app theme and accent, without SystemAccentColor overrides.
+- Light/dark/high contrast: resolve all colors through Windows theme resources,
+  rather than using hard-coded light/dark hex colors.
 
-Theme brushes and reusable button styles live in `windows/conduit-ui/App.xaml`.
-Navigation and page presentation live in `MainPage.xaml` and `MainPage.xaml.cs`.
-Use GitHub Actions for all builds and production artifacts; do not build locally
-or on VPS hosts.
+## Identity and behavior
+- **Icon unchanged:** retain the transparent, two-track bidirectional Conduit
+  arrows, including their existing brand Clay glyph #D97757. This brand image
+  color is intentionally independent from the user's Windows accent color.
+- **Layout unchanged:** preserve original spacing, card geometry, navigation,
+  accessibility names and screen reader targets.
+- **Functionality unchanged:** preserve all view-model bindings, daemon IPC,
+  notifications, file/drop, pairing and settings handlers, window captions,
+  Share Target and single-instance behavior; no new background polling.
+- Theme button styles live in windows/conduit-ui/App.xaml. Presentation lives in
+  MainPage.xaml; commands remain in MainPage.xaml.cs.
+- The layout was originally inspired by Caho1/open-claude-ui (MIT). No web UI or
+  Claude/Anthropic logo is embedded.
+
+Build all binaries with GitHub Actions. Do not build on Windows or VPS hosts.
