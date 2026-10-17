@@ -41,6 +41,8 @@ public sealed partial class MainPage : Page, Microsoft.UI.Xaml.Markup.IComponent
             throw;
         }
     }
+    Microsoft.UI.Xaml.Markup.IComponentConnector Microsoft.UI.Xaml.Markup.IComponentConnector.GetBindingConnector(int connectionId, object target) =>
+        GetBindingConnector(connectionId, target);
     private void UpdateTitleBarIcon()
     {
         var file = ActualTheme == ElementTheme.Dark ? "conduit-icon-dark.png" : "conduit-icon-light.png";
