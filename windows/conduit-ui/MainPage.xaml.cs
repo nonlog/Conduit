@@ -29,6 +29,18 @@ public sealed partial class MainPage : Page
         ActualThemeChanged += (_, _) => UpdateTitleBarIcon();
     }
 
+    // WinUI-generated Connect() does not report the XBF connection ID on a failed cast.
+    // The explicit interface implementation wraps that generated method only for diagnostic
+    // purposes; it preserves all generated event bindings and field assignments unchanged.
+    void Microsoft.UI.Xaml.Markup.IComponentConnector.Connect(int connectionId, object target)
+    {
+        try { Connect(connectionId, target); }
+        catch (Exception ex)
+        {
+            App.LogStartupException($"MainPage XAML Connect[{connectionId}] target={target?.GetType().FullName}", ex);
+            throw;
+        }
+    }
     private void UpdateTitleBarIcon()
     {
         var file = ActualTheme == ElementTheme.Dark ? "conduit-icon-dark.png" : "conduit-icon-light.png";
