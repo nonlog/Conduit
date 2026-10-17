@@ -11,7 +11,7 @@ using Windows.Storage.Streams;
 
 namespace Conduit;
 
-public sealed partial class MainPage : Page
+public sealed partial class MainPage : Page, Microsoft.UI.Xaml.Markup.IComponentConnector
 {
     private bool _loaded;
     private CancellationTokenSource? _pairingExpiryRefresh;
