@@ -20,9 +20,20 @@ public partial class App : Application
         // Keep the WinUI window on Conduit's long-standing Win32 taskbar identity even when the
         // sparse ShareTarget package grants this process package identity.
         TaskbarIdentity.SetProcessIdentity();
-        InitializeComponent();
+        UnhandledException += (_, args) => LogStartupException("UnhandledException", args.Exception);
+        try { InitializeComponent(); }
+        catch (Exception ex) { LogStartupException("App.InitializeComponent", ex); throw; }
     }
 
+    internal static void LogStartupException(string phase, Exception exception)
+    {
+        try
+        {
+            File.AppendAllText(Path.Combine(Path.GetTempPath(), "conduit-ui-startup-errors.log"),
+                $"[{DateTimeOffset.Now:O}] {phase}: {exception}\n");
+        }
+        catch { }
+    }
     protected override void OnLaunched(Microsoft.UI.Xaml.LaunchActivatedEventArgs args)
     {
         // Packaged activations are one-shot. Capture the share payload before WinUI/Uno startup

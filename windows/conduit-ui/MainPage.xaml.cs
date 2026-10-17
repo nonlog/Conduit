@@ -23,7 +23,8 @@ public sealed partial class MainPage : Page
 
     public MainPage()
     {
-        InitializeComponent();
+        try { InitializeComponent(); }
+        catch (Exception ex) { App.LogStartupException("MainPage.InitializeComponent", ex); throw; }
         DataContext = ViewModel;
         ActualThemeChanged += (_, _) => UpdateTitleBarIcon();
     }
