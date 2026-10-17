@@ -38,8 +38,8 @@ public sealed partial class MainPage : Page
     {
         UpdateTitleBarIcon();
         App.MainWindow.SetTitleBar(TitleBarRoot);
-        MainNavigationView.SelectedItem = SharedLinksNavigationItem;
-        SettingsNavigation.SelectedItem = GeneralSettingsNavigationItem;
+
+        NavigateTo(DesktopSection.Notifications);
         _loaded = true;
         // Present the shell first. Status/config/history I/O is useful, but none of it should delay
         // the first frame when the resident tray launches this on-demand UI.
@@ -165,44 +165,55 @@ public sealed partial class MainPage : Page
         WinRT.Interop.InitializeWithWindow.Initialize(picker, hwnd);
     }
 
-    private void ShowSharedLinks_Click(object sender, RoutedEventArgs e)
+    private enum DesktopSection
     {
-        MainNavigationView.SelectedItem = SharedLinksNavigationItem;
-        ShowSharedLinksPage();
+        Notifications,
+        Links,
+        General,
+        About,
     }
 
-    private void ShowSettings_Click(object sender, RoutedEventArgs e)
+    private void NavigateTo(DesktopSection section)
     {
-        if (MainNavigationView.SettingsItem is not null)
-            MainNavigationView.SelectedItem = MainNavigationView.SettingsItem;
-        ShowSettingsPage();
-    }
+        var notifications = section == DesktopSection.Notifications;
+        var links = section == DesktopSection.Links;
+        var general = section == DesktopSection.General;
+        var about = section == DesktopSection.About;
+        var settings = general || about;
 
-    private void MainNavigationView_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
-    {
-        if (args.IsSettingsSelected) ShowSettingsPage();
-        else ShowSharedLinksPage();
-    }
+        NotificationsPage.Visibility = notifications ? Visibility.Visible : Visibility.Collapsed;
+        SharedLinksPage.Visibility = links ? Visibility.Visible : Visibility.Collapsed;
+        SettingsPage.Visibility = settings ? Visibility.Visible : Visibility.Collapsed;
 
-    private void ShowSharedLinksPage()
-    {
-        SharedLinksPage.Visibility = Visibility.Visible;
-        SettingsPage.Visibility = Visibility.Collapsed;
-    }
+        NotificationsNavHighlight.Visibility = NotificationsNavAccent.Visibility =
+            notifications ? Visibility.Visible : Visibility.Collapsed;
+        LinksNavHighlight.Visibility = LinksNavAccent.Visibility =
+            links ? Visibility.Visible : Visibility.Collapsed;
+        SettingsNavHighlight.Visibility = SettingsNavAccent.Visibility =
+            general ? Visibility.Visible : Visibility.Collapsed;
+        AboutNavHighlight.Visibility = AboutNavAccent.Visibility =
+            about ? Visibility.Visible : Visibility.Collapsed;
 
-    private void ShowSettingsPage()
-    {
-        SharedLinksPage.Visibility = Visibility.Collapsed;
-        SettingsPage.Visibility = Visibility.Visible;
-    }
-
-    private void SettingsNavigation_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
-    {
-        var tag = args.SelectedItemContainer?.Tag?.ToString();
-        var about = string.Equals(tag, "About", StringComparison.OrdinalIgnoreCase);
         GeneralSettingsPanel.Visibility = about ? Visibility.Collapsed : Visibility.Visible;
         AboutSettingsPanel.Visibility = about ? Visibility.Visible : Visibility.Collapsed;
+        SettingsSectionTitle.Text = about ? "About" : "Settings";
+        SettingsSectionSubtitle.Text = about
+            ? "Version information and project details."
+            : "Make Conduit work the way you like.";
     }
+
+    private void ShowNotifications_Click(object sender, RoutedEventArgs e) =>
+        NavigateTo(DesktopSection.Notifications);
+
+    private void ShowSharedLinks_Click(object sender, RoutedEventArgs e) =>
+        NavigateTo(DesktopSection.Links);
+
+    private void ShowSettings_Click(object sender, RoutedEventArgs e) =>
+        NavigateTo(DesktopSection.General);
+
+    private void ShowAbout_Click(object sender, RoutedEventArgs e) =>
+        NavigateTo(DesktopSection.About);
+
 
     private void SharedLinksList_ItemClick(object sender, ItemClickEventArgs e)
     {
