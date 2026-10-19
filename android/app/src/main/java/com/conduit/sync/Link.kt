@@ -339,13 +339,13 @@ class Link(
     }
 
     // The ID exists before admission; every rejection is a visible terminal row.
-    fun sendFile(what: String, open: () -> Files.Source?): String {
+    fun sendFile(what: String, open: () -> Files.Source?): String = synchronized(connectionLock) {
         val id = newTransferId()
         val owner = current?.takeIf { it.authenticated && usable(it) }
         if (owner == null) {
             events.onTransfer(FileTransfer(FileTransferDirection.ToDesktop, what, 0, 0, id,
                 TransferPhase.Failed, "Desktop is offline", false))
-            return id
+            return@synchronized id
         }
         val upload = Upload(owner, id, what)
         val admitted = synchronized(uploadLock) {
@@ -357,7 +357,7 @@ class Link(
         if (!admitted || !sender.bulk(work)) {
             finish(upload, TransferPhase.Failed, "Transfer queue is full; try again")
         }
-        return id
+        id
     }
 
     private fun uploadStep(upload: Upload, open: () -> Files.Source?): Boolean {

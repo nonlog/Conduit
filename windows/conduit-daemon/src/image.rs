@@ -254,13 +254,14 @@ pub fn processor(
 
 /// One image frame per scheduler turn, using the same sole Noise writer as file/control traffic.
 pub struct Outgoing {
-    png: Vec<u8>,
+    png: std::sync::Arc<Vec<u8>>,
     id: Vec<u8>,
     next: usize,
     header: bool,
 }
 impl Outgoing {
-    pub fn new(png: Vec<u8>) -> Result<Self> {
+    pub fn new(png: impl Into<std::sync::Arc<Vec<u8>>>) -> Result<Self> {
+        let png = png.into();
         if png.is_empty() || png.len() > crate::clip::MAX_IMAGE {
             return Err(anyhow!("invalid image length"));
         }

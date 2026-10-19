@@ -27,10 +27,6 @@ fn run() -> Result<(), String> {
     if std::env::args_os().nth(2).is_some() {
         return Err("Conduit currently sends one selected file at a time.".into());
     }
-    let name = file
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| file.display().to_string());
     let daemon = std::env::current_exe()
         .map_err(|e| format!("Could not locate Conduit: {e}"))?
         .with_file_name("conduit-daemon.exe");

@@ -38,7 +38,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tracing::{info, warn};
-use wire::{pb, Session};
+use wire::pb;
 
 const PORT: u16 = 41112;
 /// Production Relay fleet. Windows parks one responder at each node; Android still keeps exactly
@@ -1678,7 +1678,7 @@ async fn serve(
                 } else {
                     "failed"
                 };
-                let reason = if result.error.is_empty() {
+                let reason: String = if result.error.is_empty() {
                     if result.cancelled {
                         "Cancelled".into()
                     } else {

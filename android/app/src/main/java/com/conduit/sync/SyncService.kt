@@ -11,6 +11,7 @@ import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
+import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
@@ -190,6 +191,7 @@ class SyncService : Service() {
     private data class LanTarget(val address: InetSocketAddress, val network: Network?)
     private var deferredLanHandoff: LanTarget? = null
     private var defaultNetwork: Network? = null
+    private val readyLanAddresses = mutableMapOf<Network, String>()
 
     /**
      * Relay selection state. Only [relayCandidates] is main-thread-owned. The attempt metadata is
@@ -354,29 +356,42 @@ class SyncService : Service() {
      * trigger a Relay-to-LAN upgrade. This callback is event-driven; it performs no scans itself.
      */
     private val physicalLanNetworks = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(net: Network) {
-            if (!isPhysicalLanNetwork(net)) return
-            main.post {
-                if (destroyed) return@post
-                networkUp = true
-                relayLanRecheckDone = false
-                Log.i(TAG, "physical LAN available: $net")
-                if (LinkStatus.state == LinkState.Connected && relayAttemptConnected) {
-                    maybeRecheckLanAfterRelay(net)
-                } else if (LinkStatus.state != LinkState.Connected && defaultNetwork == null) {
-                    if (pairingActive()) retryPairing(net) else redial(net)
-                }
-            }
-        }
+        override fun onAvailable(net: Network) = physicalLanReady(net)
+
+        override fun onLinkPropertiesChanged(net: Network, properties: LinkProperties) = physicalLanReady(net)
+
+        override fun onCapabilitiesChanged(net: Network, capabilities: NetworkCapabilities) = physicalLanReady(net)
 
         override fun onLost(net: Network) {
             main.post {
                 if (destroyed) return@post
+                readyLanAddresses.remove(net)
                 relayLanRecheckDone = false
                 if (deferredLanHandoff?.network == net) deferredLanHandoff = null
                 networkUp = connectivity.activeNetwork != null || physicalLanNetwork() != null
                 Log.i(TAG, "physical LAN lost: $net")
                 if (link.isBoundTo(net)) link.disconnect()
+            }
+        }
+    }
+
+    private fun physicalLanReady(net: Network) {
+        main.post {
+            if (destroyed || !isPhysicalLanNetwork(net)) return@post
+            // onAvailable can precede DHCP/address delivery on hotspots. Reconsider only a
+            // genuinely new usable address set; repeated capability callbacks add no probes.
+            val addresses = connectivity.getLinkProperties(net)?.linkAddresses.orEmpty()
+                .filter { it.address is java.net.Inet4Address && !it.address.isLoopbackAddress }
+                .map { "${it.address.hostAddress}/${it.prefixLength}" }.sorted().joinToString(",")
+            if (addresses.isEmpty() || readyLanAddresses[net] == addresses) return@post
+            readyLanAddresses[net] = addresses
+            networkUp = true
+            relayLanRecheckDone = false
+            Log.i(TAG, "physical LAN addressing ready: $net")
+            if (LinkStatus.state == LinkState.Connected && relayAttemptConnected) {
+                maybeRecheckLanAfterRelay(net)
+            } else if (LinkStatus.state != LinkState.Connected) {
+                if (pairingActive()) retryPairing(net) else redial(net)
             }
         }
     }
