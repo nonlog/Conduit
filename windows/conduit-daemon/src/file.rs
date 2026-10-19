@@ -1,26 +1,20 @@
 //! Files arriving from the phone.
 //!
-//! The one rule that shapes this file: a chunk is written to disk the moment it arrives
-//! and is never held. A 500 MB share therefore costs this process one 32 KiB frame of
-//! memory, not 500 MB — which is the difference between a companion daemon you can leave
-//! running for a fortnight and one you cannot.
+//! Chunks are streamed through a bounded worker queue rather than buffering a whole file.
 //!
 //! The second rule is that every field here is peer-controlled. `name` in particular is a
 //! string from another machine that is about to become a path on this one, so [`sanitise`]
 //! is a trust boundary rather than a tidying pass.
 
 use anyhow::{bail, Context, Result};
-use prost::Message as _;
-use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
-use tokio::net::TcpStream;
 use tracing::{info, warn};
 
-use crate::wire::{pb, Session};
+use crate::wire::pb;
 
 /// Matches the phone's `CHUNK`. A larger chunk plus protobuf framing overflows the
 /// 65519-byte Noise plaintext ceiling, which would tear the session down.
@@ -52,37 +46,39 @@ pub fn validate_outbound(path: &Path) -> Result<PathBuf> {
 /// A local Windows file already opened and ready to send to the phone.
 ///
 /// Opening happens before the `FILE_OFFER` goes on the wire. A missing/locked/oversize local file
-/// therefore costs no session. After the offer has been sent, any read failure must end the
-/// session so Android's pending MediaStore row is dropped with that session rather than waiting
-/// forever for chunks that can never arrive.
+/// therefore costs no session. A later read failure is reported by the scheduler and uses
+/// targeted cancellation when the peer supports it.
 pub struct Outbound {
     path: PathBuf,
     file: tokio::fs::File,
     offer: pb::FileOffer,
+    sent: u64,
+    index: u64,
 }
 
 impl Outbound {
     pub async fn open(path: &Path) -> Result<Self> {
-        let path = validate_outbound(path)?;
-        let metadata = tokio::fs::metadata(&path)
-            .await
-            .with_context(|| format!("reading {}", path.display()))?;
-        let total = metadata.len();
+        let path = path.to_path_buf();
+        let path = tokio::task::spawn_blocking(move || validate_outbound(&path)).await??;
         let file = tokio::fs::File::open(&path)
             .await
             .with_context(|| format!("opening {}", path.display()))?;
+        let metadata = file.metadata().await?;
+        if !metadata.is_file() {
+            bail!("not a regular file");
+        }
+        let total = metadata.len();
         let name = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| "file".to_string());
+        if !(1..=MAX_FILE).contains(&total) {
+            bail!("file of {total} B is outside 1..{MAX_FILE}");
+        }
         let chunks = total.div_ceil(CHUNK as u64);
         let timestamp_ms = now_ms();
-        let mut digest = Sha256::new();
-        digest.update(path.as_os_str().to_string_lossy().as_bytes());
-        digest.update(total.to_be_bytes());
-        digest.update(timestamp_ms.to_be_bytes());
-        let transfer_id = digest.finalize()[..16].to_vec();
+        let transfer_id = crate::transfer::new_id()?;
         let offer = pb::FileOffer {
             name,
             mime: mime_for(&path).to_string(),
@@ -92,7 +88,13 @@ impl Outbound {
             transfer_id,
             timestamp_ms,
         };
-        Ok(Self { path, file, offer })
+        Ok(Self {
+            path,
+            file,
+            offer,
+            sent: 0,
+            index: 0,
+        })
     }
 
     pub fn name(&self) -> &str {
@@ -107,52 +109,30 @@ impl Outbound {
         self.offer.total_bytes
     }
 
-    /// Sends the offer and every chunk, returning the number of encrypted frames written.
-    /// Progress is emitted only when the integer percentage changes, so a 512 MiB file still
-    /// produces at most 101 local UI updates rather than one IPC event per 32 KiB chunk.
-    pub async fn send<F>(
-        mut self,
-        session: &mut Session,
-        stream: &mut TcpStream,
-        mut progress: F,
-    ) -> Result<u64>
-    where
-        F: FnMut(u64, u64),
-    {
-        session
-            .send(stream, pb::Kind::FileOffer, &self.offer.encode_to_vec())
-            .await?;
-        let mut frames = 1u64;
-        let mut sent = 0u64;
-        let mut index = 0u64;
-        let mut last_percent = 0u64;
-        progress(0, self.offer.total_bytes);
-        let mut buffer = vec![0u8; CHUNK as usize];
-        while sent < self.offer.total_bytes {
-            let want = (self.offer.total_bytes - sent).min(CHUNK as u64) as usize;
-            self.file
-                .read_exact(&mut buffer[..want])
-                .await
-                .with_context(|| format!("reading {} at {sent} B", self.path.display()))?;
-            let chunk = pb::FileChunk {
-                index,
-                data: buffer[..want].to_vec(),
-                transfer_id: self.offer.transfer_id.clone(),
-            };
-            session
-                .send(stream, pb::Kind::FileChunk, &chunk.encode_to_vec())
-                .await?;
-            sent += want as u64;
-            index += 1;
-            frames += 1;
-            let percent = sent.saturating_mul(100) / self.offer.total_bytes;
-            if percent > last_percent || sent == self.offer.total_bytes {
-                last_percent = percent;
-                progress(sent, self.offer.total_bytes);
-            }
+    pub fn offer(&mut self, id: &[u8]) -> pb::FileOffer {
+        self.offer.transfer_id = id.to_vec();
+        self.offer.clone()
+    }
+
+    /// Read on a separate bounded producer; the session never waits for disk I/O.
+    pub async fn next_chunk(&mut self) -> Result<Option<pb::FileChunk>> {
+        if self.sent == self.offer.total_bytes {
+            return Ok(None);
         }
-        info!(path = %self.path.display(), bytes = sent, chunks = index, "file sent");
-        Ok(frames)
+        let want = (self.offer.total_bytes - self.sent).min(CHUNK as u64) as usize;
+        let mut data = vec![0; want];
+        self.file
+            .read_exact(&mut data)
+            .await
+            .with_context(|| format!("reading {} at {} B", self.path.display(), self.sent))?;
+        let chunk = pb::FileChunk {
+            index: self.index,
+            data,
+            transfer_id: self.offer.transfer_id.clone(),
+        };
+        self.sent += want as u64;
+        self.index += 1;
+        Ok(Some(chunk))
     }
 }
 
@@ -253,39 +233,40 @@ fn sanitise(name: &str) -> String {
     } else {
         stem.to_string()
     };
-    if RESERVED.contains(&stem.to_ascii_lowercase().as_str()) {
+    let device: String = stem
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches([' ', '.'])
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| match c {
+            '¹' => '1',
+            '²' => '2',
+            '³' => '3',
+            c => c,
+        })
+        .collect();
+    if RESERVED.contains(&device.as_str()) || matches!(device.as_str(), "conin$" | "conout$") {
         stem.insert(0, '_');
     }
-    if stem.chars().count() > 120 {
-        stem = stem.chars().take(120).collect();
-    }
+    stem = stem
+        .chars()
+        .scan(0usize, |units, c| {
+            *units += c.len_utf16();
+            (*units <= 120).then_some(c)
+        })
+        .collect();
+    let ext: String = ext
+        .chars()
+        .scan(0usize, |units, c| {
+            *units += c.len_utf16();
+            (*units <= 32).then_some(c)
+        })
+        .collect();
     format!("{stem}{ext}")
-}
-
-/// Reserves a free name in `dir`, creating it empty.
-///
-/// `create_new` rather than an `exists` check, because the two are not the same thing: the
-/// check-then-create version can hand the same name to two transfers, and clobbering a
-/// file the user already had is the one outcome that is not recoverable.
-fn reserve(dir: &Path, name: &str) -> Result<PathBuf> {
-    let (stem, ext) = match name.rsplit_once('.') {
-        Some((stem, ext)) if !stem.is_empty() => (stem, format!(".{ext}")),
-        _ => (name, String::new()),
-    };
-    for n in 1..=999 {
-        let candidate = if n == 1 {
-            name.to_string()
-        } else {
-            format!("{stem} ({n}){ext}")
-        };
-        let path = dir.join(&candidate);
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(_) => return Ok(path),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e).with_context(|| format!("creating {}", path.display())),
-        }
-    }
-    bail!("999 files in {} are already called {name}", dir.display())
+        .trim_end_matches(['.', ' '])
+        .to_string()
 }
 
 /// One file being received.
@@ -308,6 +289,7 @@ pub struct Incoming {
     written: u64,
     total: u64,
     chunks: u64,
+    chunk_size: u64,
 }
 
 impl Incoming {
@@ -328,19 +310,17 @@ impl Incoming {
                 offer.chunk_size
             );
         }
-        if offer.transfer_id.is_empty() {
-            bail!("offer has no transfer id");
+        if offer.transfer_id.is_empty() || offer.transfer_id.len() > 64 {
+            bail!("offer transfer id must contain 1..64 bytes");
         }
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
 
         let name = sanitise(&offer.name);
-        // Named by the transfer id, so two transfers cannot collide on it and the file is
-        // obviously scratch to anyone watching the folder.
-        let scratch = dir.join(format!("conduit-{}.part", hex(&offer.transfer_id)));
+        // A private random name plus exclusive creation cannot truncate a stale partial/symlink.
+        let scratch = dir.join(format!("conduit-{}.part", hex(&crate::transfer::new_id()?)));
         let file = OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .open(&scratch)
             .with_context(|| format!("creating {}", scratch.display()))?;
 
@@ -355,6 +335,7 @@ impl Incoming {
             written: 0,
             total: offer.total_bytes,
             chunks: offer.chunk_count,
+            chunk_size: offer.chunk_size as u64,
         })
     }
 
@@ -363,12 +344,27 @@ impl Incoming {
         &self.name
     }
 
+    pub fn written(&self) -> u64 {
+        self.written
+    }
+
     /// Writes one chunk, returning the finished file's path once the last one lands.
     ///
     /// In-order only. Chunks travel on one TCP stream inside one Noise session, so out of
     /// order is not a network condition — it is a broken or hostile peer, and dropping the
     /// transfer is the right answer.
     pub fn push(&mut self, chunk: &pb::FileChunk) -> Result<Option<PathBuf>> {
+        self.push_cancellable(chunk, &std::sync::atomic::AtomicBool::new(false))
+    }
+
+    pub fn push_cancellable(
+        &mut self,
+        chunk: &pb::FileChunk,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<Option<PathBuf>> {
+        if cancel.load(std::sync::atomic::Ordering::Acquire) {
+            bail!("Cancelled");
+        }
         if chunk.transfer_id != self.id {
             bail!("chunk belongs to a different transfer");
         }
@@ -376,7 +372,11 @@ impl Incoming {
             bail!("chunk {} arrived, expected {}", chunk.index, self.next);
         }
         let len = chunk.data.len() as u64;
-        if self.written + len > self.total {
+        let expected = self.total.saturating_sub(self.written).min(self.chunk_size);
+        if self.next >= self.chunks || len != expected {
+            bail!("chunk length {len}, expected {expected}");
+        }
+        if len > self.total.saturating_sub(self.written) {
             bail!(
                 "chunk {} would take the file past the {} B it declared",
                 chunk.index,
@@ -403,7 +403,12 @@ impl Incoming {
         // on Windows.
         let mut file = self.file.take().expect("checked above");
         file.flush().context("flushing the received file")?;
+        file.sync_all().context("syncing the received file")?;
         drop(file);
+
+        if cancel.load(std::sync::atomic::Ordering::Acquire) {
+            bail!("Cancelled");
+        }
 
         let path = publish(&self.scratch, &self.dir, &self.name)?;
         self.published = true;
@@ -425,31 +430,69 @@ impl Drop for Incoming {
                 of = self.total,
                 "file transfer abandoned, dropping the partial"
             );
-            let _ = std::fs::remove_file(&self.scratch);
+            if let Err(e) = std::fs::remove_file(&self.scratch) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    warn!(path = %self.scratch.display(), error = %e, "could not remove abandoned partial file");
+                }
+            }
         }
     }
 }
 
-/// Atomically reserves a collision-free final name and moves the completed scratch into it.
-///
-/// `reserve` creates a zero-byte placeholder so an external process cannot win the filename
-/// between an `exists` check and our rename. If the rename itself fails, that placeholder is
-/// ours and must be removed before returning the error; otherwise a failed transfer leaves a
-/// convincing-looking empty destination behind.
+/// Atomically moves to a free name. No placeholder or replace-existing race.
 fn publish(scratch: &Path, dir: &Path, name: &str) -> Result<PathBuf> {
-    let path = reserve(dir, name)?;
-    match std::fs::rename(scratch, &path) {
-        Ok(()) => Ok(path),
-        Err(e) => {
-            if let Err(cleanup) = std::fs::remove_file(&path) {
-                warn!(
-                    path = %path.display(),
-                    error = %cleanup,
-                    "could not remove a failed transfer's reserved placeholder"
-                );
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => (stem, format!(".{ext}")),
+        _ => (name, String::new()),
+    };
+    for n in 1..=999 {
+        let candidate = if n == 1 {
+            name.to_string()
+        } else {
+            format!("{stem} ({n}){ext}")
+        };
+        let path = dir.join(candidate);
+        match move_new(scratch, &path) {
+            Ok(()) => return Ok(path),
+            Err(e)
+                if e.kind() == std::io::ErrorKind::AlreadyExists
+                    || std::fs::symlink_metadata(&path).is_ok() =>
+            {
+                continue
             }
-            Err(e).with_context(|| format!("moving the transfer into {}", path.display()))
+            Err(e) => return Err(e).context("publishing received file without overwrite"),
         }
+    }
+    bail!("no free name for received file")
+}
+
+fn move_new(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt as _;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn MoveFileExW(source: *const u16, destination: *const u16, flags: u32) -> i32;
+    }
+    // canonicalize supplies Windows' extended-length prefix without resolving the final name
+    // (which may already be a user file/symlink that must never be followed or replaced).
+    let source = std::fs::canonicalize(source)?;
+    let parent = destination
+        .parent()
+        .ok_or_else(|| std::io::Error::other("missing destination directory"))?;
+    let name = destination
+        .file_name()
+        .ok_or_else(|| std::io::Error::other("missing destination name"))?;
+    let destination = std::fs::canonicalize(parent)?.join(name);
+    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    // MOVEFILE_WRITE_THROUGH, deliberately without MOVEFILE_REPLACE_EXISTING.
+    if unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), 8) } == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
     }
 }
 
@@ -523,14 +566,27 @@ mod tests {
         let dir = scratch("reserve");
         std::fs::write(dir.join("note.txt"), b"the user's own file")?;
 
-        let second = reserve(&dir, "note.txt")?;
+        let temp = dir.join("scratch.part");
+        std::fs::write(&temp, b"new file")?;
+        let second = publish(&temp, &dir, "note.txt")?;
         assert_eq!(second.file_name().unwrap(), "note (2).txt");
-        let third = reserve(&dir, "note.txt")?;
+        std::fs::write(&temp, b"third file")?;
+        let third = publish(&temp, &dir, "note.txt")?;
         assert_eq!(third.file_name().unwrap(), "note (3).txt");
         assert_eq!(std::fs::read(dir.join("note.txt"))?, b"the user's own file");
         // No extension is a case the naive `split('.')` version gets wrong.
         std::fs::write(dir.join("README"), b"x")?;
-        assert_eq!(reserve(&dir, "README")?.file_name().unwrap(), "README (2)");
+        std::fs::write(&temp, b"other")?;
+        assert_eq!(
+            publish(&temp, &dir, "README")?.file_name().unwrap(),
+            "README (2)"
+        );
+        std::fs::create_dir(dir.join("folder"))?;
+        std::fs::write(&temp, b"other")?;
+        assert_eq!(
+            publish(&temp, &dir, "folder")?.file_name().unwrap(),
+            "folder (2)"
+        );
         Ok(())
     }
 
@@ -590,7 +646,7 @@ mod tests {
         let part = rx.scratch.clone();
         assert!(part.is_file(), "begin did not create the scratch file");
 
-        // Force reserve() to fail *after* push has closed/taken the file handle. This is the
+        // Force publication to fail *after* push has closed/taken the file handle. This is the
         // exact window the old Drop logic missed because it equated `file == None` with success.
         rx.dir = dir.join("missing-parent");
         assert!(rx.push(&chunk(0, b"abcd")).is_err());
@@ -698,6 +754,149 @@ mod tests {
             Outbound::open(&empty).await.is_err(),
             "an empty file became a file offer"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn exact_chunk_lengths_and_ids_are_validated_before_mutation() -> Result<()> {
+        let dir = scratch("chunk-boundaries");
+        let mut rx = Incoming::begin(&offer("valid.bin", 6), &dir)?;
+        for data in [vec![], vec![1; 3], vec![1; 5]] {
+            assert!(rx.push(&chunk(0, &data)).is_err());
+            assert_eq!(rx.written(), 0);
+        }
+        let mut other = chunk(0, b"abcd");
+        other.transfer_id = vec![99];
+        assert!(rx.push(&other).is_err());
+        assert_eq!(rx.written(), 0);
+        assert!(rx.push(&chunk(0, b"abcd"))?.is_none());
+        assert!(rx.push(&chunk(1, b"x")).is_err());
+        assert_eq!(rx.written(), 4);
+        let path = rx.push(&chunk(1, b"ef"))?.unwrap();
+        assert_eq!(std::fs::read(&path)?, b"abcdef");
+        assert!(rx.push(&chunk(2, b"anything")).is_err());
+        drop(rx);
+        assert_eq!(std::fs::read(&path)?, b"abcdef");
+        Ok(())
+    }
+
+    #[test]
+    fn refused_ids_and_extreme_declarations_create_no_files() -> Result<()> {
+        let dir = scratch("id-bounds");
+        for id in [Vec::new(), vec![7; 65]] {
+            let mut invalid = offer("bad", 4);
+            invalid.transfer_id = id;
+            assert!(Incoming::begin(&invalid, &dir).is_err());
+        }
+        let mut invalid = offer("bad", 4);
+        invalid.total_bytes = u64::MAX;
+        assert!(Incoming::begin(&invalid, &dir).is_err());
+        assert_eq!(std::fs::read_dir(&dir)?.count(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn cancellation_cleans_partials_and_never_removes_published_files() -> Result<()> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let dir = scratch("cancel-race");
+        let cancel = AtomicBool::new(false);
+        let mut rx = Incoming::begin(&offer("cancel.bin", 8), &dir)?;
+        rx.push_cancellable(&chunk(0, b"abcd"), &cancel)?;
+        cancel.store(true, Ordering::Release);
+        assert!(rx.push_cancellable(&chunk(1, b"efgh"), &cancel).is_err());
+        drop(rx);
+        assert_eq!(std::fs::read_dir(&dir)?.count(), 0);
+        cancel.store(false, Ordering::Release);
+        let mut rx = Incoming::begin(&offer("complete.bin", 4), &dir)?;
+        let path = rx.push_cancellable(&chunk(0, b"done"), &cancel)?.unwrap();
+        cancel.store(true, Ordering::Release);
+        drop(rx);
+        assert_eq!(std::fs::read(path)?, b"done");
+        Ok(())
+    }
+
+    #[test]
+    fn repeated_peer_ids_cannot_truncate_an_existing_partial() -> Result<()> {
+        let dir = scratch("scratch-exclusive");
+        let mut first = Incoming::begin(&offer("one", 8), &dir)?;
+        first.push(&chunk(0, b"abcd"))?;
+        let second = Incoming::begin(&offer("two", 8), &dir)?;
+        assert_ne!(first.scratch, second.scratch);
+        assert_eq!(std::fs::metadata(&first.scratch)?.len(), 4);
+        drop(second);
+        drop(first);
+        assert_eq!(std::fs::read_dir(&dir)?.count(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn a_disk_write_error_still_removes_the_partial() -> Result<()> {
+        let dir = scratch("write-error-cleanup");
+        let mut rx = Incoming::begin(&offer("bad.bin", 4), &dir)?;
+        let partial = rx.scratch.clone();
+        // A real read-only handle makes WriteFile fail deterministically without a full disk.
+        rx.file = Some(File::open(&partial)?);
+        assert!(rx.push(&chunk(0, b"data")).is_err());
+        drop(rx);
+        assert!(!partial.exists());
+        assert_eq!(std::fs::read_dir(dir)?.count(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn names_fit_windows_utf16_limits_even_with_hostile_extensions() {
+        for name in [
+            format!("{}.{}", "😀".repeat(200), "😀".repeat(200)),
+            format!("x.{}", "z".repeat(400)),
+        ] {
+            assert!(sanitise(&name).encode_utf16().count() <= 152);
+        }
+        assert_eq!(sanitise("nul.tar.gz"), "_nul.tar.gz");
+        assert_eq!(sanitise("COM¹.txt"), "_COM¹.txt");
+        assert_eq!(sanitise("CONOUT$.txt"), "_CONOUT$.txt");
+    }
+
+    #[test]
+    fn concurrent_publications_never_replace_each_other() -> Result<()> {
+        let dir = scratch("publish-race");
+        let first = dir.join("one.part");
+        let second = dir.join("two.part");
+        std::fs::write(&first, b"one")?;
+        std::fs::write(&second, b"two")?;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let other_barrier = barrier.clone();
+        let other_dir = dir.clone();
+        let other = std::thread::spawn(move || {
+            other_barrier.wait();
+            publish(&second, &other_dir, "same.bin")
+        });
+        barrier.wait();
+        let one = publish(&first, &dir, "same.bin")?;
+        let two = other.join().unwrap()?;
+        assert_ne!(one, two);
+        assert_eq!(std::fs::read(one)?, b"one");
+        assert_eq!(std::fs::read(two)?, b"two");
+        assert_eq!(std::fs::read_dir(&dir)?.count(), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn outbound_reads_one_declared_chunk_per_turn() -> Result<()> {
+        let dir = scratch("outbound-chunks");
+        let path = dir.join("payload.bin");
+        let bytes = vec![42u8; CHUNK as usize + 3];
+        std::fs::write(&path, &bytes)?;
+        let mut outbound = Outbound::open(&path).await?;
+        let offer = outbound.offer(&[8; 16]);
+        assert_eq!(offer.chunk_count, 2);
+        let first = outbound.next_chunk().await?.unwrap();
+        assert_eq!(first.index, 0);
+        assert_eq!(first.data.len(), CHUNK as usize);
+        let last = outbound.next_chunk().await?.unwrap();
+        assert_eq!(last.index, 1);
+        assert_eq!(last.data, vec![42; 3]);
+        assert_eq!(last.transfer_id, vec![8; 16]);
+        assert!(outbound.next_chunk().await?.is_none());
         Ok(())
     }
 }

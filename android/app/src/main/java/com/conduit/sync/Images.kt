@@ -13,7 +13,6 @@ import com.google.protobuf.ByteString
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
-import java.security.MessageDigest
 
 private const val TAG = "conduit.img"
 
@@ -82,7 +81,14 @@ object Images {
                 val buffer = ByteArray(CHUNK)
                 while (true) {
                     val n = input.read(buffer)
-                    if (n <= 0) break
+                    if (n < 0) break
+                    if (n == 0) {
+                        val byte = input.read()
+                        if (byte < 0) break
+                        if (out.size() >= MAX_IMAGE) return null
+                        out.write(byte)
+                        continue
+                    }
                     if (out.size() + n > MAX_IMAGE) {
                         Log.w(TAG, "image over $MAX_IMAGE B, skipped")
                         return null
@@ -96,26 +102,14 @@ object Images {
         return if (bytes.isEmpty()) null else Payload(bytes, mime)
     }
 
-    /**
-     * Writes one PNG as a header followed by chunks, on the caller's thread.
-     *
-     * Takes the session rather than the [Link] on purpose. Routing each frame through
-     * `Link.send` would queue several hundred tasks onto a bounded, discard-oldest queue
-     * and quietly drop most of a large image; the caller is already the sender thread, so
-     * the frames are written straight out, in order, as one unit of work.
-     */
-    fun send(
-        session: WireSession,
-        payload: Payload,
-        photo: Boolean,
-        screenshot: Boolean = false,
-        afterFrame: () -> Unit = {},
-    ) {
-        val bytes = payload.bytes
-        val id = ByteString.copyFrom(MessageDigest.getInstance("SHA-256").digest(bytes), 0, 16)
-        val count = (bytes.size + CHUNK - 1) / CHUNK
-
-        val header = ClipImageHeader.newBuilder()
+    /** Clipboard/photo buffers are capped at MAX_IMAGE; only one is loaded by the bulk lane. */
+    class Outgoing(payload: Payload, photo: Boolean, screenshot: Boolean) {
+        private val bytes = payload.bytes
+        private val id = ByteString.copyFrom(transferIdBytes(newTransferId()))
+        private val count = (bytes.size + CHUNK - 1) / CHUNK
+        private var index = -1
+        init { require(bytes.size in 1..MAX_IMAGE) }
+        private val header = ClipImageHeader.newBuilder()
             .setMime(payload.mime)
             .setTotalBytes(bytes.size)
             .setChunkSize(CHUNK)
@@ -125,10 +119,13 @@ object Images {
             .setPhoto(photo)
             .setScreenshot(screenshot)
             .build()
-        session.send(Kind.CLIP_IMAGE_HEADER, header.toByteArray())
-        afterFrame()
-
-        for (index in 0 until count) {
+        /** Returns true after the final frame, never queues thousands of frame objects. */
+        fun step(send: (Kind, ByteArray) -> Unit): Boolean {
+            if (index < 0) {
+                send(Kind.CLIP_IMAGE_HEADER, header.toByteArray())
+                index = 0
+                return false
+            }
             val from = index * CHUNK
             val to = minOf(from + CHUNK, bytes.size)
             val chunk = ClipImageChunk.newBuilder()
@@ -137,14 +134,10 @@ object Images {
                 .setHeaderId(id)
                 .setStreamId(1)
                 .build()
-            session.send(Kind.CLIP_IMAGE_CHUNK, chunk.toByteArray())
-            afterFrame()
+            send(Kind.CLIP_IMAGE_CHUNK, chunk.toByteArray())
+            index++
+            return index == count
         }
-        Log.i(
-            TAG,
-            "sent ${bytes.size} B of ${payload.mime} as $count chunks, " +
-                "photo=$photo screenshot=$screenshot",
-        )
     }
 
     /**
@@ -183,14 +176,18 @@ object Images {
         val screenshot: Boolean,
         private val expect: Int,
         private val total: Int,
+        private val chunkSize: Int,
     ) {
         private val bytes = ByteArrayOutputStream(total)
         private var next = 0
+
+        fun matches(chunk: ClipImageChunk): Boolean = chunk.headerId == id
 
         /** Adds a chunk, returning the whole image once the last one arrives. */
         fun push(chunk: ClipImageChunk): ByteArray? {
             require(chunk.headerId == id) { "chunk belongs to a different image" }
             require(chunk.index == next) { "chunk ${chunk.index} arrived, expected $next" }
+            require(chunk.data.size() == minOf(chunkSize, total - bytes.size())) { "invalid image chunk length" }
             require(bytes.size() + chunk.data.size() <= total) {
                 "chunk ${chunk.index} would take the image past the $total B it declared"
             }
@@ -213,7 +210,8 @@ object Images {
                 require(header.chunkCount == expect) {
                     "header claims ${header.chunkCount} chunks, $total B in $chunk B needs $expect"
                 }
-                return Assembly(header.headerId, header.photo, header.screenshot, expect, total)
+                require(header.headerId.size() in 1..64) { "invalid image id" }
+                return Assembly(header.headerId, header.photo, header.screenshot, expect, total, chunk)
             }
         }
     }

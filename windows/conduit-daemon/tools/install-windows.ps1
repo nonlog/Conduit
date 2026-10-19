@@ -339,6 +339,39 @@ if ($hadExplorerIntegration) {
     }
 }
 
+# Firewall grants created by Windows for a prior Scoop version do not follow the next
+# versioned binary, and Private-only grants exclude many hotspot/Public interfaces.
+# Refresh only Conduit's two named rules, restricted to this executable and LocalSubnet.
+$lanFirewallConfigured = $false
+$firewallHelper = Join-Path $PSScriptRoot 'configure-lan-firewall.ps1'
+if (Test-Path -LiteralPath $firewallHelper -PathType Leaf) {
+    $helperLiteral = "'" + $firewallHelper.Replace("'", "''") + "'"
+    $daemonLiteral = "'" + $daemonExe.Replace("'", "''") + "'"
+    $checkFirewall = "& $helperLiteral -DaemonPath $daemonLiteral -CheckOnly"
+    try {
+        $probe = @(Invoke-WindowsPowerShell $checkFirewall) -join "`n"
+        if ($probe -notmatch 'CONDUIT_LAN_FIREWALL_READY') {
+            $applyFirewall = "`$ErrorActionPreference = 'Stop'; & $helperLiteral -DaemonPath $daemonLiteral"
+            $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+            if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+                Invoke-WindowsPowerShell $applyFirewall | Out-Null
+            } else {
+                Write-Host 'Conduit needs administrator approval to allow LAN TCP 41112 and mDNS UDP 5353 from the local subnet.'
+                $encodedFirewall = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($applyFirewall))
+                $ps5 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+                $elevated = Start-Process -FilePath $ps5 -Verb RunAs -Wait -PassThru -ArgumentList @(
+                    '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedFirewall)
+                if ($elevated.ExitCode -ne 0) { throw "LAN firewall setup failed with exit $($elevated.ExitCode)" }
+            }
+            $probe = @(Invoke-WindowsPowerShell $checkFirewall) -join "`n"
+        }
+        $lanFirewallConfigured = $probe -match 'CONDUIT_LAN_FIREWALL_READY'
+        if (-not $lanFirewallConfigured) { throw 'The scoped LAN rules could not be verified.' }
+    } catch {
+        Write-Warning "Conduit LAN firewall is not ready: $_. Run tools\configure-lan-firewall.ps1 -DaemonPath '$daemonExe' as administrator. Relay can still be used."
+    }
+}
+
 if (-not $NoStart) {
     Start-Process -FilePath $daemonExe -WorkingDirectory $installDir
 }
@@ -348,6 +381,7 @@ if (-not $NoStart) {
     Shortcut = $shortcut
     AppUserModelId = 'Conduit.Desktop'
     ShareTargetRegistered = $shareTargetRegistered
+    LanFirewallConfigured = $lanFirewallConfigured
     AutostartPreserved = $hadAutostart
     ExplorerIntegrationPreserved = $hadExplorerIntegration
     DaemonStarted = -not $NoStart

@@ -11,7 +11,6 @@
 //! cargo features instead of a decoder, its colour management and its CVE stream.
 
 use anyhow::{anyhow, Context as _, Result};
-use sha2::Digest as _;
 use std::future::{Future, IntoFuture};
 use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};
@@ -198,59 +197,111 @@ pub fn to_png(bytes: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>> {
 /// error — which would tear down the session over a pasted screenshot.
 const CHUNK: usize = 32 * 1024;
 
-/// Sends one PNG as a header followed by chunks, returning the number of frames written.
-///
-/// Sequential and blocking on the session's write half by design. Sends are already
-/// single-threaded — `Session::send` is explicitly not cancel-safe — so an image simply
-/// occupies the writer for the few hundred syscalls it takes. `stream_id` exists in the
-/// wire format for interleaving, but nothing here interleaves: one sender, one image at
-/// a time, so the receiver never has to demultiplex.
-pub async fn send<W>(
-    session: &mut crate::wire::Session,
-    w: &mut W,
-    png: &[u8],
-    photo: bool,
-    screenshot: bool,
-) -> Result<u64>
-where
-    W: tokio::io::AsyncWrite + Unpin,
-{
-    use crate::wire::pb;
-    use prost::Message as _;
+pub enum IncomingWork {
+    Text(String),
+    Image {
+        bytes: Vec<u8>,
+        photo: bool,
+        screenshot: bool,
+    },
+}
 
-    let total = u32::try_from(png.len()).context("image does not fit a u32 length")?;
-    let count = png.len().div_ceil(CHUNK) as u32;
-    // Content-addressed rather than random: it needs no state to generate, it is stable
-    // if the same image is copied twice, and it gives the receiver a cheap correlator.
-    let id = sha2::Sha256::digest(png)[..16].to_vec();
+/// Bound codec/clipboard work separately from transport; disk/COM waits never own the session.
+pub fn processor(
+    bridge: Arc<crate::clip::Bridge>,
+    toasts: Option<Arc<crate::toast::Notifier>>,
+) -> tokio::sync::mpsc::Sender<IncomingWork> {
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<IncomingWork>(2);
+    tokio::spawn(async move {
+        while let Some(work) = rx.recv().await {
+            let bridge = bridge.clone();
+            let toasts = toasts.clone();
+            let result = tokio::task::spawn_blocking(move || -> Result<()> {
+                match work {
+                    IncomingWork::Text(text) => bridge.apply(&text),
+                    IncomingWork::Image {
+                        bytes,
+                        photo,
+                        screenshot,
+                    } => {
+                        if photo || screenshot {
+                            if let Some(toasts) = toasts {
+                                let path = crate::stage_capture(&bytes)?;
+                                toasts.post(if screenshot {
+                                    crate::toast::Cmd::Screenshot { path }
+                                } else {
+                                    crate::toast::Cmd::Photo { path }
+                                });
+                            }
+                            Ok(())
+                        } else {
+                            bridge.apply_image(&to_png(&bytes)?)
+                        }
+                    }
+                }
+            })
+            .await;
+            match result {
+                Ok(Ok(())) => {}
+                other => {
+                    tracing::warn!(error = ?other, "could not apply incoming clipboard/capture")
+                }
+            }
+        }
+    });
+    tx
+}
 
-    let header = pb::ClipImageHeader {
-        mime: "image/png".into(),
-        total_bytes: total,
-        chunk_size: CHUNK as u32,
-        chunk_count: count,
-        file_name: String::new(),
-        timestamp_ms: crate::now_ms(),
-        header_id: id.clone(),
-        photo,
-        screenshot,
-    };
-    session
-        .send(w, pb::Kind::ClipImageHeader, &header.encode_to_vec())
-        .await?;
-
-    for (index, chunk) in png.chunks(CHUNK).enumerate() {
-        let frame = pb::ClipImageChunk {
-            index: index as u32,
-            data: chunk.to_vec(),
-            header_id: id.clone(),
+/// One image frame per scheduler turn, using the same sole Noise writer as file/control traffic.
+pub struct Outgoing {
+    png: Vec<u8>,
+    id: Vec<u8>,
+    next: usize,
+    header: bool,
+}
+impl Outgoing {
+    pub fn new(png: Vec<u8>) -> Result<Self> {
+        if png.is_empty() || png.len() > crate::clip::MAX_IMAGE {
+            return Err(anyhow!("invalid image length"));
+        }
+        Ok(Self {
+            png,
+            id: crate::transfer::new_id()?,
+            next: 0,
+            header: false,
+        })
+    }
+    pub fn next_frame(&mut self) -> Option<(crate::wire::pb::Kind, Vec<u8>)> {
+        use crate::wire::pb;
+        use prost::Message as _;
+        if !self.header {
+            self.header = true;
+            let header = pb::ClipImageHeader {
+                mime: "image/png".into(),
+                total_bytes: self.png.len() as u32,
+                chunk_size: CHUNK as u32,
+                chunk_count: self.png.len().div_ceil(CHUNK) as u32,
+                file_name: String::new(),
+                timestamp_ms: crate::now_ms(),
+                header_id: self.id.clone(),
+                photo: false,
+                screenshot: false,
+            };
+            return Some((pb::Kind::ClipImageHeader, header.encode_to_vec()));
+        }
+        if self.next == self.png.len() {
+            return None;
+        }
+        let end = (self.next + CHUNK).min(self.png.len());
+        let chunk = pb::ClipImageChunk {
+            index: (self.next / CHUNK) as u32,
+            data: self.png[self.next..end].to_vec(),
+            header_id: self.id.clone(),
             stream_id: 1,
         };
-        session
-            .send(w, pb::Kind::ClipImageChunk, &frame.encode_to_vec())
-            .await?;
+        self.next = end;
+        Some((pb::Kind::ClipImageChunk, chunk.encode_to_vec()))
     }
-    Ok(count as u64 + 1)
 }
 
 /// One image being reassembled from chunks.
@@ -270,11 +321,11 @@ pub struct Assembly {
     next: u32,
     total: usize,
     bytes: Vec<u8>,
+    chunk_size: usize,
 }
 
 impl Assembly {
-    /// Starts a transfer, or rejects the header. Replaces any transfer already in
-    /// progress: a new header means the peer abandoned the last one.
+    /// Validates a header; the session refuses a second header while one is active.
     pub fn begin(header: &crate::wire::pb::ClipImageHeader) -> Result<Self> {
         let total = header.total_bytes as usize;
         if total == 0 {
@@ -297,6 +348,9 @@ impl Assembly {
                 header.chunk_count
             ));
         }
+        if header.header_id.is_empty() || header.header_id.len() > 64 {
+            return Err(anyhow!("invalid image id"));
+        }
         Ok(Self {
             id: header.header_id.clone(),
             photo: header.photo,
@@ -305,6 +359,7 @@ impl Assembly {
             next: 0,
             total,
             bytes: Vec::with_capacity(total),
+            chunk_size: chunk,
         })
     }
 
@@ -319,6 +374,11 @@ impl Assembly {
                 chunk.index,
                 self.next
             ));
+        }
+        if self.next >= self.expect
+            || chunk.data.len() != (self.total - self.bytes.len()).min(self.chunk_size)
+        {
+            return Err(anyhow!("image chunk length differs from declaration"));
         }
         if self.bytes.len() + chunk.data.len() > self.total {
             return Err(anyhow!(
@@ -348,6 +408,10 @@ impl Assembly {
         self.photo
     }
 
+    pub fn matches(&self, id: &[u8]) -> bool {
+        self.id == id
+    }
+
     /// Explicit screenshot semantics. New phone clients also set `photo=true` on a
     /// screenshot so old desktops keep it out of the clipboard; this field is what lets
     /// a new desktop label and handle the capture correctly.
@@ -359,6 +423,29 @@ impl Assembly {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outgoing_images_yield_one_frame_per_turn_without_changing_bytes() -> Result<()> {
+        use crate::wire::pb;
+        use prost::Message as _;
+        let bytes = vec![42; CHUNK + 3];
+        let mut outgoing = Outgoing::new(bytes.clone())?;
+        let (kind, payload) = outgoing.next_frame().unwrap();
+        assert_eq!(kind, pb::Kind::ClipImageHeader);
+        let header = pb::ClipImageHeader::decode(&payload[..])?;
+        let mut assembly = Assembly::begin(&header)?;
+        let (_, first) = outgoing.next_frame().unwrap();
+        assert!(assembly
+            .push(&pb::ClipImageChunk::decode(&first[..])?)?
+            .is_none());
+        let (_, last) = outgoing.next_frame().unwrap();
+        assert_eq!(
+            assembly.push(&pb::ClipImageChunk::decode(&last[..])?)?,
+            Some(bytes)
+        );
+        assert!(outgoing.next_frame().is_none());
+        Ok(())
+    }
 
     /// A 2x2 32-bit DIB: bottom-up, BGRA, no colour table.
     fn dib_2x2() -> Vec<u8> {

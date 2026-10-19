@@ -6,6 +6,7 @@
 
 #![windows_subsystem = "windows"]
 
+mod admission;
 mod advert;
 mod autostart;
 mod clip;
@@ -20,6 +21,7 @@ mod pairing;
 mod shared_links;
 mod status;
 mod toast;
+mod transfer;
 mod tray;
 mod verification_code;
 mod wallpaper;
@@ -121,10 +123,18 @@ struct RelayArrival {
     pairing: bool,
 }
 
-struct PendingOutbound {
-    transfer_id: Vec<u8>,
-    name: String,
-    completion: tokio::sync::oneshot::Sender<std::result::Result<(), String>>,
+struct CandidateSession {
+    stream: TcpStream,
+    peer: SocketAddr,
+    path: &'static str,
+    relay_endpoint: Option<String>,
+    generation: u64,
+    negotiated: admission::Negotiated,
+}
+
+enum ConnectionArrival {
+    Socket(TcpStream, SocketAddr, &'static str, Option<String>),
+    Authenticated(CandidateSession),
 }
 
 impl Drop for SessionGuard {
@@ -160,6 +170,16 @@ async fn main() -> Result<()> {
     let mut args = std::env::args_os();
     let _exe = args.next();
     if let Some(command) = args.next() {
+        if command == "cancel-transfer" {
+            let id = args
+                .next()
+                .context("usage: conduit-daemon cancel-transfer <hex-id>")?;
+            if args.next().is_some() {
+                bail!("usage: conduit-daemon cancel-transfer <hex-id>");
+            }
+            control::cancel(&id.to_string_lossy()).await?;
+            return Ok(());
+        }
         if command == "send" {
             let path = args.next().context("usage: conduit-daemon send <file>")?;
             if args.next().is_some() {
@@ -459,8 +479,9 @@ async fn main() -> Result<()> {
     let (reload_tx, mut reload_rx) = mpsc::channel::<control::ReloadRequest>(4);
     let (pair_tx, mut pair_rx) = mpsc::channel::<control::PairRequest>(4);
     let (pair_session_tx, _) = broadcast::channel::<control::PairAction>(4);
+    let control_transfers = desktop_status.transfers.clone();
     tokio::spawn(async move {
-        if let Err(e) = control::serve(outbound_tx, reload_tx, pair_tx).await {
+        if let Err(e) = control::serve(outbound_tx, reload_tx, pair_tx, control_transfers).await {
             warn!(error = %e, "local control pipe stopped");
         }
     });
@@ -468,9 +489,9 @@ async fn main() -> Result<()> {
     // only once the socket is accepting, so a resolve is never answered by a refusal.
     let _advert = advert::Advert::start(PORT, &device_id, &fingerprint)?;
 
-    // M0 carries exactly one peer. A reconnect must win, so the previous session is
-    // dropped rather than the new one refused: a half-open socket would otherwise
-    // lock the phone out until its own keepalive gave up.
+    // A reconnect can replace a stale session, but a TCP accept cannot. Stage bounded
+    // candidate handshakes independently so port probes, invalid peers and slow
+    // handshakes never tear down ongoing transfers or the trusted clipboard link.
     //
     // Two ways in now, and the difference ends here: a relay stream is spliced to the
     // phone by a process that cannot read it, so from `serve`'s point of view it is an
@@ -500,8 +521,10 @@ async fn main() -> Result<()> {
 
     let mut active: Option<tokio::task::JoinHandle<()>> = None;
     let mut active_path: Option<&'static str> = None;
+    let mut candidates = tokio::task::JoinSet::<Result<CandidateSession>>::new();
+    let mut admission_generation = admission::Generation::default();
     loop {
-        let (stream, peer, via, relay_endpoint) = tokio::select! {
+        let arrival = tokio::select! {
             Some(()) = tray_exit_rx.recv() => {
                 info!("exit requested from tray");
                 break;
@@ -532,6 +555,8 @@ async fn main() -> Result<()> {
                         }
 
                         if relay_changed {
+                            admission_generation.invalidate();
+                            candidates.abort_all();
                             for task in relay_tasks.drain(..) {
                                 task.abort();
                                 let _ = task.await;
@@ -567,7 +592,8 @@ async fn main() -> Result<()> {
                             // A live relay socket belongs to the old routing configuration. End only
                             // that session so the phone reconnects through the newly parked routes;
                             // a LAN session is left untouched.
-                            if active_path.is_some_and(|path| path.starts_with("relay")) {
+                            if active_path.is_some_and(|path| path.starts_with("relay"))
+                                && !desktop_status.transfers.has_active() {
                                 if let Some(previous) = active.take() {
                                     previous.abort();
                                     let _ = previous.await;
@@ -633,25 +659,119 @@ async fn main() -> Result<()> {
                         result
                     }
                 };
+                if result.is_ok() {
+                    admission_generation.invalidate();
+                    candidates.abort_all();
+                }
                 let _ = request.completion.send(result);
                 continue;
             }
             accepted = listener.accept() => {
                 let (stream, peer) = accepted?;
-                (stream, peer, "lan", None)
+                ConnectionArrival::Socket(stream, peer, "lan", None)
             }
             Some(arrival) = relay_rx.recv() => {
-                let peer = arrival.stream.peer_addr()?;
+                let Ok(peer) = arrival.stream.peer_addr() else { continue; };
                 debug_assert!(!arrival.pairing);
-                (arrival.stream, peer, "relay", Some(arrival.endpoint))
+                ConnectionArrival::Socket(arrival.stream, peer, "relay", Some(arrival.endpoint))
             }
             Some(arrival) = pairing_relay_rx.recv() => {
-                let peer = arrival.stream.peer_addr()?;
+                let Ok(peer) = arrival.stream.peer_addr() else { continue; };
                 debug_assert!(arrival.pairing);
-                (arrival.stream, peer, "relay-pair", Some(arrival.endpoint))
+                ConnectionArrival::Socket(arrival.stream, peer, "relay-pair", Some(arrival.endpoint))
+            }
+            Some(completed) = candidates.join_next(), if !candidates.is_empty() => {
+                match completed {
+                    Ok(Ok(candidate)) => ConnectionArrival::Authenticated(candidate),
+                    Ok(Err(error)) => { warn!(%error, "connection candidate refused; live session unchanged"); continue; }
+                    Err(error) => { if !error.is_cancelled() { warn!(%error, "candidate task stopped"); } continue; }
+                }
             }
         };
-        info!(%peer, via, relay = relay_endpoint.as_deref().unwrap_or("-"), "peer arriving");
+        let candidate = match arrival {
+            ConnectionArrival::Socket(mut stream, peer, path, relay_endpoint) => {
+                if candidates.len() >= admission::MAX_PENDING {
+                    warn!(%peer, "connection candidate limit reached; retaining active session");
+                    continue;
+                }
+                let generation = admission_generation.ticket();
+                let private_key = identity.private.clone();
+                let hello = pb::PairRequest {
+                    device_id: device_id.clone(),
+                    device_name: advert::hostname(),
+                    static_pub: Vec::new(),
+                    version: env!("CARGO_PKG_VERSION").to_string(),
+                    wallpaper_hash: wallpaper::cached_hash(&dir),
+                    pairing: pairing::state(&dir).pairing,
+                    transfer_protocol: 1,
+                };
+                candidates.spawn(async move {
+                    stream.set_nodelay(true)?;
+                    set_keepalive(&stream)?;
+                    let negotiated = tokio::time::timeout(
+                        admission::TIMEOUT,
+                        admission::negotiate(&mut stream, &private_key, &hello),
+                    )
+                    .await
+                    .context("candidate authentication timed out")??;
+                    Ok(CandidateSession {
+                        stream,
+                        peer,
+                        path,
+                        relay_endpoint,
+                        generation,
+                        negotiated,
+                    })
+                });
+                continue;
+            }
+            ConnectionArrival::Authenticated(candidate) => candidate,
+        };
+        if !admission_generation.accepts(candidate.generation) {
+            continue;
+        }
+        // Pair/Forget and another admitted connection may have changed policy while
+        // this candidate was doing I/O. Only the main loop may persist a new peer.
+        let authorization = match pairing::authorize(
+            &dir,
+            &candidate.negotiated.remote_id,
+            candidate.path,
+            candidate.negotiated.hello.pairing,
+        ) {
+            Ok(authorization) => authorization,
+            Err(error) => {
+                warn!(%error, "candidate is not paired; retaining active session");
+                continue;
+            }
+        };
+        if authorization == pairing::Authorization::Trusted
+            && candidate.path == "lan"
+            && active_path.is_some_and(|path| path.starts_with("relay"))
+            && desktop_status.transfers.has_active()
+        {
+            info!("deferring optional LAN promotion while transfers are active");
+            continue;
+        }
+        if let Err(error) = pairing::confirm(
+            &dir,
+            &candidate.negotiated.remote_id,
+            authorization,
+            &candidate.negotiated.hello.device_name,
+        ) {
+            warn!(%error, "could not commit candidate trust; retaining active session");
+            continue;
+        }
+        admission_generation.invalidate();
+        candidates.abort_all();
+        let CandidateSession {
+            stream,
+            peer,
+            path: via,
+            relay_endpoint,
+            negotiated,
+            ..
+        } = candidate;
+        info!(%peer, via, relay = relay_endpoint.as_deref().unwrap_or("-"), "authenticated peer promoted");
         if let Some(previous) = active.take() {
             previous.abort();
             let _ = previous.await; // guard drop runs here — closed is counted
@@ -663,7 +783,6 @@ async fn main() -> Result<()> {
             "session created"
         );
         let metrics = metrics.clone();
-        let local_priv = identity.private.clone();
         let bridge = bridge.clone();
         let toasts = toasts.clone();
         let outbound = outbound.clone();
@@ -672,7 +791,6 @@ async fn main() -> Result<()> {
         let toast_action_tx = toast_action_tx.clone();
         let pair_session_tx = pair_session_tx.clone();
         let data_dir = dir.clone();
-        let local_device_id = device_id.clone();
         active_path = Some(via);
         active = Some(tokio::spawn(async move {
             let _guard = SessionGuard {
@@ -682,12 +800,11 @@ async fn main() -> Result<()> {
             if let Err(e) = serve(
                 stream,
                 peer,
-                &local_priv,
-                &local_device_id,
+                negotiated,
                 &metrics,
                 &bridge,
                 &outbound,
-                toasts.as_deref(),
+                toasts.as_ref(),
                 via,
                 relay_endpoint.as_deref(),
                 &desktop_status,
@@ -702,6 +819,7 @@ async fn main() -> Result<()> {
         }));
     }
 
+    candidates.abort_all();
     if let Some(session) = active.take() {
         session.abort();
         let _ = session.await;
@@ -875,14 +993,13 @@ async fn park_forever(
 }
 
 async fn serve(
-    mut stream: TcpStream,
+    stream: TcpStream,
     peer: SocketAddr,
-    local_priv: &[u8],
-    local_device_id: &str,
+    negotiated: admission::Negotiated,
     metrics: &Metrics,
     bridge: &Arc<clip::Bridge>,
     outbound: &Arc<Mutex<mpsc::Receiver<control::SendRequest>>>,
-    toasts: Option<&toast::Notifier>,
+    toasts: Option<&Arc<toast::Notifier>>,
     // "lan" or "relay". Only the keepalive interval and the log line care.
     path: &'static str,
     relay_endpoint: Option<&str>,
@@ -891,52 +1008,19 @@ async fn serve(
     pair_session_tx: &broadcast::Sender<control::PairAction>,
     data_dir: &std::path::Path,
 ) -> Result<()> {
-    stream.set_nodelay(true)?;
-    set_keepalive(&stream)?;
     let idle_ping = if path.starts_with("relay") {
         RELAY_IDLE_PING
     } else {
         IDLE_PING
     };
 
-    let mut session = Session::handshake(&mut stream, local_priv, false).await?;
-    let remote_id = wire::device_id(&session.peer_static);
-    // Exchange identity/name hellos before the session becomes application-visible. This is
-    // especially important during first pairing: a Noise XX handshake proves possession of a
-    // static key, while this mutually completed hello proves the other side also accepted this
-    // session under its local pairing policy. No clipboard/file data is released before that.
-    let hello = pb::PairRequest {
-        device_id: local_device_id.to_string(),
-        device_name: advert::hostname(),
-        static_pub: Vec::new(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        wallpaper_hash: wallpaper::cached_hash(data_dir),
-        pairing: pairing::state(data_dir).pairing,
-    };
-    session
-        .send(&mut stream, pb::Kind::PairRequest, &hello.encode_to_vec())
-        .await?;
+    let admission::Negotiated {
+        mut session,
+        remote_id,
+        hello: peer_hello,
+    } = negotiated;
     metrics.frames_out.fetch_add(1, Ordering::Relaxed);
-
-    let first = session.recv(&mut stream).await?;
     metrics.frames_in.fetch_add(1, Ordering::Relaxed);
-    if first.kind() != pb::Kind::PairRequest {
-        bail!("peer did not confirm pairing with its identity hello");
-    }
-    let peer_hello = pb::PairRequest::decode(&first.payload[..])?;
-    if !peer_hello.device_id.is_empty() && peer_hello.device_id != remote_id {
-        bail!("peer announced an id that does not match its Noise static key");
-    }
-    let authorization = pairing::authorize(data_dir, &remote_id, path, peer_hello.pairing)?;
-    info!(
-        %peer,
-        id = %remote_id,
-        ?authorization,
-        via = path,
-        relay = relay_endpoint.unwrap_or("-"),
-        "session authenticated"
-    );
-    pairing::confirm(data_dir, &remote_id, authorization, &peer_hello.device_name)?;
     desktop_status.linked(
         &remote_id,
         if path.starts_with("relay") {
@@ -966,37 +1050,164 @@ async fn serve(
     let mut incoming: Option<image::Assembly> = None;
     // Same rule for a file, with teeth: `Incoming`'s Drop deletes the partial, so a
     // session ending mid-transfer cannot leave scratch files in Downloads.
-    let mut arriving: Option<file::Incoming> = None;
+    let mut arriving: Option<transfer::Receiving> = None;
     // One desktop->phone file may be awaiting its receiver-side publication result. Other local
     // requests stay in the bounded control queue until this completes, so results cannot cross.
-    let mut pending_outbound: Option<PendingOutbound> = None;
+    let mut sending: Option<transfer::Sending> = None;
+    let mut queued = std::collections::VecDeque::<control::SendRequest>::new();
+    let capable = peer_hello.transfer_protocol >= 1;
+    let lease = desktop_status.transfers.session(capable)?;
+    let transfers = &lease.transfers;
+    let owner = &lease.owner;
+    let (received_tx, mut received_rx) = mpsc::channel::<transfer::Received>(4);
+    let mut outgoing_image: Option<image::Outgoing> = None;
+    let mut next_image: Option<image::Outgoing> = None;
+    let image_jobs = image::processor(bridge.clone(), toasts.cloned());
+    let mut file_turn = true;
     let mut heartbeat = Heartbeat::new(idle_ping, PONG_DEADLINE);
+    let (mut reader, socket_writer) = stream.into_split();
+    let mut stream = transfer::Writer::start(socket_writer);
 
     loop {
+        // A request belongs to the authenticated session that accepted it, never its replacement.
+        let mut index = 0;
+        while index < queued.len() {
+            if queued[index].owner != *owner || transfers.cancelled(owner, &queued[index].id) {
+                let mut request = queued.remove(index).unwrap();
+                let cancelled = request.owner == *owner;
+                transfers.update(
+                    &request.owner,
+                    &request.id,
+                    0,
+                    if cancelled { "cancelled" } else { "failed" },
+                    "Transfer no longer queued",
+                );
+                request.finish(Err(if cancelled {
+                    "Cancelled"
+                } else {
+                    "Session changed"
+                }
+                .into()));
+            } else {
+                index += 1;
+            }
+        }
+        if sending.is_none() {
+            if let Some(request) = queued.pop_front() {
+                sending = Some(transfer::Sending::start(request));
+            }
+        }
+        if arriving
+            .as_ref()
+            .is_some_and(|rx| transfers.cancelled(owner, &rx.id) && !rx.cancel_sent)
+            && stream.control_ready()
+        {
+            if let Some(rx) = &mut arriving {
+                let cancel = pb::FileCancel {
+                    transfer_id: rx.id.clone(),
+                    reason: "Cancelled by receiver".into(),
+                };
+                session
+                    .send(&mut stream, pb::Kind::FileCancel, &cancel.encode_to_vec())
+                    .await?;
+                metrics.frames_out.fetch_add(1, Ordering::Relaxed);
+                rx.cancel();
+                rx.cancel_sent = true;
+            }
+        }
+        if sending.as_ref().is_some_and(|s| {
+            transfers.cancelled(owner, &s.request.id) && !s.cancel_sent && s.total > 0
+        }) && stream.control_ready()
+        {
+            let active = sending.as_mut().unwrap();
+            if capable {
+                let cancel = pb::FileCancel {
+                    transfer_id: active.request.id.clone(),
+                    reason: "Cancelled by sender".into(),
+                };
+                session
+                    .send(&mut stream, pb::Kind::FileCancel, &cancel.encode_to_vec())
+                    .await?;
+                metrics.frames_out.fetch_add(1, Ordering::Relaxed);
+            }
+            active.stop_producer();
+            active.cancel_sent = true;
+            active.waiting = Some(tokio::time::Instant::now() + transfer::RESULT_TIMEOUT);
+            transfers.update(
+                owner,
+                &active.request.id,
+                active.sent,
+                "waiting confirmation",
+                "Cancellation requested",
+            );
+        }
+        if sending.as_ref().is_some_and(|s| {
+            (transfers.cancelled(owner, &s.request.id) && s.total == 0)
+                || s.expired(tokio::time::Instant::now())
+        }) {
+            let mut active = sending.take().unwrap();
+            let cancelled = transfers.cancelled(owner, &active.request.id);
+            let reason = if cancelled {
+                "Cancelled"
+            } else {
+                "Timed out waiting for receiver publication"
+            };
+            if capable && active.total > 0 && !active.cancel_sent && stream.control_ready() {
+                let cancel = pb::FileCancel {
+                    transfer_id: active.request.id.clone(),
+                    reason: reason.into(),
+                };
+                session
+                    .send(&mut stream, pb::Kind::FileCancel, &cancel.encode_to_vec())
+                    .await?;
+                metrics.frames_out.fetch_add(1, Ordering::Relaxed);
+            }
+            transfers.update(
+                owner,
+                &active.request.id,
+                active.sent,
+                if cancelled { "cancelled" } else { "failed" },
+                reason,
+            );
+            active.request.finish(Err(reason.into()));
+            if let Some(toasts) = toasts {
+                toasts.post(toast::Cmd::TransferResult {
+                    name: active
+                        .request
+                        .path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned(),
+                    success: false,
+                });
+            }
+        }
         // Time left before this side owes the peer a frame. Measured from our last
         // *send*, not from the last thing we heard: the phone's read deadline can only
         // be satisfied by us speaking, so a phone that chats steadily while hearing
         // nothing back used to tear down a perfectly healthy session on the dot. It
         // also still catches a dead peer, because a ping demands a pong.
         let deadline = heartbeat.deadline(session.quiet_for(), tokio::time::Instant::now());
+        let result_deadline = sending.as_ref().and_then(|s| s.waiting);
+        let data_ready = stream.data_ready();
+        let control_ready = stream.control_ready();
+        let writer_slots = stream.slots();
         // `recv` is cancel-safe, which is what makes racing it legal. `send` is not,
         // but a `select!` branch body runs to completion once chosen, so the sends
         // below are never cancelled mid-frame. While a PONG is outstanding, local outbound
         // work pauses for at most ten seconds so it cannot hide the liveness deadline.
         let envelope = tokio::select! {
-            result = tokio::time::timeout_at(deadline, session.recv(&mut stream)) => match result {
-                Ok(envelope) => envelope?,
-                Err(_) if heartbeat.awaiting_pong() => {
-                    bail!("peer silent past pong deadline")
-                }
-                Err(_) => {
+            result = session.recv(&mut reader), if arriving.as_ref().is_none_or(|r| r.tx.capacity() > 0) && image_jobs.capacity() > 0 && control_ready => result?,
+            _ = tokio::time::sleep_until(deadline) => {
+                if heartbeat.awaiting_pong() { bail!("peer silent past pong deadline"); }
+                if !control_ready { bail!("socket writer stalled past heartbeat deadline"); }
                     session.send(&mut stream, pb::Kind::Ping, &[]).await?;
                     metrics.frames_out.fetch_add(1, Ordering::Relaxed);
                     heartbeat.ping_sent(tokio::time::Instant::now());
                     continue;
-                }
             },
-            local = clips.recv(), if !heartbeat.awaiting_pong() => {
+            local = clips.recv(), if !heartbeat.awaiting_pong() && data_ready => {
                 match local {
                     Ok(clip::Clip::Text(text)) => {
                         let clip = pb::ClipText {
@@ -1004,15 +1215,24 @@ async fn serve(
                             mime: "text/plain".into(),
                             text,
                         };
+                        let payload = clip.encode_to_vec();
+                        if payload.len() > wire::MAX_PLAINTEXT - 32 {
+                            warn!(bytes = payload.len(), "oversized local clipboard text refused; transfers unchanged");
+                            continue;
+                        }
                         session
-                            .send(&mut stream, pb::Kind::ClipText, &clip.encode_to_vec())
+                            .send(&mut stream, pb::Kind::ClipText, &payload)
                             .await?;
                         metrics.frames_out.fetch_add(1, Ordering::Relaxed);
                     }
                     Ok(clip::Clip::Image(png)) => {
                         info!(bytes = png.len(), "clip image out");
-                        let frames = image::send(&mut session, &mut stream, &png, false, false).await?;
-                        metrics.frames_out.fetch_add(frames, Ordering::Relaxed);
+                        // Keep the latest clipboard value behind an image already being sent.
+                        match image::Outgoing::new(png) {
+                            Ok(image) if outgoing_image.is_none() => outgoing_image = Some(image),
+                            Ok(image) => next_image = Some(image),
+                            Err(e) => warn!(error = %e, "local clipboard image refused"),
+                        }
                     }
                     // The ring overwrote clips faster than this session drained them.
                     // Skipping is correct: only the newest clipboard state matters.
@@ -1028,85 +1248,86 @@ async fn serve(
             local_file = async {
                 let mut rx = outbound.lock().await;
                 rx.recv().await
-            }, if pending_outbound.is_none() && !heartbeat.awaiting_pong() => {
+            }, if queued.len() < 16 => {
                 let Some(request) = local_file else {
                     bail!("local outbound file queue closed")
                 };
-                let control::SendRequest { path, completion, progress } = request;
-                // Refuse a bad/missing local path before FILE_OFFER reaches the phone. Once an
-                // offer is on the wire, a read/send error ends this session so Android drops its
-                // pending MediaStore row rather than inheriting a partial into the next session.
-                match file::Outbound::open(&path).await {
-                    Ok(outbound_file) => {
-                        let name = outbound_file.name().to_string();
-                        let transfer_id = outbound_file.transfer_id().to_vec();
-                        let total_bytes = outbound_file.total_bytes();
-                        if let Some(toasts) = toasts {
-                            toasts.post(toast::Cmd::TransferStart {
-                                name: name.clone(),
-                                total: total_bytes,
-                            });
+                queued.push_back(request);
+                continue;
+            }
+            _ = transfers.wake.notified() => { continue; }
+            result = &mut stream.task => { bail!("session writer stopped: {result:?}"); }
+            _ = async { if let Ok(permit) = writer_slots.reserve_many(4).await { drop(permit); } }, if !data_ready => { continue; }
+            _ = async { let r = arriving.as_ref().unwrap(); let _ = r.tx.reserve().await; },
+                if arriving.as_ref().is_some_and(|r| r.tx.capacity() == 0) => { continue; }
+            _ = async { tokio::time::sleep_until(result_deadline.unwrap()).await; },
+                if result_deadline.is_some() => { continue; }
+            _ = async { let _ = image_jobs.reserve().await; }, if image_jobs.capacity() == 0 => { continue; }
+            Some(received) = received_rx.recv(), if control_ready => {
+                if arriving.as_ref().is_none_or(|r| r.id != received.result.transfer_id) { continue; }
+                arriving = None;
+                session.send(&mut stream, pb::Kind::FileResult, &received.result.encode_to_vec()).await?;
+                metrics.frames_out.fetch_add(1, Ordering::Relaxed);
+                if let Some(path) = received.path {
+                    if let Some(toasts) = toasts { toasts.post(toast::Cmd::File { path }); }
+                }
+                continue;
+            }
+            frame = async { sending.as_mut().unwrap().frames.recv().await },
+                if sending.as_ref().is_some_and(|s| s.waiting.is_none()) && !heartbeat.awaiting_pong() && data_ready
+                    && (file_turn || outgoing_image.is_none()) => {
+                file_turn = false;
+                let active = sending.as_mut().unwrap();
+                match frame {
+                    Some(Ok(frame)) => {
+                        if frame.kind == pb::Kind::FileOffer && !transfers.claim(owner, &active.request.id, frame.total) {
+                            transfers.update(owner, &active.request.id, 0, "cancelled", "Cancelled before offering");
+                            active.request.finish(Err("Cancelled before offering".into()));
+                            sending = None;
+                            continue;
                         }
-                        let mut last_toast_percent = 0u64;
-                        match outbound_file
-                            .send(&mut session, &mut stream, |transferred, total| {
-                                let _ = progress.send(control::TransferProgress { transferred, total });
-                                if transferred == 0 || transferred >= total {
-                                    return;
-                                }
-                                let percent = transferred.saturating_mul(100) / total.max(1);
-                                if percent >= last_toast_percent.saturating_add(5) {
-                                    last_toast_percent = percent;
-                                    if let Some(toasts) = toasts {
-                                        toasts.post(toast::Cmd::TransferProgress {
-                                            name: name.clone(),
-                                            transferred,
-                                            total,
-                                            waiting_for_phone: false,
-                                        });
-                                    }
-                                }
-                            })
-                            .await
-                        {
-                            Ok(frames) => {
-                                metrics.frames_out.fetch_add(frames, Ordering::Relaxed);
-                                if let Some(toasts) = toasts {
-                                    toasts.post(toast::Cmd::TransferProgress {
-                                        name: name.clone(),
-                                        transferred: total_bytes,
-                                        total: total_bytes,
-                                        waiting_for_phone: true,
-                                    });
-                                }
-                                pending_outbound = Some(PendingOutbound {
-                                    transfer_id,
-                                    name,
-                                    completion,
-                                });
-                            }
-                            Err(e) => {
-                                if let Some(toasts) = toasts {
-                                    toasts.post(toast::Cmd::TransferResult {
-                                        name: name.clone(),
-                                        success: false,
-                                    });
-                                }
-                                let message = format!("sending {name} to the phone: {e:#}");
-                                let _ = completion.send(Err(message.clone()));
-                                return Err(e).with_context(|| format!("sending {name} to the phone"));
+                        // This complete frame write is outside every select/timeout.
+                        session.send(&mut stream, frame.kind, &frame.payload).await?;
+                        metrics.frames_out.fetch_add(1, Ordering::Relaxed);
+                        active.sent = frame.bytes; active.total = frame.total;
+                        let waiting = frame.kind == pb::Kind::FileChunk && frame.bytes == frame.total;
+                        if waiting { active.waiting = Some(tokio::time::Instant::now() + transfer::RESULT_TIMEOUT); }
+                        transfers.update(owner, &active.request.id, frame.bytes, if waiting { "waiting confirmation" } else { "transferring" }, "");
+                        let name = active.request.path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                        if frame.kind == pb::Kind::FileOffer || waiting || active.last_progress.elapsed() >= Duration::from_millis(250) {
+                            active.last_progress = std::time::Instant::now();
+                            active.request.progress.send_replace(control::TransferProgress { transferred: frame.bytes, total: frame.total });
+                            if let Some(toasts) = toasts {
+                                if frame.kind == pb::Kind::FileOffer { toasts.post(toast::Cmd::TransferStart { name, total: frame.total }); }
+                                else { toasts.post(toast::Cmd::TransferProgress { name, transferred: frame.bytes, total: frame.total, waiting_for_phone: waiting }); }
                             }
                         }
                     }
-                    Err(e) => {
-                        let message = format!("opening {}: {e:#}", path.display());
-                        let _ = completion.send(Err(message));
-                        warn!(path = %path.display(), error = %e, "local file was not sent");
+                    other => {
+                        let reason = match other { Some(Err(e)) => format!("{e:#}"), _ => "File producer stopped".into() };
+                        if capable {
+                            let cancel = pb::FileCancel { transfer_id: active.request.id.clone(), reason: reason.clone() };
+                            session.send(&mut stream, pb::Kind::FileCancel, &cancel.encode_to_vec()).await?;
+                            metrics.frames_out.fetch_add(1, Ordering::Relaxed);
+                        }
+                        transfers.update(owner, &active.request.id, active.sent, "failed", &reason);
+                        active.request.finish(Err(reason));
+                        sending = None;
                     }
                 }
                 continue;
             }
-            action = toast_actions.recv(), if !heartbeat.awaiting_pong() => {
+            _ = std::future::ready(()), if outgoing_image.is_some() && !heartbeat.awaiting_pong() && data_ready
+                && (!file_turn || sending.as_ref().is_none_or(|s| s.waiting.is_some() || s.frames.is_empty())) => {
+                file_turn = true;
+                let image = outgoing_image.as_mut().unwrap();
+                if let Some((kind, payload)) = image.next_frame() {
+                    session.send(&mut stream, kind, &payload).await?;
+                    metrics.frames_out.fetch_add(1, Ordering::Relaxed);
+                } else { outgoing_image = next_image.take(); }
+                continue;
+            }
+            action = toast_actions.recv(), if !heartbeat.awaiting_pong() && control_ready => {
                 match action {
                     Ok(action) => {
                         session
@@ -1125,13 +1346,14 @@ async fn serve(
                 }
                 continue;
             }
-            action = pair_actions.recv(), if !heartbeat.awaiting_pong() => {
+            action = pair_actions.recv(), if !heartbeat.awaiting_pong() && control_ready => {
                 match action {
                     Ok(control::PairAction::Forget) => {
                         let response = pb::PairResponse { accept: false, static_pub: Vec::new() };
                         session
                             .send(&mut stream, pb::Kind::PairResponse, &response.encode_to_vec())
                             .await?;
+                        let _ = tokio::time::timeout(Duration::from_secs(2), stream.drain()).await;
                         metrics.frames_out.fetch_add(1, Ordering::Relaxed);
                         bail!("local user forgot the paired phone");
                     }
@@ -1156,10 +1378,13 @@ async fn serve(
             }
             pb::Kind::Pong => {}
             pb::Kind::ClipText => {
-                let clip = pb::ClipText::decode(&envelope.payload[..])?;
+                let Ok(clip) = pb::ClipText::decode(&envelope.payload[..]) else {
+                    warn!("malformed clipboard text dropped");
+                    continue;
+                };
                 info!(bytes = clip.text.len(), mime = %clip.mime, "clip text in");
                 // A clipboard failure is the peer's problem, not the session's.
-                if let Err(e) = bridge.apply(&clip.text) {
+                if let Err(e) = image_jobs.try_send(image::IncomingWork::Text(clip.text)) {
                     warn!(error = %e, "could not set the clipboard");
                 }
             }
@@ -1167,7 +1392,14 @@ async fn serve(
             // The peer controls every field here, so a refused header must cost this
             // side an allocation of zero and the session nothing at all.
             pb::Kind::ClipImageHeader => {
-                let header = pb::ClipImageHeader::decode(&envelope.payload[..])?;
+                let Ok(header) = pb::ClipImageHeader::decode(&envelope.payload[..]) else {
+                    warn!("malformed image header dropped");
+                    continue;
+                };
+                if incoming.is_some() {
+                    warn!("second image header refused while receiving");
+                    continue;
+                }
                 match image::Assembly::begin(&header) {
                     Ok(assembly) => {
                         info!(
@@ -1187,11 +1419,17 @@ async fn serve(
                 }
             }
             pb::Kind::ClipImageChunk => {
-                let chunk = pb::ClipImageChunk::decode(&envelope.payload[..])?;
+                let Ok(chunk) = pb::ClipImageChunk::decode(&envelope.payload[..]) else {
+                    warn!("malformed image chunk dropped");
+                    continue;
+                };
                 let Some(assembly) = incoming.as_mut() else {
                     warn!(index = chunk.index, "image chunk with no header, dropped");
                     continue;
                 };
+                if !assembly.matches(&chunk.header_id) {
+                    continue;
+                }
                 match assembly.push(&chunk) {
                     Ok(None) => {}
                     Ok(Some(png)) => {
@@ -1199,48 +1437,12 @@ async fn serve(
                         let screenshot = assembly.is_screenshot();
                         incoming = None;
                         info!(bytes = png.len(), photo, screenshot, "image complete");
-                        if photo || screenshot {
-                            // Never the clipboard. Camera photos and screenshots are capture
-                            // events, not copy events. A screenshot also sets photo=true for
-                            // backward safety, while the explicit bit selects the right toast.
-                            match toasts {
-                                Some(toasts) => {
-                                    match tokio::task::spawn_blocking(move || stage_capture(&png))
-                                        .await
-                                    {
-                                        Ok(Ok(path)) => {
-                                            if screenshot {
-                                                toasts.post(toast::Cmd::Screenshot { path });
-                                            } else {
-                                                toasts.post(toast::Cmd::Photo { path });
-                                            }
-                                        }
-                                        Ok(Err(e)) => {
-                                            warn!(error = %e, "could not stage the capture")
-                                        }
-                                        Err(e) => warn!(error = %e, "capture staging task failed"),
-                                    }
-                                }
-                                None => info!("capture dropped, toasts are unavailable"),
-                            }
-                        } else {
-                            // Decode, encode and two clipboard opens: too slow for a
-                            // worker, and COM work regardless.
-                            let bridge = bridge.clone();
-                            match tokio::task::spawn_blocking(move || {
-                                // Normalise first: the phone sends a camera JPEG as-is,
-                                // and the PNG clipboard format must hold a real PNG.
-                                let png = image::to_png(&png)?;
-                                bridge.apply_image(&png)
-                            })
-                            .await
-                            {
-                                Ok(Err(e)) => {
-                                    warn!(error = %e, "could not set the clipboard image")
-                                }
-                                Err(e) => warn!(error = %e, "clipboard image task failed"),
-                                Ok(Ok(())) => {}
-                            }
+                        if let Err(e) = image_jobs.try_send(image::IncomingWork::Image {
+                            bytes: png,
+                            photo,
+                            screenshot,
+                        }) {
+                            warn!(error = %e, "image processing queue closed");
                         }
                     }
                     Err(e) => {
@@ -1263,7 +1465,10 @@ async fn serve(
                 }
             }
             pb::Kind::SharedUrl => {
-                let shared = pb::SharedUrl::decode(&envelope.payload[..])?;
+                let Ok(shared) = pb::SharedUrl::decode(&envelope.payload[..]) else {
+                    warn!("malformed shared URL dropped");
+                    continue;
+                };
                 let scheme = shared.url.to_ascii_lowercase();
                 if !scheme.starts_with("http://") && !scheme.starts_with("https://") {
                     warn!(url = %shared.url, "refused non-web shared URL");
@@ -1291,7 +1496,10 @@ async fn serve(
             // A malformed notification is dropped, never fatal: the phone's shade must
             // not be able to end a session that is also carrying the clipboard.
             pb::Kind::NotifNew => {
-                let notif = pb::NotifNew::decode(&envelope.payload[..])?;
+                let Ok(notif) = pb::NotifNew::decode(&envelope.payload[..]) else {
+                    warn!("malformed notification dropped");
+                    continue;
+                };
                 info!(app = %notif.app_name, pkg = %notif.package, messages = notif.messages.len(), "notif in");
                 let app = if notif.app_name.is_empty() {
                     notif.package.clone()
@@ -1325,7 +1533,10 @@ async fn serve(
                 }
             }
             pb::Kind::NotifUpdate => {
-                let notif = pb::NotifUpdate::decode(&envelope.payload[..])?;
+                let Ok(notif) = pb::NotifUpdate::decode(&envelope.payload[..]) else {
+                    warn!("malformed notification update dropped");
+                    continue;
+                };
                 if let Err(e) = notification_history::record_update(
                     data_dir,
                     &notif.key,
@@ -1344,7 +1555,10 @@ async fn serve(
                 }
             }
             pb::Kind::NotifRemove => {
-                let notif = pb::NotifRemove::decode(&envelope.payload[..])?;
+                let Ok(notif) = pb::NotifRemove::decode(&envelope.payload[..]) else {
+                    warn!("malformed notification removal dropped");
+                    continue;
+                };
                 if let Some(toasts) = toasts {
                     toasts.post(toast::Cmd::Hide { key: notif.key });
                 }
@@ -1353,7 +1567,10 @@ async fn serve(
             // desktop already knows which peer it is talking to — but decoding it keeps it
             // out of the "unhandled kind" log.
             pb::Kind::PairRequest => {
-                let hello = pb::PairRequest::decode(&envelope.payload[..])?;
+                let Ok(hello) = pb::PairRequest::decode(&envelope.payload[..]) else {
+                    warn!("malformed peer hello dropped");
+                    continue;
+                };
                 if !hello.device_id.is_empty() && hello.device_id != remote_id {
                     bail!("peer announced an id that does not match its Noise static key");
                 }
@@ -1364,7 +1581,10 @@ async fn serve(
                 }
             }
             pb::Kind::PairResponse => {
-                let response = pb::PairResponse::decode(&envelope.payload[..])?;
+                let Ok(response) = pb::PairResponse::decode(&envelope.payload[..]) else {
+                    warn!("malformed pairing response dropped");
+                    continue;
+                };
                 if !response.accept {
                     pairing::forget(data_dir)?;
                     bail!("paired phone removed this desktop");
@@ -1374,101 +1594,176 @@ async fn serve(
             // nothing else. The session is also carrying the clipboard, and a phone that
             // shares a 600 MB video must not knock it out.
             pb::Kind::FileOffer => {
-                let offer = pb::FileOffer::decode(&envelope.payload[..])?;
-                // Receive-folder changes are rare and file offers are rarer still. Reading the
-                // tiny config here applies a newly selected folder to the next transfer without
-                // a watcher, polling task, or forced reconnect.
-                let configured_receive_dir = match config::Config::load(data_dir) {
-                    Ok(config) => config.receive_dir,
-                    Err(e) => {
-                        warn!(error = %e, "could not read receive folder; falling back to Downloads");
-                        None
-                    }
+                let Ok(offer) = pb::FileOffer::decode(&envelope.payload[..]) else {
+                    warn!("malformed file offer dropped");
+                    continue;
                 };
-                let dir = match file::downloads(configured_receive_dir.as_deref()) {
-                    Ok(dir) => dir,
-                    Err(e) => {
-                        warn!(error = %e, "no receive folder, file refused");
-                        arriving = None;
-                        continue;
-                    }
-                };
-                match file::Incoming::begin(&offer, &dir) {
-                    Ok(rx) => {
-                        info!(
-                            name = rx.name(),
-                            bytes = offer.total_bytes,
-                            chunks = offer.chunk_count,
-                            mime = %offer.mime,
-                            "file in, receiving"
+                if offer.transfer_id.is_empty() || offer.transfer_id.len() > 64 {
+                    warn!("invalid file id dropped");
+                    continue;
+                }
+                // A duplicate active offer must not send a negative result for that same ID.
+                if arriving
+                    .as_ref()
+                    .is_some_and(|rx| rx.id == offer.transfer_id)
+                {
+                    continue;
+                }
+                let refusal = if arriving.is_some() {
+                    if transfers.incoming(owner, &offer).is_ok() {
+                        transfers.update(
+                            owner,
+                            &offer.transfer_id,
+                            0,
+                            "failed",
+                            "Receiver is busy",
                         );
-                        arriving = Some(rx);
                     }
-                    Err(e) => {
-                        warn!(error = %e, "refused a file offer");
-                        arriving = None;
-                    }
+                    Some("Receiver is busy".to_string())
+                } else {
+                    transfers
+                        .incoming(owner, &offer)
+                        .err()
+                        .map(|e| e.to_string())
+                };
+                if let Some(error) = refusal {
+                    let result = pb::FileResult {
+                        transfer_id: offer.transfer_id,
+                        success: false,
+                        error,
+                        name: offer.name.chars().take(256).collect(),
+                        cancelled: false,
+                    };
+                    session
+                        .send(&mut stream, pb::Kind::FileResult, &result.encode_to_vec())
+                        .await?;
+                    metrics.frames_out.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    arriving = Some(transfer::Receiving::start(
+                        offer,
+                        data_dir.to_path_buf(),
+                        owner.clone(),
+                        transfers.clone(),
+                        received_tx.clone(),
+                    ));
                 }
             }
             pb::Kind::FileChunk => {
-                let chunk = pb::FileChunk::decode(&envelope.payload[..])?;
-                let Some(rx) = arriving.as_mut() else {
-                    warn!(index = chunk.index, "file chunk with no offer, dropped");
+                let Ok(chunk) = pb::FileChunk::decode(&envelope.payload[..]) else {
+                    warn!("malformed file chunk dropped");
                     continue;
                 };
-                match rx.push(&chunk) {
-                    Ok(None) => {}
-                    Ok(Some(path)) => {
-                        arriving = None;
-                        match toasts {
-                            Some(toasts) => toasts.post(toast::Cmd::File { path }),
-                            None => info!("file arrived, but toasts are unavailable to say so"),
+                if let Some(rx) = &arriving {
+                    // Wrong/late IDs are isolated before they can touch the active file.
+                    if chunk.transfer_id == rx.id {
+                        if let Err(e) = rx.tx.try_send(chunk) {
+                            warn!(error = %e, "receive worker closed");
                         }
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "file transfer dropped");
-                        // Assigning None runs the Drop that deletes the partial.
-                        arriving = None;
                     }
                 }
             }
             pb::Kind::FileResult => {
-                let result = pb::FileResult::decode(&envelope.payload[..])?;
-                let Some(pending) = pending_outbound.take() else {
-                    warn!("file result arrived with no desktop transfer pending");
+                let Ok(result) = pb::FileResult::decode(&envelope.payload[..]) else {
+                    warn!("malformed file result dropped");
                     continue;
                 };
-                if result.transfer_id != pending.transfer_id {
-                    warn!(
-                        name = %pending.name,
-                        "file result belongs to a different transfer, ignored"
-                    );
-                    pending_outbound = Some(pending);
+                if sending.as_ref().is_none_or(|s| !s.accepts(&result)) {
                     continue;
                 }
-                if result.success {
-                    info!(name = %pending.name, "phone published file");
-                    if let Some(toasts) = toasts {
-                        toasts.post(toast::Cmd::TransferResult {
-                            name: pending.name.clone(),
-                            success: true,
-                        });
-                    }
-                    let _ = pending.completion.send(Ok(()));
+                let mut active = sending.take().unwrap();
+                let state = if result.success {
+                    "completed"
+                } else if result.cancelled {
+                    "cancelled"
                 } else {
-                    let reason = if result.error.is_empty() {
-                        "receiver refused the file".to_string()
+                    "failed"
+                };
+                let reason = if result.error.is_empty() {
+                    if result.cancelled {
+                        "Cancelled".into()
                     } else {
-                        result.error
-                    };
-                    warn!(name = %pending.name, error = %reason, "phone refused file");
-                    if let Some(toasts) = toasts {
-                        toasts.post(toast::Cmd::TransferResult {
-                            name: pending.name.clone(),
-                            success: false,
-                        });
+                        "Receiver refused the file".into()
                     }
-                    let _ = pending.completion.send(Err(reason));
+                } else {
+                    result.error.chars().take(512).collect()
+                };
+                transfers.update(
+                    owner,
+                    &active.request.id,
+                    active.sent,
+                    state,
+                    if result.success { "" } else { &reason },
+                );
+                if let Some(toasts) = toasts {
+                    toasts.post(toast::Cmd::TransferResult {
+                        name: active
+                            .request
+                            .path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned(),
+                        success: result.success,
+                    });
+                }
+                active
+                    .request
+                    .finish(if result.success { Ok(()) } else { Err(reason) });
+            }
+            pb::Kind::FileCancel => {
+                let Ok(cancel) = pb::FileCancel::decode(&envelope.payload[..]) else {
+                    warn!("malformed cancellation dropped");
+                    continue;
+                };
+                if !capable {
+                    continue;
+                }
+                if let Some(rx) = &arriving {
+                    if rx.id == cancel.transfer_id {
+                        rx.cancel();
+                    }
+                }
+                if sending
+                    .as_ref()
+                    .is_some_and(|s| s.request.id == cancel.transfer_id)
+                {
+                    let mut active = sending.take().unwrap();
+                    if active.total > 0 && active.sent == active.total {
+                        // The receiver may already have published the last chunk. Let its final
+                        // result settle the race; never turn that success into cancellation.
+                        active.stop_producer();
+                        active.cancel_sent = true;
+                        active.waiting =
+                            Some(tokio::time::Instant::now() + transfer::RESULT_TIMEOUT);
+                        transfers.update(
+                            owner,
+                            &active.request.id,
+                            active.sent,
+                            "waiting confirmation",
+                            "Receiver requested cancellation",
+                        );
+                        sending = Some(active);
+                        continue;
+                    }
+                    transfers.update(
+                        owner,
+                        &active.request.id,
+                        active.sent,
+                        "cancelled",
+                        "Cancelled by receiver",
+                    );
+                    active.request.finish(Err("Cancelled by receiver".into()));
+                    let result = pb::FileResult {
+                        transfer_id: active.request.id.clone(),
+                        success: false,
+                        cancelled: true,
+                        error: "Cancelled by receiver".into(),
+                        name: String::new(),
+                    };
+                    session
+                        .send(&mut stream, pb::Kind::FileResult, &result.encode_to_vec())
+                        .await?;
+                    metrics.frames_out.fetch_add(1, Ordering::Relaxed);
                 }
             }
             other => warn!(?other, "unhandled kind"),

@@ -15,6 +15,33 @@ import org.junit.Test
  */
 class ImageAssemblyTest {
 
+    @Test
+    fun `incremental image sending allows controls between frames and uses a fresh id`() {
+        val payload = Images.Payload(ByteArray(32769) { 3 }, "image/png")
+        val first = Images.Outgoing(payload, photo = false, screenshot = false)
+        val second = Images.Outgoing(payload, photo = false, screenshot = false)
+        val scheduler = TransferScheduler()
+        val trace = mutableListOf<String>()
+        val headers = mutableListOf<ClipImageHeader>()
+        val chunks = mutableListOf<ClipImageChunk>()
+        val send: (com.conduit.sync.proto.Kind, ByteArray) -> Unit = { kind, bytes ->
+            trace += kind.name
+            if (kind == com.conduit.sync.proto.Kind.CLIP_IMAGE_HEADER) headers += ClipImageHeader.parseFrom(bytes)
+            else chunks += ClipImageChunk.parseFrom(bytes)
+        }
+        scheduler.bulk { !first.step(send) }
+        scheduler.bulk { !second.step(send) }
+        scheduler.step()
+        scheduler.control(priority = true) { trace += "cancel-other-file" }
+        scheduler.step()
+        while (scheduler.step()) { }
+        org.junit.Assert.assertEquals("cancel-other-file", trace[1])
+        org.junit.Assert.assertEquals(2, headers.size)
+        org.junit.Assert.assertNotEquals(headers[0].headerId, headers[1].headerId)
+        org.junit.Assert.assertEquals(listOf(32768, 1, 32768, 1), chunks.map { it.data.size() })
+        assertArrayEquals(payload.bytes, chunks[0].data.toByteArray() + chunks[1].data.toByteArray())
+    }
+
     private val id = ByteString.copyFrom(ByteArray(16) { 7 })
     private val chunkSize = 32 * 1024
 

@@ -83,6 +83,13 @@ class WireSessionTest {
         val near = WireSession.handshake(
             initiatorIn, toResponder, initiator.private, initiator = true,
         )
+        assertThrows(OversizedMessageException::class.java) {
+            near.send(Kind.CLIP_TEXT, ByteArray(MAX_PLAINTEXT + 1))
+        }
+        assertThrows(OversizedMessageException::class.java) {
+            near.send(Kind.CLIP_TEXT, ByteArray(MAX_PLAINTEXT))
+        }
+        // Both refusals leave the next valid frame's message ID and Noise nonce intact.
         near.send(
             Kind.CLIP_TEXT,
             ClipText.newBuilder().setText("hello").setMime("text/plain").build().toByteArray(),

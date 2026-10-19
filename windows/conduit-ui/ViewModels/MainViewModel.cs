@@ -40,6 +40,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public ObservableCollection<NotificationEntry> Notifications { get; } = [];
     public ObservableCollection<SharedLinkEntry> SharedLinks { get; } = [];
+    public ObservableCollection<TransferEntry> Transfers { get; } = [];
+    public Visibility TransfersVisibility => Transfers.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
 
     public string DeviceName { get => _deviceName; private set => SetProperty(ref _deviceName, value); }
     public string ConnectionState { get => _connectionState; private set => SetProperty(ref _connectionState, value); }
@@ -138,8 +140,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _dispatcher = dispatcher;
         Directory.CreateDirectory(_dataDir);
         EnsureDaemonRunning();
-        RefreshAll();
         StartDataWatcher();
+        RefreshAll();
     }
 
     public void RefreshAll()
@@ -153,6 +155,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             LoadWallpaper();
             LoadNotifications();
             LoadLinks();
+            LoadTransfers();
         }
         finally
         {
@@ -323,10 +326,44 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _dataWatcher = watcher;
     }
 
+    private void LoadTransfers()
+    {
+        try
+        {
+            var path = Path.Combine(_dataDir, "transfers.tsv");
+            var next = new List<TransferEntry>();
+            if (File.Exists(path))
+            {
+                using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                using var reader = new StreamReader(stream);
+                for (var index = 0; index < 32 && reader.ReadLine() is { } line; index++)
+                    if (TransferEntry.Parse(line) is { } entry) next.Add(entry);
+            }
+            foreach (var stale in Transfers.Where(row => !next.Any(item => item.Id == row.Id)).ToList()) Transfers.Remove(stale);
+            for (var index = 0; index < next.Count; index++)
+            {
+                var row = Transfers.FirstOrDefault(item => item.Id == next[index].Id);
+                if (row is null) Transfers.Insert(index, next[index]);
+                else { row.Update(next[index]); var old = Transfers.IndexOf(row); if (old != index) Transfers.Move(old, index); }
+            }
+            OnPropertyChanged(nameof(TransfersVisibility));
+        }
+        catch (IOException) { /* The next atomic snapshot/event retries without polling. */ }
+        catch (UnauthorizedAccessException) { }
+    }
+
+    public async Task<(bool Success, string Detail)> CancelTransferAsync(TransferEntry entry)
+    {
+        var result = await Task.Run(() => RunDaemonCommandDetailed("cancel-transfer", entry.Id));
+        if (result.Success) entry.CancellationRequested();
+        return result;
+    }
+
     private void DataChanged(object sender, FileSystemEventArgs e)
     {
         var name = Path.GetFileName(e.FullPath);
         if (!name.Equals("status.txt", StringComparison.OrdinalIgnoreCase) &&
+            !name.Equals("transfers.tsv", StringComparison.OrdinalIgnoreCase) &&
             !name.Equals("config.txt", StringComparison.OrdinalIgnoreCase) &&
             !name.Equals("notifications.tsv", StringComparison.OrdinalIgnoreCase) &&
             !name.Equals("shared-links.tsv", StringComparison.OrdinalIgnoreCase) &&
@@ -338,6 +375,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _dispatcher?.TryEnqueue(() =>
         {
             if (name.Equals("notifications.tsv", StringComparison.OrdinalIgnoreCase)) LoadNotifications();
+            else if (name.Equals("transfers.tsv", StringComparison.OrdinalIgnoreCase)) LoadTransfers();
             else if (name.Equals("shared-links.tsv", StringComparison.OrdinalIgnoreCase)) LoadLinks();
             else if (name.Equals("wallpaper.jpg", StringComparison.OrdinalIgnoreCase)) LoadWallpaper();
             else LoadStatusAndConfig();

@@ -158,7 +158,38 @@
                 </Grid>
             </Border>
             <Grid Grid.Column="1" Background="{ThemeResource LayerFillColorDefaultBrush}">
-
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <Border Grid.Row="1" Visibility="{Binding TransfersVisibility}" Margin="38,0,38,18" Padding="14"
+                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="12">
+                    <StackPanel Spacing="9">
+                        <TextBlock Text="File transfers" FontSize="14" FontWeight="SemiBold" />
+                        <ScrollViewer MaxHeight="174" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                            <ItemsRepeater ItemsSource="{Binding Transfers}">
+                                <ItemsRepeater.Layout><StackLayout Spacing="12" /></ItemsRepeater.Layout>
+                                <ItemsRepeater.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid ColumnSpacing="12">
+                                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                            <StackPanel Spacing="4">
+                                                <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Text="{Binding Outcome}" FontSize="11" TextWrapping="Wrap"
+                                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                                <ProgressBar Minimum="0" Maximum="100" Value="{Binding Percentage}" />
+                                            </StackPanel>
+                                            <Button Grid.Column="1" Content="Cancel" Tag="{Binding Id}" Click="CancelTransfer_Click"
+                                                    Visibility="{Binding CancelVisibility}" IsEnabled="{Binding CanCancel}"
+                                                    AutomationProperties.Name="{Binding CancelName}" VerticalAlignment="Center" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsRepeater.ItemTemplate>
+                            </ItemsRepeater>
+                        </ScrollViewer>
+                    </StackPanel>
+                </Border>
 
                 <Grid x:Name="NotificationsPage" Margin="38,26,38,26" RowSpacing="17">
                     <Grid.RowDefinitions>
@@ -448,6 +479,6 @@
             </Grid>
         </Grid>
         <InfoBar x:Name="StatusInfoBar" Grid.Row="1" IsOpen="False" IsClosable="True"
-                 HorizontalAlignment="Right" VerticalAlignment="Bottom" Width="520" Margin="24" />
+                 HorizontalAlignment="Right" VerticalAlignment="Top" Width="520" Margin="24" />
     </Grid>
 </Page>

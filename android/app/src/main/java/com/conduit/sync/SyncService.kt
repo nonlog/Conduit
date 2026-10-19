@@ -138,6 +138,11 @@ private const val PAIRING_RETRY_MS = 2_000L
 
 /** Sent by [ShareActivity]: URIs in the intent's ClipData, or text in EXTRA_TEXT. */
 const val ACTION_SHARE = "com.conduit.sync.SHARE"
+const val ACTION_CANCEL_TRANSFER = "com.conduit.sync.CANCEL_TRANSFER"
+const val EXTRA_TRANSFER_ID = "transfer_id"
+
+internal fun serviceStartMayRedial(action: String?, connected: Boolean): Boolean =
+    !connected && action != ACTION_SHARE && action != ACTION_CANCEL_TRANSFER && action != ACTION_ACCESSIBILITY_CLIP
 
 /** A focused accessibility handoff carrying the exact ClipData Android just allowed us to read. */
 const val ACTION_ACCESSIBILITY_CLIP = "com.conduit.sync.ACCESSIBILITY_CLIP"
@@ -182,8 +187,9 @@ class SyncService : Service() {
     private var foregroundVisible = false
     /** Clipboard/capture/wallpaper observers are useful only while a Noise session is linked. */
     private var syncObserversActive = false
-    private val uploadProgressGate = TransferProgressGate()
-    private val downloadProgressGate = TransferProgressGate()
+    private data class LanTarget(val address: InetSocketAddress, val network: Network?)
+    private var deferredLanHandoff: LanTarget? = null
+    private var defaultNetwork: Network? = null
 
     /**
      * Relay selection state. Only [relayCandidates] is main-thread-owned. The attempt metadata is
@@ -311,26 +317,34 @@ class SyncService : Service() {
      */
     private val network = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(net: Network) {
-            networkUp = true
-            relayLanRecheckDone = false
-            lanHandoffInProgress = false
-            // A different network is a genuinely new chance, not a repeat of the attempt
-            // that just failed, so it starts from the floor instead of serving out a
-            // backoff earned on a network that no longer exists.
-            cancelRetry()
-            if (pairingActive()) retryPairing(net) else redial(net)
+            main.post {
+                if (destroyed) return@post
+                defaultNetwork = net
+                networkUp = true
+                cancelRetry()
+                if (LinkStatus.state == LinkState.Connected) {
+                    // A VPN/default-network update is not a reason to close an already
+                    // authenticated file stream or relabel its route as LAN.
+                    maybeRecheckLanAfterRelay(net)
+                } else if (pairingActive()) retryPairing(net) else redial(net)
+            }
         }
 
         override fun onLost(net: Network) {
-            // Suspend, not destroy: the socket is dead but [Link] and its sender thread
-            // survive, so a reconnect reuses them instead of allocating a fresh set.
-            Log.i(TAG, "network gone, suspending session")
-            networkUp = false
-            relayLanRecheckDone = false
-            lanHandoffInProgress = false
-            // Nothing to count down against; onAvailable is what resumes this.
-            main.removeCallbacks(retry)
-            link.disconnect()
+            main.post {
+                if (destroyed || defaultNetwork != net) return@post
+                defaultNetwork = connectivity.activeNetwork
+                networkUp = defaultNetwork != null || physicalLanNetwork() != null
+                // A direct socket is owned by its explicit physical Network, not by the
+                // changing system-default VPN. Its own onLost callback handles teardown.
+                if (link.boundNetwork?.let(::isPhysicalLanNetwork) == true) return@post
+                if (networkUp) return@post
+                Log.i(TAG, "no usable network remains; suspending session")
+                relayLanRecheckDone = false
+                lanHandoffInProgress = false
+                main.removeCallbacks(retry)
+                link.disconnect()
+            }
         }
     }
 
@@ -344,10 +358,13 @@ class SyncService : Service() {
             if (!isPhysicalLanNetwork(net)) return
             main.post {
                 if (destroyed) return@post
+                networkUp = true
                 relayLanRecheckDone = false
                 Log.i(TAG, "physical LAN available: $net")
                 if (LinkStatus.state == LinkState.Connected && relayAttemptConnected) {
                     maybeRecheckLanAfterRelay(net)
+                } else if (LinkStatus.state != LinkState.Connected && defaultNetwork == null) {
+                    if (pairingActive()) retryPairing(net) else redial(net)
                 }
             }
         }
@@ -356,7 +373,10 @@ class SyncService : Service() {
             main.post {
                 if (destroyed) return@post
                 relayLanRecheckDone = false
+                if (deferredLanHandoff?.network == net) deferredLanHandoff = null
+                networkUp = connectivity.activeNetwork != null || physicalLanNetwork() != null
                 Log.i(TAG, "physical LAN lost: $net")
+                if (link.isBoundTo(net)) link.disconnect()
             }
         }
     }
@@ -568,36 +588,27 @@ class SyncService : Service() {
                 override fun onImage(png: ByteArray, photo: Boolean, screenshot: Boolean) =
                     onRemoteImage(png, photo, screenshot)
 
-                override fun onFileProgress(
-                    name: String,
-                    direction: FileTransferDirection,
-                    transferred: Long,
-                    total: Long,
-                ) {
-                    val gate = when (direction) {
-                        FileTransferDirection.ToDesktop -> uploadProgressGate
-                        FileTransferDirection.ToPhone -> downloadProgressGate
-                    }
-                    if (!gate.shouldPublish(transferred, total)) return
+                override fun onTransfer(transfer: FileTransfer) {
                     main.post {
-                        FileTransfers.update(direction, name, transferred, total)
-                        showTransferNotification(direction)
+                        if (destroyed) return@post
+                        FileTransfers.update(transfer)
+                        if (FileTransfers.entries.any { it == transfer }) showTransferNotification(transfer)
                     }
                 }
 
-                override fun onFileComplete(name: String, direction: FileTransferDirection) {
-                    progressGate(direction).reset()
+                override fun onSendRejected(reason: String) {
                     main.post {
-                        FileTransfers.clear(direction)
-                        showTransferResultNotification(direction, name, success = true)
+                        if (!destroyed) android.widget.Toast.makeText(
+                            this@SyncService, reason, android.widget.Toast.LENGTH_SHORT,
+                        ).show()
                     }
                 }
 
-                override fun onFileFailed(name: String, direction: FileTransferDirection) {
-                    progressGate(direction).reset()
+                override fun onTransfersIdle() {
                     main.post {
-                        FileTransfers.clear(direction)
-                        showTransferResultNotification(direction, name, success = false)
+                        val target = deferredLanHandoff ?: return@post
+                        deferredLanHandoff = null
+                        if (!destroyed) beginLanHandoff(target)
                     }
                 }
 
@@ -655,11 +666,16 @@ class SyncService : Service() {
         discovery = Discovery(
             this,
             onFound = { address ->
+                val target = LanTarget(address, discovery.resolvedNetwork)
                 main.post {
+                    if (destroyed || !Settings.linkWanted) return@post
+                    if (target.network?.let(::isPhysicalLanNetwork) == false) return@post
                     if (LinkStatus.state == LinkState.Connected && relayAttemptConnected) {
-                        beginLanHandoff(address)
-                    } else {
-                        link.connect(address)
+                        beginLanHandoff(target)
+                    } else if (LinkStatus.state != LinkState.Connected) {
+                        LinkStatus.path = "LAN"
+                        clearRelayPlan()
+                        link.connect(target.address, target.network)
                     }
                 }
             },
@@ -678,6 +694,7 @@ class SyncService : Service() {
                     dialRelay()
                 }
             },
+            expectedPeerId = { if (pairingActive()) null else knownPeer },
         )
         // These observers are intentionally constructed now but registered only after Noise is up.
         // A parked Relay socket therefore does not make clipboard, MediaStore or wallpaper changes
@@ -688,6 +705,8 @@ class SyncService : Service() {
 
         // The default network drives overall online/offline state. A second system callback only
         // observes physical non-VPN LAN arrival so Relay can upgrade without polling.
+        defaultNetwork = connectivity.activeNetwork
+        networkUp = defaultNetwork != null || physicalLanNetwork() != null
         connectivity.registerDefaultNetworkCallback(network)
         connectivity.registerNetworkCallback(
             NetworkRequest.Builder()
@@ -699,6 +718,10 @@ class SyncService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
+            ACTION_CANCEL_TRANSFER -> {
+                intent.getStringExtra(EXTRA_TRANSFER_ID)?.let(link::cancelTransfer)
+                return START_STICKY
+            }
             ACTION_DISCONNECT -> {
                 stopLink()
                 return START_NOT_STICKY
@@ -751,7 +774,8 @@ class SyncService : Service() {
             }
             // A null intent is the system restarting us under START_STICKY. Respecting the
             // remembered choice is the whole reason it is persisted.
-            Settings.linkWanted -> redial()
+            Settings.linkWanted && serviceStartMayRedial(intent?.action, LinkStatus.state == LinkState.Connected) -> redial()
+            Settings.linkWanted -> Unit
             else -> {
                 Log.i(TAG, "restarted, but the user had turned the link off")
                 hideLinkNotification()
@@ -781,8 +805,9 @@ class SyncService : Service() {
         runCatching { connectivity.unregisterNetworkCallback(physicalLanNetworks) }
         discovery.stop()
         link.close()
-        FileTransfers.clearAll()
         hideAllTransferNotifications()
+        FileTransfers.failActive("Link stopped")
+        deferredLanHandoff = null
         hideLinkNotification()
         LinkStatus.state = LinkState.Idle
         LinkStatus.peer = null
@@ -794,11 +819,6 @@ class SyncService : Service() {
 
     override fun onBind(intent: Intent): IBinder? = null
 
-    private fun progressGate(direction: FileTransferDirection): TransferProgressGate =
-        when (direction) {
-            FileTransferDirection.ToDesktop -> uploadProgressGate
-            FileTransferDirection.ToPhone -> downloadProgressGate
-        }
 
     /**
      * Schedules the next attempt, doubling up to [RETRY_MAX_MS].
@@ -870,8 +890,9 @@ class SyncService : Service() {
         discovery.stop()
         clearRelayPlan()
         link.disconnect()
-        FileTransfers.clearAll()
         hideAllTransferNotifications()
+        FileTransfers.failActive("Link stopped")
+        deferredLanHandoff = null
         LinkStatus.state = LinkState.Idle
         LinkStatus.path = null
         hideLinkNotification()
@@ -923,23 +944,37 @@ class SyncService : Service() {
         discovery.burst(lan, RELAY_LAN_HANDOFF_DISCOVERY_MS)
     }
 
-    private fun beginLanHandoff(address: InetSocketAddress) {
+    private fun beginLanHandoff(target: LanTarget) {
         if (!Settings.linkWanted || !networkUp ||
             LinkStatus.state != LinkState.Connected || !relayAttemptConnected) return
-        Log.i(TAG, "LAN desktop appeared at $address; replacing Relay session")
+        if (target.network?.let(::isPhysicalLanNetwork) == false) return
+        if (link.hasActiveFileTransfers) {
+            deferredLanHandoff = target
+            Log.i(TAG, "deferring optional LAN handoff until file transfers finish")
+            return
+        }
+        deferredLanHandoff = null
         lanHandoffInProgress = true
+        if (!link.disconnectIfTransfersIdle()) {
+            lanHandoffInProgress = false
+            deferredLanHandoff = target
+            return
+        }
+        Log.i(TAG, "LAN desktop appeared at ${target.address}; replacing idle Relay session")
         discovery.stop()
         LinkStatus.path = "LAN"
-        link.disconnect()
         clearRelayPlan()
-        // Link serializes both calls on its one sender executor, so teardown always completes
-        // before the direct dial begins. The first Idle callback is suppressed above.
-        link.connect(address)
+        // The old socket is already closed; generation ownership isolates its final cleanup.
+        link.connect(target.address, target.network)
     }
 
     private fun redial(net: Network? = null) {
         if (!Settings.linkWanted) {
             Log.i(TAG, "not dialling; the user turned the link off")
+            return
+        }
+        if (LinkStatus.state == LinkState.Connected && !pairingActive()) {
+            maybeRecheckLanAfterRelay(net)
             return
         }
         if (pairingActive()) {
@@ -1153,8 +1188,9 @@ class SyncService : Service() {
         LinkStatus.peer = null
         LinkStatus.state = LinkState.Idle
         LinkStatus.path = null
-        FileTransfers.clearAll()
         hideAllTransferNotifications()
+        FileTransfers.failActive("Link stopped")
+        deferredLanHandoff = null
         hideLinkNotification()
         if (!remote) link.forgetPeer()
         LinkTileService.refresh(this)
@@ -1231,10 +1267,16 @@ class SyncService : Service() {
             Log.w(TAG, "share carried neither text nor a URI")
             return
         }
-        for (index in 0 until clip.itemCount) {
-            val uri = clip.getItemAt(index).uri ?: continue
+        val uris = boundedShare((0 until minOf(clip.itemCount, MAX_SHARE_FILES)).mapNotNull {
+            clip.getItemAt(it).uri
+        })
+        if (clip.itemCount > MAX_SHARE_FILES) {
+            android.widget.Toast.makeText(this, "Only the first $MAX_SHARE_FILES files were queued",
+                android.widget.Toast.LENGTH_SHORT).show()
+        }
+        for (uri in uris) {
             Log.i(TAG, "sharing $uri")
-            link.sendFile(uri.toString()) { Files.open(this, uri) }
+            link.sendFile(uri.lastPathSegment?.take(200) ?: "Shared file") { Files.open(this, uri) }
         }
     }
 
@@ -1477,59 +1519,44 @@ class SyncService : Service() {
             .build()
     }
 
-    private fun showTransferNotification(direction: FileTransferDirection) {
-        val transfer = when (direction) {
-            FileTransferDirection.ToDesktop -> FileTransfers.toDesktop
-            FileTransferDirection.ToPhone -> FileTransfers.toPhone
-        } ?: return
+    private fun showTransferNotification(transfer: FileTransfer) {
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED) return
         val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(
-            NotificationChannel(
-                TRANSFER_CHANNEL,
-                "File transfers",
-                NotificationManager.IMPORTANCE_LOW,
-            ).apply {
-                description = "Upload and download progress between this phone and the linked desktop"
-            },
+        manager.createNotificationChannel(NotificationChannel(
+            TRANSFER_CHANNEL, "File transfers", NotificationManager.IMPORTANCE_LOW,
+        ))
+        val receiving = transfer.direction == FileTransferDirection.ToPhone
+        val peer = knownPeerName ?: LinkStatus.peerName ?: "desktop"
+        val openHome = PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val peer = knownPeerName ?: LinkStatus.peerName ?: "desktop"
-        val receiving = direction == FileTransferDirection.ToPhone
-        val notice = Notification.Builder(this, TRANSFER_CHANNEL)
+        val builder = Notification.Builder(this, TRANSFER_CHANNEL)
             .setSmallIcon(if (receiving) R.drawable.ic_stat_download else R.drawable.ic_stat_upload)
-            .setContentTitle(if (receiving) "Receiving from $peer" else "Sending to $peer")
+            .setContentTitle("${transfer.phase.label} · ${if (receiving) "from" else "to"} $peer")
             .setContentText(transfer.name)
-            .setSubText("${formatBytes(transfer.transferred)} / ${formatBytes(transfer.total)}")
-            .setProgress(100, transfer.percent, false)
+            .setContentIntent(openHome)
+            .setSubText(transfer.error.ifBlank {
+                "${formatBytes(transfer.transferred)} / ${formatBytes(transfer.total)}"
+            })
             .setOnlyAlertOnce(true)
-            .setOngoing(true)
-            .build()
-        manager.notify(transferNotificationId(direction), notice)
-    }
-
-    private fun showTransferResultNotification(
-        direction: FileTransferDirection,
-        name: String,
-        success: Boolean,
-    ) {
-        val manager = getSystemService(NotificationManager::class.java)
-        val peer = knownPeerName ?: LinkStatus.peerName ?: "desktop"
-        val receiving = direction == FileTransferDirection.ToPhone
-        val title = when {
-            success && receiving -> "Received from $peer"
-            success -> "Sent to $peer"
-            receiving -> "Could not receive from $peer"
-            else -> "Could not send to $peer"
+            .setOngoing(!transfer.phase.terminal)
+        if (!transfer.phase.terminal) {
+            builder.setProgress(100, transfer.percent,
+                transfer.phase == TransferPhase.Queued || transfer.phase == TransferPhase.WaitingConfirmation)
+        } else builder.setAutoCancel(true).setTimeoutAfter(5_000L)
+        if (transfer.canCancel) {
+            val cancel = PendingIntent.getService(
+                this, 0, Intent(this, SyncService::class.java).apply {
+                    action = ACTION_CANCEL_TRANSFER
+                    data = android.net.Uri.parse("conduit://cancel/${transfer.id}")
+                    putExtra(EXTRA_TRANSFER_ID, transfer.id)
+                }, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            builder.addAction(Notification.Action.Builder(null, "Cancel", cancel).build())
         }
-        val notice = Notification.Builder(this, TRANSFER_CHANNEL)
-            .setSmallIcon(if (receiving) R.drawable.ic_stat_download else R.drawable.ic_stat_upload)
-            .setContentTitle(title)
-            .setContentText(name)
-            .setOnlyAlertOnce(true)
-            .setOngoing(false)
-            .setAutoCancel(true)
-            .setTimeoutAfter(5_000L)
-            .build()
-        manager.notify(transferNotificationId(direction), notice)
+        manager.notify("file:${transfer.direction}:${transfer.id}", transferNotificationId(transfer.direction), builder.build())
     }
 
     private fun hideTransferNotification(direction: FileTransferDirection) {
@@ -1537,6 +1564,10 @@ class SyncService : Service() {
     }
 
     private fun hideAllTransferNotifications() {
+        val manager = getSystemService(NotificationManager::class.java)
+        FileTransfers.entries.forEach {
+            manager.cancel("file:${it.direction}:${it.id}", transferNotificationId(it.direction))
+        }
         hideTransferNotification(FileTransferDirection.ToDesktop)
         hideTransferNotification(FileTransferDirection.ToPhone)
     }

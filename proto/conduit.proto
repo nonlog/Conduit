@@ -31,6 +31,7 @@ enum Kind {
   FILE_OFFER         = 30;
   FILE_CHUNK         = 31;
   FILE_RESULT        = 32;
+  FILE_CANCEL        = 33;  // targeted, session-scoped cancellation; see transfer_protocol
   SHARED_URL         = 40;
   WALLPAPER_PREVIEW  = 41;
 }
@@ -56,6 +57,7 @@ message PairRequest {
   string version     = 4;
   bytes  wallpaper_hash = 5;  // SHA-256 of the cached desktop preview; empty means missing
   bool   pairing       = 6;  // true only during a user-opened two-minute LAN pairing window
+  uint32 transfer_protocol = 7; // 1: FileResult in both directions and targeted FileCancel; 0: legacy
 }
 
 message PairResponse {
@@ -104,8 +106,9 @@ message ClipImageChunk {
 // of assembling the whole transfer in memory. Reusing the image path would have put a
 // 500 MB Vec in a daemon whose entire selling point is bounded memory.
 //
-// One transfer at a time per session, so there is no windowing or per-chunk ack: chunks are already
-// ordered and reliable inside one Noise session on one TCP stream. A single FileResult is sent only
+// One active file per direction with a bounded FIFO of pending sends. Image/clipboard/control
+// frames and the opposite-direction file may run concurrently. There is no per-chunk ack: chunks
+// are already ordered inside one Noise session on one TCP stream. A single FileResult is sent only
 // after receiver publication. A transfer dies with its session, which stops a half-written file
 // from being inherited by the next one.
 
@@ -134,6 +137,15 @@ message FileResult {
   bool   success     = 2;
   string error       = 3;
   string name        = 4;
+  bool   cancelled   = 5;  // distinct from a receiver or transport failure
+}
+
+// Either direction may cancel exactly one session-scoped file by its unpredictable id.
+// A cancellation must never tear down unrelated file/image/clipboard work. Chunks already
+// queued for a cancelled id may be discarded; a different active id must not be affected.
+message FileCancel {
+  bytes transfer_id = 1;
+  string reason = 2;
 }
 
 // --- shared web pages ---

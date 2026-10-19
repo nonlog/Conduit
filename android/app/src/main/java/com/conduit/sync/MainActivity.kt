@@ -27,6 +27,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -197,8 +200,11 @@ class MainActivity : ComponentActivity() {
                     path = LinkStatus.path,
                     state = LinkStatus.state,
                     history = History.entries,
-                    toDesktop = FileTransfers.toDesktop,
-                    toPhone = FileTransfers.toPhone,
+                    transfers = FileTransfers.entries,
+                    onCancelTransfer = { id ->
+                        startService(Intent(this, SyncService::class.java)
+                            .setAction(ACTION_CANCEL_TRANSFER).putExtra(EXTRA_TRANSFER_ID, id))
+                    },
                     hideNotifications = Settings.hideNotificationContent,
                     onHideNotifications = { Settings.hideNotificationContent = it },
                     clipboardMode = clipboardMode,
@@ -242,14 +248,12 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        // Keep the same bound as the system share-sheet path. Link's sender queue is finite;
-        // silently handing it an unbounded multi-select can evict unrelated clips/notifications.
-        val sending = unique.take(MAX_SHARE_FILES)
+        val sending = boundedShare(unique)
         if (unique.size > sending.size) {
             Log.w(TAG, "picker returned ${unique.size} files, sending the first $MAX_SHARE_FILES")
             android.widget.Toast.makeText(
                 this,
-                "Sending ${sending.size} of ${unique.size} files",
+                "Queuing ${sending.size} of ${unique.size} files",
                 android.widget.Toast.LENGTH_SHORT,
             ).show()
         }
@@ -264,7 +268,11 @@ class MainActivity : ComponentActivity() {
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 },
             )
-        }.onFailure { Log.w(TAG, "cannot send ${sending.size} files", it) }
+        }.onFailure {
+            Log.w(TAG, "cannot send ${sending.size} files", it)
+            android.widget.Toast.makeText(this, "Could not queue the selected files; check read access",
+                android.widget.Toast.LENGTH_SHORT).show()
+        }
     }
 
     @Suppress("DEPRECATION")
@@ -464,8 +472,8 @@ private fun ConduitApp(
     path: String?,
     state: LinkState,
     history: List<HistoryEntry>,
-    toDesktop: FileTransfer?,
-    toPhone: FileTransfer?,
+    transfers: List<FileTransfer>,
+    onCancelTransfer: (String) -> Unit,
     hideNotifications: Boolean,
     onHideNotifications: (Boolean) -> Unit,
     clipboardMode: ClipboardSyncMode,
@@ -639,8 +647,8 @@ private fun ConduitApp(
                 path = path,
                 state = state,
                 history = history,
-                toDesktop = toDesktop,
-                toPhone = toPhone,
+                transfers = transfers,
+                onCancelTransfer = onCancelTransfer,
                 onConnect = onConnect,
                 onDisconnect = onDisconnect,
                 onPair = requestPair,
@@ -682,8 +690,8 @@ private fun HomeTab(
     path: String?,
     state: LinkState,
     history: List<HistoryEntry>,
-    toDesktop: FileTransfer?,
-    toPhone: FileTransfer?,
+    transfers: List<FileTransfer>,
+    onCancelTransfer: (String) -> Unit,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
     onPair: () -> Unit,
@@ -718,17 +726,12 @@ private fun HomeTab(
                 onSendPhoto = { pickPhoto.launch("image/*") },
             )
         }
-        if (toDesktop != null || toPhone != null) {
+        if (transfers.isNotEmpty()) {
             item {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        "Transfers",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    toDesktop?.let { TransferCard(it, peerName) }
-                    toPhone?.let { TransferCard(it, peerName) }
-                }
+                Text("Transfers", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            }
+            items(transfers, key = { "${it.direction}:${it.id}" }) {
+                TransferCard(it, peerName, onCancelTransfer)
             }
         }
         item {
@@ -1103,12 +1106,14 @@ private fun SefirahDeviceCard(
                     modifier = Modifier.padding(top = 2.dp),
                 )
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     FilledTonalButton(
                         onClick = onSendFiles,
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1f).fillMaxHeight().heightIn(min = 48.dp)
+                            .semantics { contentDescription = "Send files" },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
                         shape = RoundedCornerShape(12.dp),
                     ) {
                         Icon(
@@ -1116,12 +1121,14 @@ private fun SefirahDeviceCard(
                             contentDescription = null,
                             modifier = Modifier.size(18.dp),
                         )
-                        Spacer(Modifier.width(8.dp))
-                        Text("Send files")
+                        Spacer(Modifier.width(6.dp))
+                        Text("Send files", maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     FilledTonalButton(
                         onClick = onSendPhoto,
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1f).fillMaxHeight().heightIn(min = 48.dp)
+                            .semantics { contentDescription = "Send photo" },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
                         shape = RoundedCornerShape(12.dp),
                     ) {
                         Icon(
@@ -1129,8 +1136,8 @@ private fun SefirahDeviceCard(
                             contentDescription = null,
                             modifier = Modifier.size(18.dp),
                         )
-                        Spacer(Modifier.width(8.dp))
-                        Text("Send photo")
+                        Spacer(Modifier.width(6.dp))
+                        Text("Send photo", maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
             }
@@ -1393,7 +1400,7 @@ private fun SwitchPreferenceRow(
 }
 
 @Composable
-private fun TransferCard(transfer: FileTransfer, peerName: String?) {
+private fun TransferCard(transfer: FileTransfer, peerName: String?, onCancel: (String) -> Unit) {
     val peer = peerName ?: "desktop"
     val direction = when (transfer.direction) {
         FileTransferDirection.ToDesktop -> "To $peer"
@@ -1407,7 +1414,17 @@ private fun TransferCard(transfer: FileTransfer, peerName: String?) {
                 Text("${transfer.percent}%", style = MaterialTheme.typography.titleSmall)
             }
             Text(transfer.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            LinearProgressIndicator(progress = { transfer.fraction }, modifier = Modifier.fillMaxWidth())
+            Text(transfer.phase.label, style = MaterialTheme.typography.bodyMedium)
+            if (!transfer.phase.terminal) {
+                LinearProgressIndicator(progress = { transfer.fraction }, modifier = Modifier.fillMaxWidth())
+            }
+            if (transfer.error.isNotBlank()) Text(transfer.error, style = MaterialTheme.typography.bodySmall)
+            if (transfer.canCancel) {
+                TextButton(onClick = { onCancel(transfer.id) },
+                    modifier = Modifier.heightIn(min = 48.dp).semantics {
+                        contentDescription = "Cancel ${transfer.name}"
+                    }) { Text("Cancel") }
+            }
             Text("${formatBytes(transfer.transferred)} of ${formatBytes(transfer.total)}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }

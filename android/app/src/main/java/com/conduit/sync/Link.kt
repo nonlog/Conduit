@@ -1,11 +1,15 @@
 package com.conduit.sync
 
+import android.net.Network
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import com.conduit.sync.proto.ClipImageChunk
 import com.conduit.sync.proto.ClipImageHeader
 import com.conduit.sync.proto.ClipText
 import com.conduit.sync.proto.Envelope
+import com.conduit.sync.proto.FileCancel
 import com.conduit.sync.proto.FileChunk
 import com.conduit.sync.proto.FileOffer
 import com.conduit.sync.proto.FileResult
@@ -18,10 +22,10 @@ import com.conduit.sync.proto.WallpaperPreview
 import java.net.InetSocketAddress
 import java.net.InetAddress
 import java.net.Socket
-import java.util.concurrent.ArrayBlockingQueue
-import java.util.concurrent.ThreadPoolExecutor
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.ConcurrentHashMap
+import com.google.protobuf.ByteString
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicInteger
 
 private const val TAG = "conduit.link"
 
@@ -49,7 +53,6 @@ internal fun initialReadDeadlineMs(rendezvous: String?): Int =
     if (rendezvous == null) READ_DEADLINE_MS else RELAY_PARK_READ_DEADLINE_MS
 
 private const val CONNECT_TIMEOUT_MS = 5_000
-private const val JOIN_TIMEOUT_MS = 2_000L
 
 /** A hostname, not an essay. Long enough for any real machine name. */
 private const val PEER_NAME_MAX = 64
@@ -93,21 +96,10 @@ internal fun isVpnFakeIp(address: InetAddress): Boolean {
 
 
 /**
- * The one transport session this app ever has, and the two threads that own it.
- *
- * The whole design exists to make one invariant checkable: `opened == closed`. A
- * connection is a [Socket] inside a `use` block on a single reader thread, so every
- * exit — return, throw, or someone else closing the socket underneath it — runs the
- * same teardown. Nothing is reference-counted and nothing is destroyed from a
- * finalizer, which is how the native session leak this app replaces happened.
- *
- * Thread rules, which are the reason there are no locks here:
- *  - the reader thread is the only caller of [WireSession.recv]
- *  - the [sender] thread is the only caller of [WireSession.send], including the PONG
- *    the reader owes a PING, which it posts rather than writes
- *
- * Idle cost is two blocked syscalls: `recvfrom` on the reader and a queue wait on the
- * sender. No timers, no wakeups, no polling.
+ * Each connection owns its reader and receive state. One blocked scheduler thread owns all
+ * Noise application writes, taking one bulk frame per turn. Controls can run between chunks.
+ * Closing a socket interrupts both reads and writes without waiting for that scheduler.
+ * Deadlines exist only while a file is active or awaiting publication, never on an idle link.
  */
 class Link(
     private val privateKey: ByteArray,
@@ -118,6 +110,10 @@ class Link(
 ) {
 
     interface Events {
+        fun onTransfer(transfer: FileTransfer) {}
+        fun onSendRejected(reason: String) {}
+        fun onTransfersIdle() {}
+
         fun onState(state: LinkState, peer: String?)
         fun onText(text: String)
 
@@ -126,20 +122,6 @@ class Link(
          * [screenshot] distinguishes a screenshot from a camera photo on new peers.
          */
         fun onImage(png: ByteArray, photo: Boolean, screenshot: Boolean)
-
-        /** Exact byte progress for one file transfer. */
-        fun onFileProgress(
-            name: String,
-            direction: FileTransferDirection,
-            transferred: Long,
-            total: Long,
-        ) {}
-
-        /** The file reached its receiver and was fully published. */
-        fun onFileComplete(name: String, direction: FileTransferDirection) {}
-
-        /** A transfer that had started did not finish. */
-        fun onFileFailed(name: String, direction: FileTransferDirection) {}
 
         /** A real bulk payload completed; used only for passive Relay quality learning. */
         fun onBulkTransfer(bytes: Long, elapsedMs: Long) {}
@@ -189,604 +171,629 @@ class Link(
 
     private val opened = AtomicLong()
     private val closed = AtomicLong()
+    private val connectionLock = Any()
+    private fun cleanUploads() {
+        uploads.values.filter { !usable(it.owner) }.forEach {
+            finish(it, TransferPhase.Failed, "Connection lost")
+        }
+    }
+    private val sender = TransferScheduler(onMaintenance = ::cleanUploads, onTaskFailure = {
+        Log.w(TAG, "transfer scheduler task failed", it)
+        current?.let(::stop)
+    })
+    private val senderThread = Thread({ sender.run() }, "conduit-send").apply { start() }
+    private val deadlines = Handler(Looper.getMainLooper())
+    @Volatile private var current: Connection? = null
+    @Volatile private var spent = false
 
-    /**
-     * Serializes connect, disconnect and every outbound frame. Created once per
-     * service, not per connection, so reconnect churn cannot grow the thread count.
-     *
-     * ponytail: discard-oldest on a full queue. Notifications share it with clips, so
-     * 64 rather than 16: a chat app catching up after a reconnect can post a burst no
-     * human clipboard ever produces. Dropping the oldest is still right — a stale
-     * notification mirror is worth less than a fresh one.
-     */
-    private val sender = ThreadPoolExecutor(
-        1, 1, 0, TimeUnit.MILLISECONDS, ArrayBlockingQueue(64),
-        { r -> Thread(r, "conduit-send") },
-        ThreadPoolExecutor.DiscardOldestPolicy(),
-    )
+    // Every callback/task captures its owner; stale work can only close its own socket.
+    private class Connection(val generation: Long, val network: Network?, val socket: Socket = Socket()) {
+        @Volatile var live: WireSession? = null
+        @Volatile var authenticated = false
+        @Volatile var transferProtocol = false
+        val receiveLock = Any()
+        var image: Images.Assembly? = null
+        var imageStarted = 0L
+        @Volatile var incoming: Files.Incoming? = null
+        val receiveGate = TransferProgressGate()
+        var incomingStarted = 0L
+        var incomingUpdated = 0L
+        var receiveTimeout: Runnable? = null
+        val receivedIds = java.util.ArrayDeque<String>()
+        val pendingResults = AtomicInteger()
+    }
 
-    /** Held only so another thread can close it; that close is what stops the reader. */
-    @Volatile private var socket: Socket? = null
-    @Volatile private var session: WireSession? = null
-    private var reader: Thread? = null
-    /**
-     * A reader-thread PING that still needs a PONG from the single sender thread.
-     *
-     * Normally the queued sender task answers it immediately. A large file/image is different:
-     * that task intentionally owns the sender executor for the whole transfer, so it services
-     * this flag between chunks instead. That preserves the single Noise writer while preventing
-     * a 512 MiB transfer from starving a heartbeat behind thousands of queued bytes.
-     */
-    @Volatile private var pongPending = false
+    private class Upload(val owner: Connection, val id: String, val what: String) {
+        val receipt = TransferReceipt(id)
+        var source: Files.Outgoing? = null
+        var offered = false
+        var name = what
+        var total = 0L
+        var written = 0L
+        var started = 0L
+        var timeout: Runnable? = null
+        var publishedPhase: TransferPhase? = null
+        val gate = TransferProgressGate()
+        var work: (() -> Boolean)? = null
+        var sourceFailure: String? = null
+    }
+    private val uploads = ConcurrentHashMap<String, Upload>()
+    private val uploadLock = Any()
 
-    /**
-     * The image being reassembled. Touched only by the reader thread, so it is neither
-     * volatile nor locked, and it is cleared on teardown with the session.
-     */
-    private var incoming: Images.Assembly? = null
-    private var incomingImageStartedMs = 0L
+    val hasActiveFileTransfers: Boolean
+        get() = uploads.isNotEmpty() || current?.let { it.incoming != null || it.pendingResults.get() > 0 } == true
 
-    /** The one desktop file being streamed into MediaStore Downloads on the reader thread. */
-    private var incomingFile: Files.Incoming? = null
-    private var incomingFileStartedMs = 0L
+    fun isBoundTo(network: Network): Boolean =
+        current?.let { it.network == network && !it.socket.isClosed } == true
 
-    /**
-     * Reads [uri] on the sender thread and queues it as chunks.
-     *
-     * The read is a binder call into whichever app owns the provider, so it must not run
-     * on the main thread — and the clipboard listener that notices a copied image runs
-     * there. Handing over a lambda keeps that work on the one thread already dedicated
-     * to outbound frames, and keeps this class free of Android's content APIs.
-     */
+    val boundNetwork: Network? get() = current?.network
+
+    private fun usable(owner: Connection): Boolean =
+        current === owner && !owner.socket.isClosed && owner.live != null
+
+    private fun report(upload: Upload) {
+        val phase = upload.receipt.phase
+        if (upload.publishedPhase == phase && !upload.gate.shouldPublish(upload.written, upload.total)) return
+        upload.publishedPhase = phase
+        events.onTransfer(FileTransfer(
+            FileTransferDirection.ToDesktop, upload.name, upload.written, upload.total,
+            upload.id, phase, upload.receipt.error,
+            !phase.terminal && phase != TransferPhase.Cancelling && (!upload.offered || upload.owner.transferProtocol),
+        ))
+    }
+
+    private fun finish(upload: Upload, phase: TransferPhase, reason: String = "") {
+        if (upload.receipt.finish(phase, reason)) retire(upload)
+    }
+
+    private fun retire(upload: Upload) {
+        upload.work?.let { sender.removeQueuedBulk(it); sender.resumeBulk(it) }
+        upload.work = null
+        upload.timeout?.let(deadlines::removeCallbacks)
+        upload.timeout = null
+        runCatching { upload.source?.close() }
+        upload.source = null
+        uploads.remove(upload.id, upload)
+        report(upload)
+        if (!hasActiveFileTransfers) events.onTransfersIdle()
+    }
+
+    private fun control(
+        owner: Connection,
+        priority: Boolean = false,
+        critical: Boolean = priority,
+        after: () -> Unit = {},
+        task: (WireSession) -> Unit,
+    ): Boolean {
+        val accepted = sender.control(priority) {
+            try {
+                if (usable(owner)) task(requireNotNull(owner.live))
+            } catch (e: OversizedMessageException) {
+                Log.w(TAG, "local control payload refused before encryption", e)
+                events.onSendRejected("Content is too large to synchronize in one message")
+            } catch (e: Exception) {
+                Log.w(TAG, "session ${owner.generation} control failed", e)
+                stop(owner)
+            } finally { after() }
+        }
+        if (!accepted) {
+            events.onSendRejected("Send queue is full; try again")
+            // Losing an ACK/cancel would leave the peers with incompatible state.
+            if (critical) stop(owner)
+            after()
+        }
+        return accepted
+    }
+
+    private fun wire(owner: Connection, kind: Kind, payload: ByteArray = byteArrayOf()) {
+        check(usable(owner)) { "Transfer session ended" }
+        requireNotNull(owner.live).send(kind, payload)
+    }
+
     fun sendImage(
         what: String,
         photo: Boolean = false,
         screenshot: Boolean = false,
         load: () -> Images.Payload?,
-    ) =
-        sender.execute {
-            val live = session
-            if (live == null) {
-                Log.d(TAG, "$what dropped, no session")
-                return@execute
+    ) {
+        val owner = current?.takeIf { it.authenticated && usable(it) }
+        if (owner == null) { events.onSendRejected("$what: desktop is offline"); return }
+        var outgoing: Images.Outgoing? = null
+        var size = 0L
+        var started = 0L
+        val accepted = sender.bulk {
+            if (!usable(owner)) return@bulk false
+            if (outgoing == null) {
+                val payload = runCatching { load() }.getOrNull()
+                if (payload == null || payload.bytes.size !in 1..MAX_IMAGE) {
+                    events.onSendRejected("$what is unavailable or too large")
+                    return@bulk false
+                }
+                if (!usable(owner)) return@bulk false
+                size = payload.bytes.size.toLong()
+                started = SystemClock.elapsedRealtime()
+                outgoing = Images.Outgoing(payload, photo, screenshot)
             }
-            val payload = runCatching { load() }
-                .onFailure { Log.w(TAG, "$what could not be read", it) }
-                .getOrNull()
-            if (payload == null || payload.bytes.isEmpty()) return@execute
             try {
-                val started = SystemClock.elapsedRealtime()
-                Images.send(live, payload, photo, screenshot) { sendPendingPong(live) }
-                events.onBulkTransfer(
-                    payload.bytes.size.toLong(),
-                    (SystemClock.elapsedRealtime() - started).coerceAtLeast(1L),
-                )
+                val done = requireNotNull(outgoing).step { kind, bytes -> wire(owner, kind, bytes) }
+                if (done) events.onBulkTransfer(size, (SystemClock.elapsedRealtime() - started).coerceAtLeast(1L))
+                !done
             } catch (e: Exception) {
-                // Same rule as a failed text write: the socket is gone, so let the reader
-                // notice and unwind rather than half-finishing the transfer.
                 Log.w(TAG, "$what write failed", e)
-                teardown()
+                stop(owner)
+                false
             }
         }
+        if (!accepted) events.onSendRejected("$what: transfer queue is full; try again")
+    }
 
-    /**
-     * Sends the tiny phone-wallpaper preview only when the desktop says its cached copy differs.
-     * Loading and root/platform access stay on the existing sender thread, never the UI thread.
-     */
-    fun sendWallpaperPreview(desktopHash: ByteArray, load: () -> Wallpapers.Preview?) = sender.execute {
-        val live = session ?: return@execute
-        val preview = runCatching { load() }
-            .onFailure { Log.w(TAG, "wallpaper preview could not be read", it) }
-            .getOrNull() ?: return@execute
-        if (desktopHash.contentEquals(preview.sha256)) {
-            Log.d(TAG, "desktop wallpaper preview is already current")
-            return@execute
-        }
-        val message = WallpaperPreview.newBuilder()
-            .setJpeg(com.google.protobuf.ByteString.copyFrom(preview.jpeg))
-            .setSha256(com.google.protobuf.ByteString.copyFrom(preview.sha256))
-            .build()
-        try {
+    fun sendWallpaperPreview(desktopHash: ByteArray, load: () -> Wallpapers.Preview?) {
+        val owner = current?.takeIf { it.authenticated } ?: return
+        control(owner) { live ->
+            val preview = runCatching { load() }.getOrNull() ?: return@control
+            if (!usable(owner) || desktopHash.contentEquals(preview.sha256)) return@control
+            val message = WallpaperPreview.newBuilder()
+                .setJpeg(ByteString.copyFrom(preview.jpeg)).setSha256(ByteString.copyFrom(preview.sha256)).build()
             live.send(Kind.WALLPAPER_PREVIEW, message.toByteArray())
-            sendPendingPong(live)
-            Log.i(TAG, "wallpaper preview sent: ${preview.jpeg.size} B")
-        } catch (e: Exception) {
-            Log.w(TAG, "wallpaper preview write failed", e)
-            teardown()
         }
     }
 
-    /**
-     * Streams one file to the desktop on the sender thread.
-     *
-     * [open] is a lambda for the same reason [sendImage]'s [load] is, and more so: resolving
-     * the file's size and opening its stream are both binder calls into whichever app owns
-     * the URI, and the caller is a share intent arriving on the main thread. [what] only
-     * names the transfer in the log until the real name is known.
-     *
-     * The stream is closed on every exit, including the throw a short read raises.
-     */
-    fun sendFile(what: String, open: () -> Files.Source?) = sender.execute {
-        val live = session
-        if (live == null) {
-            Log.d(TAG, "$what dropped, no session")
-            return@execute
+    // The ID exists before admission; every rejection is a visible terminal row.
+    fun sendFile(what: String, open: () -> Files.Source?): String {
+        val id = newTransferId()
+        val owner = current?.takeIf { it.authenticated && usable(it) }
+        if (owner == null) {
+            events.onTransfer(FileTransfer(FileTransferDirection.ToDesktop, what, 0, 0, id,
+                TransferPhase.Failed, "Desktop is offline", false))
+            return id
         }
-        val source = runCatching { open() }
-            .onFailure { Log.w(TAG, "could not read $what", it) }
-            .getOrNull() ?: return@execute
+        val upload = Upload(owner, id, what)
+        val admitted = synchronized(uploadLock) {
+            if (uploads.size >= 16) false else { uploads[id] = upload; true }
+        }
+        report(upload)
+        val work = { uploadStep(upload, open) }
+        upload.work = work
+        if (!admitted || !sender.bulk(work)) {
+            finish(upload, TransferPhase.Failed, "Transfer queue is full; try again")
+        }
+        return id
+    }
+
+    private fun uploadStep(upload: Upload, open: () -> Files.Source?): Boolean {
+        val owner = upload.owner
+        if (!usable(owner)) { finish(upload, TransferPhase.Failed, "Connection lost"); return false }
+        if (upload.receipt.phase.terminal) return false
+        if (upload.receipt.phase == TransferPhase.WaitingConfirmation || upload.receipt.phase == TransferPhase.Cancelling) {
+            sender.pauseBulk()
+            return true
+        }
+        if (upload.source == null) {
+            try {
+                val source = requireNotNull(open()) { "Source is unavailable, empty, unknown-size or over 512 MB" }
+                upload.name = source.meta.name.take(200)
+                upload.total = source.meta.size
+                upload.source = try {
+                    Files.Outgoing(ByteString.copyFrom(transferIdBytes(upload.id)), source.stream, source.meta)
+                } catch (e: Exception) { runCatching { source.stream.close() }; throw e }
+                if (!usable(owner)) { finish(upload, TransferPhase.Failed, "Connection lost"); return false }
+                upload.started = SystemClock.elapsedRealtime()
+                upload.receipt.sending()
+            } catch (e: Exception) {
+                finish(upload, TransferPhase.Failed, e.message ?: "Could not read source")
+                return false
+            }
+        }
+        val source = requireNotNull(upload.source)
+        if (!upload.offered) {
+            try {
+                wire(owner, Kind.FILE_OFFER, source.offer.toByteArray())
+                upload.offered = true
+                report(upload)
+            } catch (e: Exception) {
+                finish(upload, TransferPhase.Failed, "Connection lost")
+                stop(owner)
+                return false
+            }
+            return true
+        }
+        // Source errors are recoverable without taking clipboard or other files down.
+        val chunk = try { source.next() } catch (e: Exception) {
+            val reason = e.message ?: "Could not read source"
+            cancelWire(upload, reason)
+            if (owner.transferProtocol && usable(owner)) {
+                upload.sourceFailure = reason
+                upload.receipt.requestCancel(reason)
+                report(upload)
+                awaitReceipt(upload)
+                return true
+            }
+            finish(upload, TransferPhase.Failed, reason)
+            return false
+        }
         try {
-            val started = SystemClock.elapsedRealtime()
-            source.stream.use { input ->
-                Files.send(live, input, source.meta) { transferred, total ->
-                    sendPendingPong(live)
-                    events.onFileProgress(
-                        source.meta.name,
-                        FileTransferDirection.ToDesktop,
-                        transferred,
-                        total,
-                    )
+            wire(owner, Kind.FILE_CHUNK, chunk.toByteArray())
+            upload.written = source.sent
+            if (upload.written == upload.total) {
+                upload.receipt.sent(owner.transferProtocol)
+                runCatching { source.close() }
+                upload.source = null
+                events.onBulkTransfer(upload.total, (SystemClock.elapsedRealtime() - upload.started).coerceAtLeast(1L))
+                report(upload)
+                if (owner.transferProtocol) {
+                    awaitReceipt(upload)
+                } else retire(upload)
+                return owner.transferProtocol
+            }
+            report(upload)
+            return true
+        } catch (e: Exception) {
+            finish(upload, TransferPhase.Failed, "Connection lost")
+            stop(owner)
+            return false
+        }
+    }
+
+    private fun awaitReceipt(upload: Upload) {
+        sender.pauseBulk()
+        if (upload.timeout != null) return
+        val timeout = Runnable {
+            control(upload.owner, priority = true) {
+                if (!upload.receipt.phase.terminal) {
+                    cancelWire(upload, "Receiver confirmation timed out")
+                    finish(upload, TransferPhase.Failed,
+                        upload.sourceFailure ?: "Receiver confirmation timed out; delivery is unconfirmed")
                 }
             }
-            events.onBulkTransfer(
-                source.meta.size,
-                (SystemClock.elapsedRealtime() - started).coerceAtLeast(1L),
-            )
-            events.onFileComplete(source.meta.name, FileTransferDirection.ToDesktop)
-        } catch (e: Exception) {
-            // Same rule as an image: the offer is already out and the desktop is committed
-            // to a total, so there is nothing to salvage. Let the session unwind — the
-            // desktop's transfer dies with it and deletes its own partial file.
-            Log.w(TAG, "${source.meta.name} transfer failed", e)
-            events.onFileFailed(source.meta.name, FileTransferDirection.ToDesktop)
-            teardown()
+        }
+        upload.timeout = timeout
+        deadlines.postDelayed(timeout, TRANSFER_TIMEOUT_MS)
+    }
+
+    private fun cancelWire(upload: Upload, reason: String) {
+        if (!upload.offered || !usable(upload.owner)) return
+        if (!upload.owner.transferProtocol) {
+            // shortcut: legacy peers cannot discard one partial file; source failure closes the session.
+            stop(upload.owner)
+            return
+        }
+        val cancel = FileCancel.newBuilder().setTransferId(ByteString.copyFrom(transferIdBytes(upload.id)))
+            .setReason(reason.take(300)).build()
+        try { wire(upload.owner, Kind.FILE_CANCEL, cancel.toByteArray()) }
+        catch (e: Exception) { stop(upload.owner) }
+    }
+
+    fun cancelTransfer(id: String) {
+        val owner = current ?: return
+        control(owner, priority = true, critical = false) {
+            val upload = uploads[id]?.takeIf { it.owner === owner }
+            if (upload != null) {
+                if (upload.offered && !owner.transferProtocol) {
+                    events.onSendRejected("This desktop cannot cancel an active transfer")
+                } else {
+                    cancelWire(upload, "Cancelled on phone")
+                    if (!upload.offered) {
+                        finish(upload, TransferPhase.Cancelled)
+                    } else if (usable(owner)) {
+                        upload.receipt.requestCancel("Waiting for the desktop to stop this transfer")
+                        report(upload)
+                        awaitReceipt(upload)
+                    }
+                }
+            } else synchronized(owner.receiveLock) {
+                val rx = owner.incoming
+                if (rx != null && transferIdString(rx.id) == id && owner.transferProtocol) {
+                    val cancel = FileCancel.newBuilder().setTransferId(ByteString.copyFrom(rx.id))
+                        .setReason("Cancelled on phone").build()
+                    wire(owner, Kind.FILE_CANCEL, cancel.toByteArray())
+                    endIncoming(owner, TransferPhase.Cancelled, "", result = true)
+                }
+            }
         }
     }
 
-    /** Dials on the reader thread. An already-live session wins; an unwinding reader may be replaced. */
-    fun connect(address: InetSocketAddress) = dial(address, null, null)
-    /**
-     * Parks at the relay under [rendezvous] and waits to be spliced onto the desktop.
-     *
-     * Same reader thread, same session, same teardown as a LAN dial — the relay only
-     * changes which address is dialled and adds a 48-byte role-aware preamble, so nothing
-     * about the `opened == closed` invariant depends on which path was taken.
-     */
+    fun connect(address: InetSocketAddress, network: Network? = null) = dial(address, null, null, network)
     fun connectVia(relay: InetSocketAddress, rendezvous: String, fallbackIp: String? = null) =
-        dial(relay, rendezvous, fallbackIp)
+        dial(relay, rendezvous, fallbackIp, null)
 
-    private fun dial(address: InetSocketAddress, rendezvous: String?, fallbackIp: String?) = sender.execute {
-        val previousReader = reader
-        if (previousReader?.isAlive == true) {
-            if (session != null) {
-                Log.d(TAG, "already connected, ignoring dial to $address")
-                return@execute
-            }
-            // Idle is reported from the reader's finally block just before that thread exits. An
-            // event-driven recovery can therefore arrive here a few microseconds early. Wait only
-            // for that already-closing thread instead of discarding the recovery and falling back
-            // to a Doze-sensitive delayed retry.
-            previousReader.join(JOIN_TIMEOUT_MS)
-            if (previousReader.isAlive) {
-                Log.w(TAG, "previous reader is still closing; ignoring dial to $address")
-                return@execute
-            }
-            reader = null
+    private fun dial(address: InetSocketAddress, rendezvous: String?, fallbackIp: String?, network: Network?) {
+        synchronized(connectionLock) {
+            if (spent || current?.socket?.isClosed == false) return
+            val owner = Connection(opened.incrementAndGet(), network)
+            current = owner
+            events.onState(LinkState.Discovering, null)
+            Thread({ pump(owner, address, rendezvous, fallbackIp, network) }, "conduit-recv").start()
         }
-        events.onState(LinkState.Discovering, null)
-        reader = Thread({ pump(address, rendezvous, fallbackIp) }, "conduit-recv").apply { start() }
     }
 
-    /**
-     * Suspends the session without destroying this object. Called on a network change,
-     * where the socket is dead but the app is not: keeping [Link] alive is what stops a
-     * reconnect from allocating a new set of everything.
-     */
-    fun disconnect() = sender.execute { teardown() }
+    // Closing here, never queued behind bulk or a blocked socket write.
+    fun disconnect() { current?.let(::stop) }
+
+    /** Atomic optional handoff: an arriving offer cannot race the active-transfer check. */
+    fun disconnectIfTransfersIdle(): Boolean = synchronized(connectionLock) {
+        val owner = current ?: return@synchronized true
+        synchronized(owner.receiveLock) {
+            synchronized(uploadLock) {
+                if (hasActiveFileTransfers) false else { stop(owner); true }
+            }
+        }
+    }
+
+    private fun stop(owner: Connection) { runCatching { owner.socket.close() } }
 
     fun sendText(text: String) {
-        val clip = ClipText.newBuilder()
-            .setText(text)
-            .setMime("text/plain")
-            .setTimestampMs(System.currentTimeMillis())
-            .build()
+        val clip = ClipText.newBuilder().setText(text).setMime("text/plain")
+            .setTimestampMs(System.currentTimeMillis()).build()
         send(Kind.CLIP_TEXT, clip.toByteArray(), "clip")
     }
 
     fun sendSharedUrl(url: String, title: String, sourceDevice: String) {
-        val shared = SharedUrl.newBuilder()
-            .setUrl(url)
-            .setTitle(title.take(512))
-            .setTimestampMs(System.currentTimeMillis())
-            .setSourceDevice(sourceDevice.take(64))
-            .build()
+        val shared = SharedUrl.newBuilder().setUrl(url).setTitle(title.take(512))
+            .setTimestampMs(System.currentTimeMillis()).setSourceDevice(sourceDevice.take(64)).build()
         send(Kind.SHARED_URL, shared.toByteArray(), "shared url")
     }
 
-    /**
-     * Queues one already-encoded frame. [what] only names the payload in the log, so a
-     * dropped notification is distinguishable from a dropped clip.
-     */
-    fun send(kind: Kind, payload: ByteArray, what: String) =
-        send(kind, what) { payload }
-
-    /** Builds event payloads on the serialized sender thread, away from Android callbacks. */
-    fun send(kind: Kind, what: String, build: () -> ByteArray) = sender.execute {
-        val live = session
-        if (live == null) {
-            Log.d(TAG, "$what dropped, no session")
-            return@execute
-        }
-        val payload = runCatching { build() }
-            .onFailure { Log.w(TAG, "$what could not be built", it) }
-            .getOrNull() ?: return@execute
-        try {
-            live.send(kind, payload)
-        } catch (e: Exception) {
-            // A failed write means the socket is gone; let the reader notice and unwind.
-            Log.w(TAG, "$what write failed", e)
-            teardown()
+    fun send(kind: Kind, payload: ByteArray, what: String) = send(kind, what) { payload }
+    fun send(kind: Kind, what: String, build: () -> ByteArray) {
+        val owner = current?.takeIf { it.authenticated && usable(it) }
+        if (owner == null) { events.onSendRejected("$what: desktop is offline"); return }
+        control(owner) { live ->
+            val payload = runCatching { build() }.getOrElse {
+                events.onSendRejected("$what could not be prepared")
+                return@control
+            }
+            if (usable(owner)) live.send(kind, payload)
         }
     }
 
-    /** Sends a best-effort authenticated forget signal, then tears down this session. */
-    fun forgetPeer() = sender.execute {
-        val live = session
-        if (live != null) {
-            runCatching {
-                val response = PairResponse.newBuilder().setAccept(false).build()
-                live.send(Kind.PAIR_RESPONSE, response.toByteArray())
-            }.onFailure { Log.w(TAG, "could not notify the desktop about unpairing", it) }
+    fun forgetPeer() {
+        val owner = current ?: return
+        control(owner, priority = true) { live ->
+            try { live.send(Kind.PAIR_RESPONSE, PairResponse.newBuilder().setAccept(false).build().toByteArray()) }
+            finally { stop(owner) }
         }
-        teardown()
     }
 
-    /** Final shutdown. After this the object is spent — the service is going away too. */
     fun close() {
-        sender.execute { teardown() }
-        sender.shutdown()
-        sender.awaitTermination(JOIN_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-        Log.i(TAG, "link closed: opened=${opened.get()} closed=${closed.get()}")
+        synchronized(connectionLock) { spent = true; current?.let(::stop) }
+        sender.close()
     }
 
-    /** Runs on the sender thread, so it never races [connect]. */
-    private fun teardown() {
-        // Closing under the blocked read is the only way to interrupt it.
-        socket?.let { runCatching { it.close() } }
-        reader?.join(JOIN_TIMEOUT_MS)
-        reader = null
-        pongPending = false
-    }
-
-    private fun pump(address: InetSocketAddress, rendezvous: String?, fallbackIp: String?) {
-        val count = opened.incrementAndGet()
-        Log.i(TAG, "session $count opened: opened=$count closed=${closed.get()}")
+    private fun pump(owner: Connection, address: InetSocketAddress, rendezvous: String?, fallbackIp: String?, network: Network?) {
         var established = false
         try {
-            Socket().use { sock ->
-                socket = sock
+            owner.socket.use { sock ->
+                if (rendezvous == null) network?.bindSocket(sock)
                 sock.tcpNoDelay = true
                 sock.keepAlive = true
-                // Direct sessions need a read deadline immediately. Relay sessions first
-                // enter a passive parked state; their established-session deadline is applied
-                // only after Noise completes.
                 sock.soTimeout = initialReadDeadlineMs(rendezvous)
-                // The relay arrives as a hostname, and resolving it blocks. This is the
-                // one thread here that is allowed to, so it is resolved here rather than
-                // on the connectivity callback that asked for the dial. Some Android VPNs
-                // use 198.18/15 fake-IP DNS. A user-supplied relay may carry an explicit
-                // fallback, but built-in production relays intentionally do not embed origin
-                // addresses. Keep the fake address when there is no fallback: the VPN maps it
-                // back to the hostname, and the socket still follows Android/VPN routing.
                 val target = if (address.isUnresolved) {
-                    val host = address.hostString
-                    val resolved = resolve(host)
-                    val targetAddress = if (rendezvous != null) {
-                        val fallback = relayTargetAddress(resolved, fallbackIp)
-                        if (fallback != resolved) {
-                        Log.i(
-                            TAG,
-                            "relay DNS $host -> fake ${resolved.hostAddress}; using ${fallback.hostAddress}",
-                        )
-                        }
-                        fallback
-                    } else {
-                        resolved
-                    }
-                    InetSocketAddress(targetAddress, address.port)
-                } else {
-                    address
-                }
+                    val resolved = InetAddress.getByName(address.hostString)
+                    InetSocketAddress(if (rendezvous != null) relayTargetAddress(resolved, fallbackIp) else resolved, address.port)
+                } else address
                 sock.connect(target, CONNECT_TIMEOUT_MS)
                 if (rendezvous != null) {
-                    // 48 bytes naming our initiator role and the rendezvous, then the relay
-                    // is a pipe and never looks at this stream again. The transition relay
-                    // still accepts old 47-byte clients; upgraded clients are explicit.
-                    sock.getOutputStream().apply {
-                        write(relayPreamble(rendezvous))
-                        flush()
-                    }
-                    Log.i(TAG, "session $count parked at $target as ${rendezvous.take(12)}")
-                    events.onState(LinkState.Waiting, null)
+                    sock.getOutputStream().apply { write(relayPreamble(rendezvous)); flush() }
+                    if (current === owner) events.onState(LinkState.Waiting, null)
                 }
-
-                val live = WireSession.handshake(
-                    sock.getInputStream(), sock.getOutputStream(), privateKey, initiator = true,
-                )
+                val live = WireSession.handshake(sock.getInputStream(), sock.getOutputStream(), privateKey, initiator = true)
+                owner.live = live
                 val remoteId = Identity.deviceId(live.peerStatic)
                 val viaRelay = rendezvous != null
                 if (viaRelay) sock.soTimeout = RELAY_READ_DEADLINE_MS
-                session = live
-                val peer = Identity.fingerprint(live.peerStatic)
-                Log.i(TAG, "session $count completed Noise to $target, peer $peer")
-
-                // Pairing policy is mutual. Both sides announce whether the user explicitly opened
-                // pairing, then each decides whether this Noise identity may become an application
-                // session. A new peer therefore cannot be learned because mDNS happened to find it.
-                val hello = PairRequest.newBuilder()
-                    .setDeviceId(localDeviceId)
+                val hello = PairRequest.newBuilder().setDeviceId(localDeviceId)
                     .setDeviceName(localDeviceName.take(PEER_NAME_MAX))
-                    .setPairing(events.pairingRequested())
-                    .build()
-                send(Kind.PAIR_REQUEST, hello.toByteArray(), "pairing hello")
+                    .setPairing(events.pairingRequested()).setTransferProtocol(1).build()
+                control(owner, priority = true) { it.send(Kind.PAIR_REQUEST, hello.toByteArray()) }
                 val first = live.recv()
-                if (first.kind != Kind.PAIR_REQUEST) {
-                    throw SecurityException("desktop did not confirm pairing with its identity hello")
-                }
+                if (first.kind != Kind.PAIR_REQUEST) throw SecurityException("Desktop did not send pairing hello")
                 val desktopHello = PairRequest.parseFrom(first.payload)
                 if (desktopHello.deviceId.isNotEmpty() && desktopHello.deviceId != remoteId) {
-                    throw SecurityException("desktop hello does not match its Noise identity")
+                    throw SecurityException("Desktop hello does not match its Noise identity")
                 }
                 if (!events.authorizePeer(remoteId, viaRelay, desktopHello.pairing)) {
-                    throw SecurityException("desktop is not paired; open pairing on both devices")
+                    throw SecurityException("Desktop is not paired; open pairing on both devices")
                 }
-                Log.i(TAG, "session $count pairing policy accepted $peer")
-                events.onPeer(remoteId)
-                desktopHello.deviceName
-                    .take(PEER_NAME_MAX)
-                    .takeIf { it.isNotBlank() }
-                    ?.let(events::onPeerName)
-                events.onWallpaperHash(desktopHello.wallpaperHash.toByteArray())
-                established = true
-                events.onState(LinkState.Connected, peer)
-
-                while (true) dispatch(live.recv())
+                synchronized(connectionLock) {
+                    if (!usable(owner)) return
+                    owner.transferProtocol = desktopHello.transferProtocol >= 1
+                    owner.authenticated = true
+                    events.onPeer(remoteId)
+                    desktopHello.deviceName.take(PEER_NAME_MAX).takeIf { it.isNotBlank() }?.let(events::onPeerName)
+                    established = true
+                    events.onState(LinkState.Connected, Identity.fingerprint(live.peerStatic))
+                    events.onWallpaperHash(desktopHello.wallpaperHash.toByteArray())
+                }
+                while (usable(owner)) {
+                    val envelope = live.recv()
+                    if (usable(owner)) {
+                        try { dispatch(owner, envelope) }
+                        catch (malformed: com.google.protobuf.InvalidProtocolBufferException) {
+                            // The encrypted frame is already consumed. Invalid inner data must not
+                            // break an unrelated transfer or desynchronise the Noise stream.
+                            Log.w(TAG, "malformed ${envelope.kind} payload dropped", malformed)
+                        }
+                    }
+                }
             }
-        } catch (t: Throwable) {
-            // Some OEM log pipelines drop Throwable stack continuations from logcat. Keep the
-            // class/message in the first line so field diagnostics still say what failed.
-            Log.w(TAG, "session $count ended: ${t.javaClass.name}: ${t.message}", t)
+        } catch (t: Exception) {
+            Log.w(TAG, "session ${owner.generation} ended: ${t.javaClass.name}: ${t.message}", t)
         } finally {
-            session = null
-            socket = null
-            // A partial image dies with the session that was carrying it, so the next
-            // one never inherits a half-filled buffer.
-            incoming = null
-            incomingImageStartedMs = 0L
-            incomingFile?.let {
-                events.onFileFailed(it.name, FileTransferDirection.ToPhone)
-                it.close()
+            stop(owner)
+            synchronized(owner.receiveLock) {
+                if (owner.incoming != null) endIncoming(owner, TransferPhase.Failed, "Connection lost")
+                owner.image = null
             }
-            incomingFile = null
-            incomingFileStartedMs = 0L
-            events.onState(LinkState.Idle, null)
-            Log.i(TAG, "session $count closed: opened=$count closed=${closed.incrementAndGet()}")
-            if (established) events.onSessionLost()
+            sender.requestMaintenance()
+            owner.live = null
+            synchronized(connectionLock) {
+                if (current === owner) {
+                    current = null
+                    events.onState(LinkState.Idle, null)
+                    if (established && !spent) events.onSessionLost()
+                }
+            }
+            Log.i(TAG, "session ${owner.generation} closed: opened=${opened.get()} closed=${closed.incrementAndGet()}")
         }
     }
 
-    private fun resolve(host: String): InetAddress = try {
-        InetAddress.getByName(host)
-    } catch (t: Throwable) {
-        Log.w(TAG, "relay DNS $host failed: ${t.javaClass.name}: ${t.message}")
-        throw t
-    }
-
-    private fun dispatch(envelope: Envelope) {
+    private fun dispatch(owner: Connection, envelope: Envelope) {
         when (envelope.kind) {
-            // Posted, not written: only the sender thread may touch the send counter.
-            Kind.PING -> queuePong()
+            Kind.PING -> control(owner, priority = true) { it.send(Kind.PONG) }
             Kind.PONG -> {}
-            // Capped, because it is peer-supplied text on its way to a launcher shortcut
-            // label and a notification. A desktop is not hostile, but a relay session is
-            // reachable by anything that guesses a rendezvous.
             Kind.PAIR_REQUEST -> {
                 val hello = PairRequest.parseFrom(envelope.payload)
-                hello.deviceName
-                    .take(PEER_NAME_MAX)
-                    .takeIf { it.isNotBlank() }
-                    ?.let { events.onPeerName(it) }
+                hello.deviceName.take(PEER_NAME_MAX).takeIf { it.isNotBlank() }?.let(events::onPeerName)
                 events.onWallpaperHash(hello.wallpaperHash.toByteArray())
             }
             Kind.PAIR_RESPONSE -> {
-                val response = PairResponse.parseFrom(envelope.payload)
-                if (!response.accept) {
+                if (!PairResponse.parseFrom(envelope.payload).accept) {
                     events.onPeerForgotten()
-                    throw SecurityException("desktop removed this phone")
+                    throw SecurityException("Desktop removed this phone")
                 }
             }
-            Kind.WALLPAPER_PREVIEW -> Log.w(TAG, "unexpected wallpaper preview from desktop, dropped")
             Kind.CLIP_TEXT -> events.onText(ClipText.parseFrom(envelope.payload).text)
             Kind.NOTIF_ACTION -> events.onNotificationAction(NotifAction.parseFrom(envelope.payload))
-            // Reassembly state lives on this thread and nowhere else, so it needs no
-            // lock and cannot outlive the session that is filling it.
             Kind.CLIP_IMAGE_HEADER -> {
-                incoming = runCatching {
-                    Images.Assembly.begin(ClipImageHeader.parseFrom(envelope.payload))
-                }.onFailure { Log.w(TAG, "refused an image header", it) }.getOrNull()
-                incomingImageStartedMs = if (incoming != null) SystemClock.elapsedRealtime() else 0L
+                if (owner.image == null) {
+                    owner.image = runCatching { Images.Assembly.begin(ClipImageHeader.parseFrom(envelope.payload)) }.getOrNull()
+                    owner.imageStarted = SystemClock.elapsedRealtime()
+                }
             }
-
             Kind.CLIP_IMAGE_CHUNK -> {
-                val assembly = incoming
-                if (assembly == null) {
-                    Log.w(TAG, "image chunk with no header, dropped")
-                    return
-                }
-                // A malformed transfer drops the image, never the session: the desktop's
-                // clipboard must not be able to disconnect the phone.
-                runCatching { assembly.push(ClipImageChunk.parseFrom(envelope.payload)) }
-                    .onFailure {
-                        Log.w(TAG, "image transfer dropped", it)
-                        incoming = null
-                        incomingImageStartedMs = 0L
+                val chunk = ClipImageChunk.parseFrom(envelope.payload)
+                val assembly = owner.image ?: return
+                if (!assembly.matches(chunk)) return
+                try {
+                    assembly.push(chunk)?.let { bytes ->
+                        owner.image = null
+                        events.onBulkTransfer(bytes.size.toLong(), (SystemClock.elapsedRealtime() - owner.imageStarted).coerceAtLeast(1L))
+                        events.onImage(bytes, assembly.photo, assembly.screenshot)
                     }
-                    .getOrNull()
-                    ?.let { png ->
-                        incoming = null
-                        val started = incomingImageStartedMs
-                        incomingImageStartedMs = 0L
-                        if (started > 0L) {
-                            events.onBulkTransfer(
-                                png.size.toLong(),
-                                (SystemClock.elapsedRealtime() - started).coerceAtLeast(1L),
-                            )
-                        }
-                        Log.i(
-                            TAG,
-                            "image in: ${png.size} B, photo=${assembly.photo} " +
-                                "screenshot=${assembly.screenshot}",
-                        )
-                        events.onImage(png, assembly.photo, assembly.screenshot)
-                    }
+                } catch (e: Exception) { owner.image = null }
             }
-
-            Kind.FILE_OFFER -> {
-                val offer = FileOffer.parseFrom(envelope.payload)
-                incomingFile?.let {
-                    events.onFileFailed(it.name, FileTransferDirection.ToPhone)
-                    it.close()
+            Kind.FILE_OFFER -> receiveOffer(owner, FileOffer.parseFrom(envelope.payload))
+            Kind.FILE_CHUNK -> receiveChunk(owner, FileChunk.parseFrom(envelope.payload))
+            Kind.FILE_RESULT -> {
+                val result = FileResult.parseFrom(envelope.payload)
+                if (!owner.transferProtocol) return
+                control(owner, priority = true) {
+                    val id = transferIdString(result.transferId.toByteArray())
+                    val upload = uploads[id]?.takeIf { it.owner === owner } ?: return@control
+                    if (upload.sourceFailure != null) {
+                        if (!result.success) finish(upload, TransferPhase.Failed, requireNotNull(upload.sourceFailure))
+                    } else if (upload.receipt.result(id, result.success, result.cancelled, result.error)) retire(upload)
                 }
-                incomingFile = runCatching { openIncomingFile(offer) }
-                    .onSuccess { rx ->
-                        if (rx != null) {
-                            Log.i(
-                                TAG,
-                                "file in: ${rx.name}, ${offer.totalBytes} B, ${offer.chunkCount} chunks",
-                            )
-                            events.onFileProgress(
-                                rx.name,
-                                FileTransferDirection.ToPhone,
-                                0L,
-                                offer.totalBytes,
-                            )
-                            incomingFileStartedMs = SystemClock.elapsedRealtime()
-                        } else {
-                            queueFileResult(
-                                offer.transferId.toByteArray(),
-                                offer.name,
-                                success = false,
-                                error = "phone receiver is unavailable",
-                            )
-                        }
-                    }
-                    .onFailure {
-                        Log.w(TAG, "refused a file offer", it)
-                        queueFileResult(
-                            offer.transferId.toByteArray(),
-                            offer.name,
-                            success = false,
-                            error = it.message ?: it.javaClass.simpleName,
-                        )
-                    }
-                    .getOrNull()
             }
-
-            Kind.FILE_CHUNK -> {
-                val chunk = FileChunk.parseFrom(envelope.payload)
-                val rx = incomingFile
-                if (rx == null) {
-                    Log.w(TAG, "file chunk ${chunk.index} with no offer, dropped")
-                    return
+            Kind.FILE_CANCEL -> {
+                if (!owner.transferProtocol) return
+                val cancel = FileCancel.parseFrom(envelope.payload)
+                val id = transferIdString(cancel.transferId.toByteArray())
+                control(owner, priority = true) {
+                    uploads[id]?.takeIf { it.owner === owner }?.let {
+                        if (it.offered) {
+                            it.receipt.requestCancel(cancel.reason)
+                            report(it)
+                            awaitReceipt(it)
+                        } else finish(it, TransferPhase.Cancelled, cancel.reason)
+                    }
                 }
-                runCatching { rx.push(chunk) }
-                    .onFailure {
-                        Log.w(TAG, "file transfer dropped", it)
-                        queueFileResult(
-                            chunk.transferId.toByteArray(),
-                            rx.name,
-                            success = false,
-                            error = it.message ?: it.javaClass.simpleName,
-                        )
-                        events.onFileFailed(rx.name, FileTransferDirection.ToPhone)
-                        rx.close()
-                        incomingFile = null
-                        incomingFileStartedMs = 0L
+                synchronized(owner.receiveLock) {
+                    if (owner.incoming?.id?.contentEquals(cancel.transferId.toByteArray()) == true) {
+                        endIncoming(owner, TransferPhase.Cancelled, cancel.reason, result = true)
                     }
-                    .getOrNull()
-                    ?.let { progress ->
-                        events.onFileProgress(
-                            rx.name,
-                            FileTransferDirection.ToPhone,
-                            progress.transferred,
-                            progress.total,
-                        )
-                        if (progress.complete) {
-                            val name = rx.name
-                            val started = incomingFileStartedMs
-                            rx.close()
-                            incomingFile = null
-                            incomingFileStartedMs = 0L
-                            if (started > 0L) {
-                                events.onBulkTransfer(
-                                    progress.total,
-                                    (SystemClock.elapsedRealtime() - started).coerceAtLeast(1L),
-                                )
-                            }
-                            queueFileResult(
-                                chunk.transferId.toByteArray(),
-                                name,
-                                success = true,
-                                error = "",
-                            )
-                            events.onFileComplete(name, FileTransferDirection.ToPhone)
-                        }
-                    }
+                }
             }
-
             else -> Log.d(TAG, "unhandled kind ${envelope.kind}")
         }
     }
 
-    private fun queuePong() {
-        pongPending = true
-        sender.execute {
-            val live = session ?: return@execute
-            runCatching { sendPendingPong(live) }
-                .onFailure {
-                    Log.w(TAG, "PONG write failed", it)
-                    teardown()
-                }
+    private fun receiveOffer(owner: Connection, offer: FileOffer) = synchronized(owner.receiveLock) {
+        if (!usable(owner)) return@synchronized
+        val id = transferIdString(offer.transferId.toByteArray())
+        if (owner.incoming?.id?.contentEquals(offer.transferId.toByteArray()) == true) return@synchronized
+        if (owner.incoming != null || id in owner.receivedIds || uploads.containsKey(id)) {
+            queueFileResult(owner, offer.transferId.toByteArray(), offer.name, false, "Receiver busy or stale transfer id")
+            return@synchronized
+        }
+        try {
+            val rx = requireNotNull(openIncomingFile(offer)) { "Phone receiver is unavailable" }
+            owner.incoming = rx
+            owner.incomingStarted = SystemClock.elapsedRealtime()
+            owner.incomingUpdated = owner.incomingStarted
+            owner.receiveGate.reset()
+            reportIncoming(owner, rx, 0, TransferPhase.Receiving)
+            armReceiveTimeout(owner)
+        } catch (e: Exception) {
+            queueFileResult(owner, offer.transferId.toByteArray(), offer.name, false, e.message ?: "Could not receive")
         }
     }
 
-    /**
-     * Receiver-side publication result. Queued onto the one sender executor so the reader never
-     * touches the Noise write counter. It is intentionally one result per whole file, not a
-     * per-chunk ACK, so it adds no stop-and-wait behaviour to the data path.
-     */
-    private fun queueFileResult(
-        transferId: ByteArray,
-        name: String,
-        success: Boolean,
-        error: String,
-    ) {
-        if (transferId.isEmpty()) return
-        val result = FileResult.newBuilder()
-            .setTransferId(com.google.protobuf.ByteString.copyFrom(transferId))
-            .setSuccess(success)
-            .setName(name.take(200))
-            .setError(error.take(300))
-            .build()
-        send(Kind.FILE_RESULT, result.toByteArray(), "file result")
+    private fun receiveChunk(owner: Connection, chunk: FileChunk) = synchronized(owner.receiveLock) {
+        if (!usable(owner)) return@synchronized
+        val rx = owner.incoming ?: return@synchronized
+        if (!rx.id.contentEquals(chunk.transferId.toByteArray())) return@synchronized
+        try {
+            val progress = rx.push(chunk)
+            owner.incomingUpdated = SystemClock.elapsedRealtime()
+            reportIncoming(owner, rx, progress.transferred, TransferPhase.Receiving)
+            if (progress.complete) {
+                events.onBulkTransfer(progress.total, (SystemClock.elapsedRealtime() - owner.incomingStarted).coerceAtLeast(1L))
+                endIncoming(owner, TransferPhase.Completed, "", result = true)
+            }
+        } catch (e: Exception) {
+            endIncoming(owner, TransferPhase.Failed, e.message ?: "Could not publish file", result = true)
+        }
     }
 
-    /** Runs only on the sender executor, either as its own task or between transfer chunks. */
-    private fun sendPendingPong(live: WireSession) {
-        if (!pongPending) return
-        // Clear before writing: if another PING arrives during this send, the reader sets the
-        // flag again and the next chunk boundary answers that newer probe instead of losing it.
-        pongPending = false
-        live.send(Kind.PONG)
+    private fun reportIncoming(owner: Connection, rx: Files.Incoming, bytes: Long, phase: TransferPhase, error: String = "") {
+        if (phase == TransferPhase.Receiving && !owner.receiveGate.shouldPublish(bytes, rx.total)) return
+        events.onTransfer(FileTransfer(FileTransferDirection.ToPhone, rx.name, bytes, rx.total,
+            transferIdString(rx.id), phase, error.take(300), !phase.terminal && owner.transferProtocol))
     }
+
+    private fun endIncoming(owner: Connection, phase: TransferPhase, error: String, result: Boolean = false) {
+        val rx = owner.incoming ?: return
+        owner.receiveTimeout?.let(deadlines::removeCallbacks)
+        owner.receiveTimeout = null
+        owner.incoming = null
+        rx.close()
+        owner.receivedIds.addLast(transferIdString(rx.id))
+        while (owner.receivedIds.size > 32) owner.receivedIds.removeFirst()
+        reportIncoming(owner, rx, if (phase == TransferPhase.Completed) rx.total else rx.transferred, phase, error)
+        if (result) queueFileResult(owner, rx.id, rx.name, phase == TransferPhase.Completed, error, phase == TransferPhase.Cancelled)
+        if (current === owner && !hasActiveFileTransfers) events.onTransfersIdle()
+    }
+
+    private fun armReceiveTimeout(owner: Connection) {
+        val expected = owner.incoming ?: return
+        val timeout = object : Runnable {
+            override fun run() {
+                control(owner, priority = true) {
+                    synchronized(owner.receiveLock) {
+                        if (owner.incoming === expected) {
+                            val remaining = TRANSFER_TIMEOUT_MS - (SystemClock.elapsedRealtime() - owner.incomingUpdated)
+                            if (remaining > 0) deadlines.postDelayed(this, remaining)
+                            else endIncoming(owner, TransferPhase.Failed, "Receive timed out", result = true)
+                        }
+                    }
+                }
+            }
+        }
+        owner.receiveTimeout = timeout
+        deadlines.postDelayed(timeout, TRANSFER_TIMEOUT_MS)
+    }
+
+    private fun queueFileResult(owner: Connection, id: ByteArray, name: String, success: Boolean, error: String, cancelled: Boolean = false) {
+        if (id.size !in 1..64) return
+        val result = FileResult.newBuilder().setTransferId(ByteString.copyFrom(id))
+            .setSuccess(success).setName(name.take(200)).setError(error.take(300)).setCancelled(cancelled).build()
+        owner.pendingResults.incrementAndGet()
+        control(owner, priority = true, after = {
+            owner.pendingResults.decrementAndGet()
+            if (usable(owner) && !hasActiveFileTransfers) events.onTransfersIdle()
+        }) { it.send(Kind.FILE_RESULT, result.toByteArray()) }
+    }
+
+    companion object { private const val TRANSFER_TIMEOUT_MS = 120_000L }
 }

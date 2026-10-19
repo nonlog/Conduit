@@ -14,12 +14,12 @@ private const val TAG = "conduit.share"
 /**
  * How many files one share may carry.
  *
- * ponytail: a flat cap, and the reason it exists is [Link]'s bounded sender queue — a
- * hundred-file share would push clips and notifications out of a 64-slot discard-oldest
- * queue and lose them silently. The excess is named in the log and in the toast rather than
- * dropped quietly. Raise it by giving transfers a queue of their own.
+ * The bulk lane is bounded separately from controls. Excess files are named in the toast;
+ * Link also reports queue-admission failures by transfer ID.
  */
 internal const val MAX_SHARE_FILES = 16
+
+internal fun <T> boundedShare(items: List<T>): List<T> = items.distinct().take(MAX_SHARE_FILES)
 
 /** A deliberate web-page share, not arbitrary clipboard text. */
 internal fun sharedWebUrl(text: String): String? {
@@ -64,6 +64,16 @@ class ShareActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        dispatchShare(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        dispatchShare(intent)
+    }
+
+    private fun dispatchShare(intent: Intent) {
         val uris = uris(intent).distinct()
         val text = intent.getStringExtra(Intent.EXTRA_TEXT)
         val title = intent.getCharSequenceExtra(Intent.EXTRA_TITLE)?.toString()?.trim()?.takeIf(String::isNotEmpty)
@@ -96,10 +106,10 @@ class ShareActivity : Activity() {
                     TAG,
                     "sharing web page instead of ${uris.size} auxiliary URI(s); type=${intent.type}",
                 )
-                toast("Sent to $peer")
+                toast("Queued for $peer")
             }
             uris.isNotEmpty() -> {
-                val sending = uris.take(MAX_SHARE_FILES)
+                val sending = boundedShare(uris)
                 if (uris.size > sending.size) {
                     Log.w(TAG, "share had ${uris.size} files, sending the first $MAX_SHARE_FILES")
                 }
@@ -107,8 +117,8 @@ class ShareActivity : Activity() {
                     when {
                         !send(sending) -> "Can't read what was shared"
                         uris.size > sending.size ->
-                            "Sending ${sending.size} of ${uris.size} files to $peer"
-                        else -> "Sending ${sending.size} to $peer"
+                            "Queuing ${sending.size} of ${uris.size} files for $peer"
+                        else -> "Queuing ${sending.size} for $peer"
                     },
                 )
             }
@@ -122,7 +132,7 @@ class ShareActivity : Activity() {
                         .putExtra(Intent.EXTRA_TEXT, text)
                         .putExtra(Intent.EXTRA_TITLE, title),
                 )
-                toast("Sent to $peer")
+                toast("Queued for $peer")
             }
             else -> {
                 Log.w(TAG, "share intent ${intent.action} carried nothing we can send")

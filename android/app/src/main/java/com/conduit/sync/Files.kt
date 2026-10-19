@@ -11,11 +11,9 @@ import android.provider.OpenableColumns
 import android.util.Log
 import com.conduit.sync.proto.FileChunk
 import com.conduit.sync.proto.FileOffer
-import com.conduit.sync.proto.Kind
 import com.google.protobuf.ByteString
 import java.io.InputStream
 import java.io.OutputStream
-import java.security.MessageDigest
 
 private const val TAG = "conduit.file"
 
@@ -32,7 +30,7 @@ const val MAX_FILE = 512L * 1024 * 1024
 /**
  * Files going to the desktop.
  *
- * Nothing here holds a file. [send] reads one 32 KiB buffer at a time and writes each one
+ * [Outgoing] reads one 32 KiB buffer at a time and writes each one
  * out as a frame, so sharing a 400 MB video costs this process the buffer and not the
  * video — the same reason the desktop writes each chunk straight to disk.
  *
@@ -115,75 +113,51 @@ object Files {
         )
     }
 
-    /**
-     * Writes one offer followed by its chunks, on the caller's thread.
-     *
-     * Takes the session rather than the [Link] for the same reason [Images.send] does:
-     * routing thousands of frames through `Link.send` would queue them onto a bounded,
-     * discard-oldest queue and deliver a file with holes in it.
-     *
-     * Throws if the stream runs out early. That is a real failure — the provider declared a
-     * size it could not deliver — and the receiver is already committed to a total, so there
-     * is nothing to do but let [Link] tear the session down. The desktop's transfer dies
-     * with it and deletes its own partial file.
-     */
-    fun send(
-        session: WireSession,
-        input: InputStream,
-        meta: Meta,
-        onProgress: (transferred: Long, total: Long) -> Unit = { _, _ -> },
-    ) {
-        val id = ByteString.copyFrom(
-            MessageDigest.getInstance("SHA-256")
-                .digest("${meta.name}:${meta.size}:${System.currentTimeMillis()}".toByteArray()),
-            0,
-            16,
-        )
-        val count = chunkCount(meta.size)
-        val offer = FileOffer.newBuilder()
-            .setName(meta.name)
-            .setMime(meta.mime)
-            .setTotalBytes(meta.size)
-            .setChunkSize(CHUNK)
-            .setChunkCount(count)
-            .setTransferId(id)
-            .setTimestampMs(System.currentTimeMillis())
-            .build()
-        onProgress(0L, meta.size)
-        session.send(Kind.FILE_OFFER, offer.toByteArray())
-
-        val buffer = ByteArray(CHUNK)
+    /** Reads at most one wire chunk per scheduler turn, with a single fixed-size buffer. */
+    class Outgoing(val id: ByteString, private val input: InputStream, val meta: Meta) : AutoCloseable {
+        private val buffer = ByteArray(CHUNK)
         var sent = 0L
-        var index = 0L
-        while (sent < meta.size) {
+            private set
+        private var index = 0L
+        val offer: FileOffer
+
+        init {
+            require(id.size() == 16) { "invalid transfer id" }
+            require(meta.size in 1..MAX_FILE) { "file is empty, unknown-size or over 512 MB" }
+            offer = FileOffer.newBuilder()
+                .setName(meta.name.take(200)).setMime(meta.mime.take(200))
+                .setTotalBytes(meta.size).setChunkSize(CHUNK).setChunkCount(chunkCount(meta.size))
+                .setTransferId(id).setTimestampMs(System.currentTimeMillis()).build()
+        }
+
+        fun next(): FileChunk {
+            check(sent < meta.size) { "source already finished" }
             val want = minOf(CHUNK.toLong(), meta.size - sent).toInt()
-            // Filled completely, not just read once: a short read mid-file would make every
-            // later chunk index disagree with the count the offer declared, and the receiver
-            // would sit waiting for a chunk that never comes.
             val got = fill(input, buffer, want)
-            require(got == want) {
-                "$sent B in, ${meta.name} gave $got B where $want was declared"
-            }
-            val chunk = FileChunk.newBuilder()
-                .setIndex(index)
-                .setData(ByteString.copyFrom(buffer, 0, got))
-                .setTransferId(id)
-                .build()
-            session.send(Kind.FILE_CHUNK, chunk.toByteArray())
+            require(got == want) { "Source ended at ${sent + got} B; expected ${meta.size} B" }
+            val chunk = FileChunk.newBuilder().setIndex(index)
+                .setData(ByteString.copyFrom(buffer, 0, got)).setTransferId(id).build()
             sent += got
             index++
-            onProgress(sent, meta.size)
+            return chunk
         }
-        Log.i(TAG, "sent ${meta.name}, ${meta.size} B as $count chunks")
+
+        override fun close() = input.close()
     }
 
     /** [InputStream.read] may return short for any reason; this one only stops at EOF. */
-    private fun fill(input: InputStream, buffer: ByteArray, want: Int): Int {
+    internal fun fill(input: InputStream, buffer: ByteArray, want: Int): Int {
+        require(want in 0..buffer.size)
         var got = 0
         while (got < want) {
             val n = input.read(buffer, got, want - got)
             if (n < 0) break
-            got += n
+            if (n == 0) {
+                // Broken providers sometimes return zero; make progress without spinning.
+                val byte = input.read()
+                if (byte < 0) break
+                buffer[got++] = byte.toByte()
+            } else got += n
         }
         return got
     }
@@ -194,7 +168,10 @@ object Files {
      * Exists so the arithmetic can be tested without a session or a file: get it wrong and
      * every transfer is refused by the receiver with nothing on this side to show why.
      */
-    internal fun chunkCount(size: Long): Long = (size + CHUNK - 1) / CHUNK
+    internal fun chunkCount(size: Long, chunk: Int = CHUNK): Long {
+        require(size in 1..MAX_FILE && chunk in 1..CHUNK)
+        return (size - 1) / chunk + 1
+    }
 
     /**
      * One file arriving from the desktop.
@@ -209,13 +186,13 @@ object Files {
         private val uri: Uri,
         private var output: OutputStream?,
         val name: String,
-        private val id: ByteArray,
-        private val total: Long,
+        val id: ByteArray,
+        val total: Long,
         private val chunks: Long,
+        private val cursor: FileReceiveCursor,
     ) : AutoCloseable {
-        private var next = 0L
-        private var written = 0L
         private var published = false
+        val transferred: Long get() = cursor.written
 
         data class Progress(
             val transferred: Long,
@@ -225,21 +202,12 @@ object Files {
 
         /** Writes one in-order chunk and reports exact byte progress. */
         fun push(chunk: FileChunk): Progress {
-            require(chunk.transferId.toByteArray().contentEquals(id)) {
-                "chunk belongs to a different transfer"
-            }
-            require(chunk.index == next) { "chunk ${chunk.index} arrived, expected $next" }
+            if (!cursor.accept(chunk)) return Progress(transferred, total, complete = false)
             val bytes = chunk.data.toByteArray()
-            require(written + bytes.size <= total) {
-                "chunk ${chunk.index} would take the file past the $total B it declared"
-            }
             val sink = requireNotNull(output) { "transfer already finished" }
             sink.write(bytes)
-            next++
-            written += bytes.size
-            if (next < chunks) return Progress(written, total, complete = false)
+            if (!cursor.complete) return Progress(transferred, total, complete = false)
 
-            require(written == total) { "file ended at $written B, offer said $total" }
             sink.flush()
             sink.close()
             output = null
@@ -248,8 +216,8 @@ object Files {
                 "Downloads provider did not publish $name"
             }
             published = true
-            Log.i(TAG, "received $name, $written B as $chunks chunks")
-            return Progress(written, total, complete = true)
+            Log.i(TAG, "received $name, $transferred B as $chunks chunks")
+            return Progress(transferred, total, complete = true)
         }
 
         override fun close() {
@@ -257,24 +225,14 @@ object Files {
             output = null
             if (!published) {
                 runCatching { resolver.delete(uri, null, null) }
-                Log.w(TAG, "incoming $name abandoned at $written/$total B, deleted pending row")
+                Log.w(TAG, "incoming $name abandoned at $transferred/$total B, deleted pending row")
             }
         }
 
         companion object {
             /** Validates [offer] before creating a MediaStore row. */
             fun begin(resolver: ContentResolver, offer: FileOffer): Incoming {
-                require(offer.totalBytes in 1..MAX_FILE) {
-                    "file of ${offer.totalBytes} B is outside 1..$MAX_FILE"
-                }
-                require(offer.chunkSize in 1..CHUNK) {
-                    "implausible chunk size ${offer.chunkSize}"
-                }
-                val expect = chunkCount(offer.totalBytes)
-                require(offer.chunkCount == expect) {
-                    "offer claims ${offer.chunkCount} chunks, ${offer.totalBytes} B needs $expect"
-                }
-                require(!offer.transferId.isEmpty) { "offer has no transfer id" }
+                val cursor = FileReceiveCursor(offer)
 
                 val name = safeName(offer.name)
                 val values = ContentValues().apply {
@@ -308,6 +266,7 @@ object Files {
                     id = offer.transferId.toByteArray(),
                     total = offer.totalBytes,
                     chunks = offer.chunkCount,
+                    cursor = cursor,
                 )
             }
         }

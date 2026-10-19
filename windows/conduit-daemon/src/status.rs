@@ -20,6 +20,7 @@ struct Snapshot {
 }
 
 pub struct StatusFile {
+    pub transfers: std::sync::Arc<crate::transfer::Transfers>,
     path: PathBuf,
     current: Mutex<Snapshot>,
 }
@@ -27,6 +28,7 @@ pub struct StatusFile {
 impl StatusFile {
     pub fn new(dir: &Path) -> Result<Self> {
         let status = Self {
+            transfers: crate::transfer::Transfers::start(dir),
             path: dir.join(FILE),
             current: Mutex::new(Snapshot {
                 state: "disconnected".into(),
@@ -105,8 +107,8 @@ pub fn read(dir: &Path) -> Option<String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn status_is_one_small_event_written_snapshot() {
+    #[tokio::test]
+    async fn status_is_one_small_event_written_snapshot() {
         let dir = std::env::temp_dir().join(format!("conduit-status-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();

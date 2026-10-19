@@ -17,6 +17,10 @@ data class FileTransfer(
     val name: String,
     val transferred: Long,
     val total: Long,
+    val id: String = "",
+    val phase: TransferPhase = if (direction == FileTransferDirection.ToPhone) TransferPhase.Receiving else TransferPhase.Sending,
+    val error: String = "",
+    val canCancel: Boolean = false,
 ) {
     val fraction: Float
         get() = if (total <= 0L) 0f else (transferred.toDouble() / total.toDouble())
@@ -27,45 +31,31 @@ data class FileTransfer(
         get() = (fraction * 100f).toInt().coerceIn(0, 100)
 }
 
-/**
- * Two independent slots because TCP/Noise can carry one file in each direction at once.
- * Compose observes these fields directly; updates are synchronized because one direction is
- * driven by the sender executor and the other by the reader thread.
- */
+/** Keeps active jobs and at most 32 terminal rows. Terminal IDs cannot be revived by late work. */
+internal fun updateTransferHistory(entries: List<FileTransfer>, value: FileTransfer): List<FileTransfer> {
+    val old = entries.firstOrNull { it.id == value.id && it.direction == value.direction }
+    if (old?.phase?.terminal == true) return entries
+    val updated = if (old == null) entries + value else entries.map { if (it === old) value else it }
+    val history = updated.filter { it.phase.terminal }.takeLast(32).toSet()
+    return updated.filter { !it.phase.terminal || it in history }
+}
+
 object FileTransfers {
-    var toDesktop by mutableStateOf<FileTransfer?>(null)
+    var entries by mutableStateOf<List<FileTransfer>>(emptyList())
         private set
 
-    var toPhone by mutableStateOf<FileTransfer?>(null)
-        private set
+    val toDesktop get() = entries.firstOrNull { it.direction == FileTransferDirection.ToDesktop && !it.phase.terminal }
+    val toPhone get() = entries.firstOrNull { it.direction == FileTransferDirection.ToPhone && !it.phase.terminal }
 
-    @Synchronized
-    fun update(direction: FileTransferDirection, name: String, transferred: Long, total: Long) {
-        val value = FileTransfer(
-            direction = direction,
-            name = name,
-            transferred = transferred.coerceIn(0L, total.coerceAtLeast(0L)),
-            total = total.coerceAtLeast(0L),
-        )
-        when (direction) {
-            FileTransferDirection.ToDesktop -> toDesktop = value
-            FileTransferDirection.ToPhone -> toPhone = value
-        }
+    @Synchronized fun update(value: FileTransfer) { entries = updateTransferHistory(entries, value) }
+
+    @Synchronized fun failActive(reason: String) {
+        entries = entries.map {
+            if (it.phase.terminal) it else it.copy(phase = TransferPhase.Failed, error = reason, canCancel = false)
+        }.takeLast(32)
     }
 
-    @Synchronized
-    fun clear(direction: FileTransferDirection) {
-        when (direction) {
-            FileTransferDirection.ToDesktop -> toDesktop = null
-            FileTransferDirection.ToPhone -> toPhone = null
-        }
-    }
-
-    @Synchronized
-    fun clearAll() {
-        toDesktop = null
-        toPhone = null
-    }
+    @Synchronized fun clearAll() { entries = emptyList() }
 }
 
 /**

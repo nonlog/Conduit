@@ -103,6 +103,15 @@ public sealed partial class MainPage : Page
         }
     }
 
+    private async void CancelTransfer_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string id }) return;
+        var entry = ViewModel.Transfers.FirstOrDefault(row => row.Id == id);
+        if (entry is null || !entry.CanCancel) return;
+        var result = await ViewModel.CancelTransferAsync(entry);
+        if (!result.Success) ShowInfo("Could not cancel transfer", result.Detail, InfoBarSeverity.Error);
+    }
+
     private void DropZone_DragOver(object sender, DragEventArgs e)
     {
         if (e.DataView.Contains(StandardDataFormats.StorageItems))

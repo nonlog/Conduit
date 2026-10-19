@@ -14,6 +14,10 @@ const val MAX_FRAME = 65535
 /** ChaChaPoly's 16-byte tag comes out of the same budget. */
 const val MAX_PLAINTEXT = MAX_FRAME - 16
 
+/** Local preparation failure, before any Noise nonce or socket byte is consumed. */
+class OversizedMessageException(kind: Kind, size: Int) :
+    IllegalArgumentException("$kind message is $size B; maximum framed plaintext is $MAX_PLAINTEXT B")
+
 /**
  * One frame carries one Envelope: 4-byte big-endian length, then Noise ciphertext.
  * Mirrors `wire.rs` on the desktop.
@@ -35,16 +39,16 @@ class WireSession private constructor(
     private val frame = ByteArray(MAX_FRAME)
 
     fun send(kind: Kind, payload: ByteArray = EMPTY): Long {
-        val id = nextId++
+        if (payload.size > MAX_PLAINTEXT) throw OversizedMessageException(kind, payload.size)
+        val id = nextId
         val envelope = Envelope.newBuilder()
             .setMessageId(id)
             .setKind(kind)
             .setPayload(com.google.protobuf.ByteString.copyFrom(payload))
             .build()
         val plain = envelope.toByteArray()
-        require(plain.size <= MAX_PLAINTEXT) {
-            "$kind envelope is ${plain.size} B, ceiling is $MAX_PLAINTEXT B"
-        }
+        if (plain.size > MAX_PLAINTEXT) throw OversizedMessageException(kind, plain.size)
+        nextId++
         writeFrame(output, noise.writeMessage(plain))
         return id
     }

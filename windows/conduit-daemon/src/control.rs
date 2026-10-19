@@ -29,6 +29,7 @@ const RELOAD_COMMAND: &str = "\0reload\0";
 const PAIR_START_COMMAND: &str = "\0pair-start\0";
 const PAIR_CANCEL_COMMAND: &str = "\0pair-cancel\0";
 const PAIR_FORGET_COMMAND: &str = "\0pair-forget\0";
+const TRANSFER_CANCEL_COMMAND: &str = "\0transfer-cancel\0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TransferProgress {
@@ -37,9 +38,19 @@ pub struct TransferProgress {
 }
 
 pub struct SendRequest {
+    pub id: Vec<u8>,
+    pub owner: String,
     pub path: PathBuf,
-    pub completion: oneshot::Sender<std::result::Result<(), String>>,
-    pub progress: mpsc::UnboundedSender<TransferProgress>,
+    pub completion: Option<oneshot::Sender<std::result::Result<(), String>>>,
+    pub progress: tokio::sync::watch::Sender<TransferProgress>,
+}
+
+impl SendRequest {
+    pub fn finish(&mut self, result: std::result::Result<(), String>) {
+        if let Some(completion) = self.completion.take() {
+            let _ = completion.send(result);
+        }
+    }
 }
 
 pub struct ReloadRequest {
@@ -64,9 +75,17 @@ pub async fn serve(
     send_tx: mpsc::Sender<SendRequest>,
     reload_tx: mpsc::Sender<ReloadRequest>,
     pair_tx: mpsc::Sender<PairRequest>,
+    transfers: std::sync::Arc<crate::transfer::Transfers>,
 ) -> Result<()> {
+    let clients = std::sync::Arc::new(tokio::sync::Semaphore::new(64));
     loop {
+        let permit = clients
+            .clone()
+            .acquire_owned()
+            .await
+            .context("local client gate stopped")?;
         let pipe = ServerOptions::new()
+            .reject_remote_clients(true)
             .create(PIPE)
             .context("creating the Conduit local control pipe")?;
         pipe.connect()
@@ -75,8 +94,10 @@ pub async fn serve(
         let send_tx = send_tx.clone();
         let reload_tx = reload_tx.clone();
         let pair_tx = pair_tx.clone();
+        let transfers = transfers.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle(pipe, send_tx, reload_tx, pair_tx).await {
+            let _permit = permit;
+            if let Err(e) = handle(pipe, send_tx, reload_tx, pair_tx, transfers).await {
                 warn!(error = %e, "local control request failed");
             }
         });
@@ -88,8 +109,21 @@ async fn handle(
     send_tx: mpsc::Sender<SendRequest>,
     reload_tx: mpsc::Sender<ReloadRequest>,
     pair_tx: mpsc::Sender<PairRequest>,
+    transfers: std::sync::Arc<crate::transfer::Transfers>,
 ) -> Result<()> {
-    let request = read_request(&mut pipe).await?;
+    let request = tokio::time::timeout(LOCAL_RESULT_TIMEOUT, read_request(&mut pipe))
+        .await
+        .context("local client did not complete its bounded request")??;
+    if let Some(id) = request.strip_prefix(TRANSFER_CANCEL_COMMAND) {
+        let result = crate::transfer::parse_id(id).and_then(|id| transfers.cancel(&id));
+        let reply = match result {
+            Ok(()) => "OK\n".into(),
+            Err(e) => format!("ERR {e:#}\n"),
+        };
+        pipe.write_all(reply.as_bytes()).await?;
+        let _ = pipe.shutdown().await;
+        return Ok(());
+    }
     if request == RELOAD_COMMAND {
         let outcome: Result<()> = async {
             let (completion, done) = oneshot::channel();
@@ -147,37 +181,45 @@ async fn handle(
     }
 
     let outcome: Result<PathBuf> = async {
-        let path = file::validate_outbound(Path::new(&request))?;
+        let mut sessions = transfers.session_changes();
+        let expected_owner = transfers.owner()?;
+        let path = tokio::task::spawn_blocking(move || file::validate_outbound(Path::new(&request))).await??;
+        let total = tokio::fs::metadata(&path).await?.len();
+        let (id, owner) = transfers.enqueue(&expected_owner, &path, total)?;
         let (completion, mut done) = oneshot::channel();
-        let (progress, mut progress_rx) = mpsc::unbounded_channel();
-        send_tx
-            .try_send(SendRequest {
+        let (progress, mut progress_rx) = tokio::sync::watch::channel(TransferProgress { transferred: 0, total });
+        if let Err(e) = send_tx.try_send(SendRequest {
+                id: id.clone(), owner: owner.clone(),
                 path: path.clone(),
-                completion,
+                completion: Some(completion),
                 progress,
-            })
-            .map_err(|e| anyhow::anyhow!("outbound file queue is unavailable: {e}"))?;
+            }) {
+            transfers.update(&owner, &id, 0, "failed", "Outbound queue is full");
+            bail!("outbound file queue is unavailable: {e}");
+        }
 
         let deadline = tokio::time::Instant::now() + REMOTE_RESULT_TIMEOUT;
         let mut progress_open = true;
         let mut client_open = true;
         loop {
             tokio::select! {
-                update = progress_rx.recv(), if progress_open => {
+                update = progress_rx.changed(), if progress_open => {
                     match update {
-                        Some(update) if client_open => {
+                        Ok(()) if client_open => {
+                            let update = *progress_rx.borrow_and_update();
                             let line = format!(
                                 "PROGRESS {} {}\n",
                                 update.transferred, update.total
                             );
-                            if pipe.write_all(line.as_bytes()).await.is_err() {
+                            if !matches!(tokio::time::timeout(Duration::from_secs(2),
+                                pipe.write_all(line.as_bytes())).await, Ok(Ok(()))) {
                                 // Explorer can disappear without cancelling a transfer already accepted by
                                 // the daemon. Keep the oneshot alive so the transfer remains transactional.
                                 client_open = false;
                             }
                         }
-                        Some(_) => {}
-                        None => progress_open = false,
+                        Ok(()) => { progress_rx.borrow_and_update(); }
+                        Err(_) => progress_open = false,
                     }
                 }
                 result = &mut done => {
@@ -186,6 +228,16 @@ async fn handle(
                         Ok(Err(message)) => bail!("phone did not publish the file: {message}"),
                         Err(_) => bail!("the Conduit session ended before the phone confirmed the file"),
                     };
+                }
+                change = sessions.changed() => {
+                    if change.is_err() || sessions.borrow_and_update().as_deref() != Some(owner.as_str()) {
+                        // A queued request may still be in the global bounded channel when its
+                        // session ends. Its Explorer/CLI client must not wait for a reconnect.
+                        if let Ok(result) = done.try_recv() {
+                            break result.map(|()| path).map_err(anyhow::Error::msg);
+                        }
+                        bail!("the authenticated phone session ended before confirming this file");
+                    }
                 }
                 _ = tokio::time::sleep_until(deadline) => {
                     bail!("timed out waiting for the phone to publish the file");
@@ -197,12 +249,13 @@ async fn handle(
 
     match outcome {
         Ok(path) => {
-            pipe.write_all(b"OK\n").await?;
+            let _ = tokio::time::timeout(Duration::from_secs(2), pipe.write_all(b"OK\n")).await;
             info!(path = %path.display(), "phone confirmed file publication");
         }
         Err(e) => {
             let reply = format!("ERR {e:#}\n");
-            let _ = pipe.write_all(reply.as_bytes()).await;
+            let _ = tokio::time::timeout(Duration::from_secs(2), pipe.write_all(reply.as_bytes()))
+                .await;
         }
     }
     let _ = pipe.shutdown().await;
@@ -274,6 +327,15 @@ where
 /// Asks the already-running daemon to re-read config and apply it in place.
 pub async fn reload() -> Result<()> {
     simple_command(RELOAD_COMMAND, "Conduit settings to apply").await
+}
+
+pub async fn cancel(id: &str) -> Result<()> {
+    crate::transfer::parse_id(id)?;
+    simple_command(
+        &format!("{TRANSFER_CANCEL_COMMAND}{id}"),
+        "transfer cancellation",
+    )
+    .await
 }
 
 pub async fn pair(action: PairAction) -> Result<()> {

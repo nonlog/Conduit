@@ -1,5 +1,20 @@
 # Conduit handoff
 
+## Transfer/LAN reliability repair in progress
+
+Continue `codex/transfer-lan-reliability` in the Conduit-reliability worktree,
+based on released master f2528aa (v0.1.6). Preserve the latest WinUI/Mica layout
+and arrow icon. The original local Conduit checkout is older; do not deploy it.
+The current draft adds queued/acknowledged/cancellable transfers, desktop
+progress, equal-height Android send buttons, physical-network LAN discovery and
+authentication-before-session-replacement. See `transfer-reliability.md` for
+the contract and acceptance matrix.
+
+This is source work only: GitHub Actions and real-device acceptance are still
+required before declaring completion or releasing. No project builds locally.
+
+## Previous handoff (historical; current checkpoint above takes priority)
+
 **Prepared:** 2026-10-06
 **Repository:** `D:\Workspace\Conduit`  
 **Branch:** `codex/non-lan-relay-m3-20261002`  
