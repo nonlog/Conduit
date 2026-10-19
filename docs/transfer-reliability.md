@@ -34,7 +34,10 @@ checkout or reintroduce the rejected sensitive-notification setting.
 - LAN NSD uses a bounded event-triggered burst on physical Wi-Fi or Ethernet,
   including a hotspot without validated Internet. Stored peer IDs are filtered
   before address selection and authenticated again by Noise. Direct sockets bind
-  the same Network as discovery.
+  the same Network as discovery. When a VPN DNS proxy injects 198.18/15 fake
+  `.local` addresses into NSD's resolution, a single bounded mDNS A/QU query
+  over the physical discovery Network recovers the advertised on-link IPv4;
+  there is no continuous scanner, hard-coded desktop address or bypass of Noise.
 - Stale callbacks and default-VPN changes must not relabel a live route or tear
   down a valid physical socket. Optional Relay-to-LAN promotion waits for active
   file transfers and pending publication results.

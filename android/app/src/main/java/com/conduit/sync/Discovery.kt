@@ -114,19 +114,53 @@ class Discovery(
             .map { LanDiscoveryPolicy.Subnet(it.address, it.prefixLength) }
         val address = LanDiscoveryPolicy.selectAddress(addresses, subnets)
         if (address == null) {
-            Log.d(TAG, "service has no usable address on the discovery network")
-            resolveNext(current)
+            // Some VPN clients replace .local A records with 198.18/15 fake IPs even when NSD
+            // discovered the TXT record over the physical Wi-Fi. Windows advertised its real
+            // 192.168.x.x mDNS address, but Android's resolver never returned that candidate.
+            // Query the already-verified SRV hostname once through the same physical Network.
+            val hostname = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+                LanMdnsResolver.hostname(service.hostname)
+            } else null
+            val fallback = hostname ?: LanMdnsResolver.hostname("${service.serviceName}.local")
+            if (serviceNetwork != null && fallback != null) {
+                current.resolving = true
+                Log.d(TAG, "NSD has no on-link IPv4 (${addresses.size} candidates); querying physical mDNS A")
+                Thread({
+                    val candidates = runCatching { LanMdnsResolver.query(serviceNetwork, fallback) }
+                        .onFailure { Log.d(TAG, "physical mDNS query failed", it) }
+                        .getOrDefault(emptyList())
+                    onMain {
+                        if (!isCurrent(current)) return@onMain
+                        current.resolving = false
+                        val selected = LanDiscoveryPolicy.selectAddress(candidates, subnets)
+                        if (selected == null) {
+                            Log.d(TAG, "physical mDNS yielded no usable paired IPv4")
+                            resolveNext(current)
+                        } else {
+                            acceptAddress(current, selected, serviceNetwork, service.port)
+                        }
+                    }
+                }, "conduit-lan-mdns").apply { isDaemon = true }.start()
+            } else {
+                Log.d(TAG, "service has no usable address or resolvable hostname on LAN")
+                resolveNext(current)
+            }
             return
         }
+        acceptAddress(current, address, serviceNetwork, service.port)
+    }
+
+    private fun acceptAddress(current: Listener, address: java.net.InetAddress, network: Network?, port: Int) {
+        if (!isCurrent(current)) return
         if (!epochs.finish(current.epoch)) return
         listener = null
         handler.removeCallbacks(current.deadline)
         current.pending.clear()
         runCatching { nsd.stopServiceDiscovery(current) }
-        resolvedNetwork = serviceNetwork
-        Log.i(TAG, "resolved paired LAN service on $serviceNetwork at $address:${service.port}")
+        resolvedNetwork = network
+        Log.i(TAG, "resolved paired LAN service on $network at $address:$port")
         // TXT is only a prefilter. Link still authenticates the stored Noise identity.
-        onFound(InetSocketAddress(address, service.port))
+        onFound(InetSocketAddress(address, port))
     }
 
     private fun resolveNext(current: Listener) {
