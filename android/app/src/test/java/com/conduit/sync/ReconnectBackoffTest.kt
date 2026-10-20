@@ -75,6 +75,38 @@ class ReconnectBackoffTest {
     }
 
     @Test
+    fun failedDirectCandidateMustTryRelayInsteadOfRediscoveringSameUnreachablePeer() {
+        assertEquals(true, shouldFallbackToRelayAfterLanFailure(
+            wasLinked = false, route = "LAN", relayAttemptActive = false,
+            networkUp = true, linkWanted = true, hasPairedPeer = true,
+        ))
+        assertEquals(false, shouldFallbackToRelayAfterLanFailure(
+            wasLinked = true, route = "LAN", relayAttemptActive = false,
+            networkUp = true, linkWanted = true, hasPairedPeer = true,
+        ))
+        assertEquals(false, shouldFallbackToRelayAfterLanFailure(
+            wasLinked = false, route = "Relay", relayAttemptActive = false,
+            networkUp = true, linkWanted = true, hasPairedPeer = true,
+        ))
+        assertEquals(false, shouldFallbackToRelayAfterLanFailure(
+            wasLinked = false, route = "LAN", relayAttemptActive = true,
+            networkUp = true, linkWanted = true, hasPairedPeer = true,
+        ))
+        assertEquals(false, shouldFallbackToRelayAfterLanFailure(
+            wasLinked = false, route = "LAN", relayAttemptActive = false,
+            networkUp = false, linkWanted = true, hasPairedPeer = true,
+        ))
+        assertEquals(false, shouldFallbackToRelayAfterLanFailure(
+            wasLinked = false, route = "LAN", relayAttemptActive = false,
+            networkUp = true, linkWanted = false, hasPairedPeer = true,
+        ))
+        assertEquals(false, shouldFallbackToRelayAfterLanFailure(
+            wasLinked = false, route = "LAN", relayAttemptActive = false,
+            networkUp = true, linkWanted = true, hasPairedPeer = false,
+        ))
+    }
+
+    @Test
     fun provenGoodSessionRecoveryUsesShortCeilingOnlyInsideItsWindow() {
         val now = 1_000_000L
         val recoveryUntil = now + 10 * 60 * 1000L

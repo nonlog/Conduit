@@ -6,6 +6,7 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.util.Locale
 
@@ -33,13 +34,28 @@ internal object LanMdnsResolver {
         return host
     }
 
+    /** NsdServiceInfo.getHostname() omits the trailing `.local` domain (API 36+). */
+    fun nsdHostname(value: String?): String? {
+        val label = value?.trim()?.trimEnd('.')?.takeIf { it.isNotEmpty() } ?: return null
+        if ('.' in label && !label.endsWith(".local", ignoreCase = true)) return null
+        return hostname(if (label.endsWith(".local", ignoreCase = true)) label else "$label.local")
+    }
+
     /** Called only by Discovery's bounded miss handler, never on Android's main thread. */
     fun query(network: Network, rawHostname: String): List<InetAddress> {
         val host = hostname(rawHostname) ?: return emptyList()
         val question = question(host)
         return DatagramSocket(null).use { socket ->
             socket.bind(InetSocketAddress(0))
-            network.bindSocket(socket)
+            try {
+                network.bindSocket(socket)
+            } catch (denied: SocketException) {
+                if (!isNetworkBindingDenied(denied)) throw denied
+                // Some VPNs reject explicit physical-network socket binds. A regular socket
+                // uses Android/VPN routing instead; if multicast is blocked there, this one
+                // bounded probe simply fails and the existing Relay path stays available.
+                // Never forge a VPN exemption or change the device's network policy.
+            }
             socket.send(DatagramPacket(question, question.size, multicast, 5353))
             val result = linkedSetOf<InetAddress>()
             val deadline = SystemClock.elapsedRealtime() + TIMEOUT_MS

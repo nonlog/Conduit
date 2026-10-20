@@ -17,6 +17,9 @@ class LanMdnsResolverTest {
 
     @Test fun onlyLocalHostnamesCanBeProbed() {
         assertEquals("log.local", LanMdnsResolver.hostname("Log.local."))
+        assertEquals("log.local", LanMdnsResolver.nsdHostname("Log"))
+        assertEquals("log.local", LanMdnsResolver.nsdHostname("Log.local."))
+        assertEquals(null, LanMdnsResolver.nsdHostname("Log.example.com"))
         for (invalid in listOf("example.org", "http://log.local", "bad..local", "-bad.local", "a_b.local", "log.local/escape")) {
             assertEquals(null, LanMdnsResolver.hostname(invalid))
         }

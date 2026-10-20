@@ -26,35 +26,20 @@ function Get-CertificateThumbprint([string]$Path) {
     try { return $certificate.Thumbprint } finally { $certificate.Dispose() }
 }
 
-function Add-MachineTrustedPeopleCertificate([string]$Path) {
-    $thumbprint = Get-CertificateThumbprint $Path
-    if ([string]::IsNullOrWhiteSpace($thumbprint)) { throw "Could not read certificate: $Path" }
-    & certutil.exe -f -addstore TrustedPeople $Path | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw "Could not temporarily trust the Conduit share-target certificate (certutil exit $LASTEXITCODE). Run the first Share Target registration elevated."
-    }
-    return $thumbprint
-}
-
-function Remove-MachineTrustedPeopleCertificate([string]$Thumbprint) {
-    if ([string]::IsNullOrWhiteSpace($Thumbprint)) { return }
-    & certutil.exe -delstore TrustedPeople $Thumbprint | Out-Null
-    # Not-found is harmless: the point of this call is that no build certificate remains trusted.
-}
-
-function Remove-CurrentUserCertificate([Security.Cryptography.X509Certificates.StoreName]$StoreName, [string]$Thumbprint) {
-    if ([string]::IsNullOrWhiteSpace($Thumbprint)) { return }
-    $store = [Security.Cryptography.X509Certificates.X509Store]::new(
-        $StoreName,
-        [Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser)
+function Get-ShareTargetMsixVersion([string]$Path) {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [IO.Compression.ZipFile]::OpenRead($Path)
     try {
-        $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-        @($store.Certificates.Find(
-            [Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,
-            $Thumbprint,
-            $false)) | ForEach-Object { $store.Remove($_) }
+        $entry = $archive.GetEntry('AppxManifest.xml')
+        if (-not $entry) { throw "Share Target package is missing AppxManifest.xml: $Path" }
+        $reader = [IO.StreamReader]::new($entry.Open())
+        try { [xml]$manifest = $reader.ReadToEnd() } finally { $reader.Dispose() }
+        if ($manifest.Package.Identity.Name -ne 'Conduit.Desktop.ShareTarget') {
+            throw "Unexpected Share Target package identity: $($manifest.Package.Identity.Name)"
+        }
+        return [version]$manifest.Package.Identity.Version
     }
-    finally { $store.Dispose() }
+    finally { $archive.Dispose() }
 }
 
 $source = (Resolve-Path $SourceDir).Path
@@ -70,7 +55,6 @@ $installDir = if ([string]::IsNullOrWhiteSpace($InstallDir)) {
 }
 $programs = Join-Path $appData 'Microsoft\Windows\Start Menu\Programs'
 $shortcut = Join-Path $programs 'Conduit.lnk'
-$previousShareCertificateThumbprint = Get-CertificateThumbprint (Join-Path $installDir 'Conduit.ShareTarget.cer')
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $aumidKey = 'HKCU:\Software\Classes\AppUserModelId\Conduit.Desktop'
 $explorerVerbKey = 'Registry::HKEY_CURRENT_USER\Software\Classes\*\shell\Conduit.SendToPhone'
@@ -175,48 +159,88 @@ foreach ($name in @($requiredIconAssets + $optionalIconAssets)) {
 # so first registration temporarily adds that public leaf to TrustedPeople, registers the package,
 # then removes it immediately. No signing certificate remains trusted after installation.
 #
-# The registered sparse identity keeps pointing at this stable `current` external location, so normal
-# Conduit updates do not need certificate-store access again. Re-register only when the identity is
-# actually absent (for example, first install or after manual package removal).
+# The sparse identity must track the new XAML PRI/MSIX version as well as the executable.
+# Previously any registered version caused registration to be skipped; that lets an old sparse
+# package load outdated XAML resources into a new WinUI binary and can crash the control UI.
+# Update in place only when the registered identity is older. Keep the stable `current` path.
 $sharePackageName = 'Conduit.Desktop.ShareTarget'
 $sharePackage = Join-Path $installDir 'Conduit.ShareTarget.msix'
 $shareCertificate = Join-Path $installDir 'Conduit.ShareTarget.cer'
 $shareTargetRegistered = $false
+$shareExpectedVersion = if (Test-Path -LiteralPath $sharePackage -PathType Leaf) {
+    Get-ShareTargetMsixVersion $sharePackage
+} else { $null }
 $shareRegistrationProbe = @"
 `$ErrorActionPreference = 'Stop'
 Import-Module (Join-Path `$env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules\Appx\Appx.psd1') -ErrorAction Stop
-if (Get-AppxPackage -Name '$sharePackageName' -ErrorAction SilentlyContinue) { 'CONDUIT_SHARE_TARGET_REGISTERED' }
+`$installed = Get-AppxPackage -Name '$sharePackageName' -ErrorAction SilentlyContinue
+if (`$installed) { 'CONDUIT_SHARE_TARGET_VERSION=' + `$installed.Version.ToString() }
 "@
 $shareProbeOutput = @(Invoke-WindowsPowerShell $shareRegistrationProbe)
-$shareTargetRegistered = ($shareProbeOutput -join "`n") -match 'CONDUIT_SHARE_TARGET_REGISTERED'
+$shareVersionMatch = [regex]::Match(($shareProbeOutput -join "`n"), 'CONDUIT_SHARE_TARGET_VERSION=(\d+\.\d+\.\d+\.\d+)')
+$shareRegisteredVersion = if ($shareVersionMatch.Success) { [version]$shareVersionMatch.Groups[1].Value } else { $null }
+$shareTargetRegistered = $null -ne $shareRegisteredVersion
+$shareTargetNeedsUpdate = $shareExpectedVersion -and
+    (-not $shareTargetRegistered -or $shareRegisteredVersion -lt $shareExpectedVersion)
 
-if (-not $shareTargetRegistered -and
+if ($shareTargetNeedsUpdate -and -not (Test-Path -LiteralPath $shareCertificate -PathType Leaf)) {
+    throw "Cannot update Conduit Share Target ${shareExpectedVersion}: signing certificate missing from $installDir"
+}
+if ($shareTargetNeedsUpdate -and [Environment]::OSVersion.Version.Build -lt 19041) {
+    throw "Conduit Share Target $shareExpectedVersion requires Windows build 19041 or newer."
+}
+
+if ($shareTargetNeedsUpdate -and
     (Test-Path -LiteralPath $sharePackage -PathType Leaf) -and
-    (Test-Path -LiteralPath $shareCertificate -PathType Leaf) -and
-    [Environment]::OSVersion.Version.Build -ge 19041) {
-    # Clean certificate-store residue from earlier development builds before trying the real gate.
-    Remove-MachineTrustedPeopleCertificate $previousShareCertificateThumbprint
-    Remove-CurrentUserCertificate ([Security.Cryptography.X509Certificates.StoreName]::TrustedPeople) $previousShareCertificateThumbprint
-    Remove-CurrentUserCertificate ([Security.Cryptography.X509Certificates.StoreName]::Root) $previousShareCertificateThumbprint
-
-    $temporaryThumbprint = Add-MachineTrustedPeopleCertificate $shareCertificate
-    try {
-        $packageLiteral = "'" + $sharePackage.Replace("'", "''") + "'"
-        $locationLiteral = "'" + $installDir.Replace("'", "''") + "'"
-        $registerScript = @"
+    (Test-Path -LiteralPath $shareCertificate -PathType Leaf)) {
+    $packageLiteral = "'" + $sharePackage.Replace("'", "''") + "'"
+    $locationLiteral = "'" + $installDir.Replace("'", "''") + "'"
+    $certificateLiteral = "'" + $shareCertificate.Replace("'", "''") + "'"
+    $temporaryThumbprint = Get-CertificateThumbprint $shareCertificate
+    if ([string]::IsNullOrWhiteSpace($temporaryThumbprint)) {
+        throw "Could not inspect Share Target signing certificate: $shareCertificate"
+    }
+    $registerScript = @"
 `$ErrorActionPreference = 'Stop'
 Import-Module (Join-Path `$env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules\Appx\Appx.psd1') -ErrorAction Stop
-Add-AppxPackage -Path $packageLiteral -ExternalLocation $locationLiteral -ForceApplicationShutdown -ErrorAction Stop
-if (-not (Get-AppxPackage -Name '$sharePackageName' -ErrorAction SilentlyContinue)) {
-    throw 'Conduit share-target identity did not register'
+`$wasTrusted = Test-Path -LiteralPath 'Cert:\LocalMachine\TrustedPeople\$temporaryThumbprint'
+`$addedTrust = `$false
+try {
+    if (-not `$wasTrusted) {
+        & certutil.exe -f -addstore TrustedPeople $certificateLiteral | Out-Null
+        if (`$LASTEXITCODE -ne 0) { throw 'Could not temporarily trust Conduit Share Target signer' }
+        `$addedTrust = `$true
+    }
+    Add-AppxPackage -Path $packageLiteral -ExternalLocation $locationLiteral -ForceApplicationShutdown -ErrorAction Stop
+    `$registered = Get-AppxPackage -Name '$sharePackageName' -ErrorAction Stop
+    if (-not `$registered -or `$registered.Version -ne [version]'$shareExpectedVersion') {
+        throw 'Conduit Share Target did not register the matching XAML version'
+    }
+}
+finally {
+    if (`$addedTrust) {
+        & certutil.exe -delstore TrustedPeople '$temporaryThumbprint' | Out-Null
+    }
 }
 "@
+    $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+    if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
         Invoke-WindowsPowerShell $registerScript | Out-Null
-        $shareTargetRegistered = $true
+    } else {
+        Write-Host 'Conduit requires administrator approval to update its Share Target package identity.'
+        $encodedRegistration = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($registerScript))
+        $ps5 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $elevated = Start-Process -FilePath $ps5 -Verb RunAs -PassThru -Wait -ArgumentList @(
+            '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedRegistration)
+        if ($elevated.ExitCode -ne 0) {
+            throw "Conduit Share Target registration failed (exit $($elevated.ExitCode))"
+        }
     }
-    finally {
-        Remove-MachineTrustedPeopleCertificate $temporaryThumbprint
+    $shareProbeOutput = @(Invoke-WindowsPowerShell $shareRegistrationProbe)
+    if (($shareProbeOutput -join "`n") -notmatch "CONDUIT_SHARE_TARGET_VERSION=$([regex]::Escape($shareExpectedVersion.ToString()))") {
+        throw "Share Target version mismatch after installation (expected $shareExpectedVersion)"
     }
+    $shareTargetRegistered = $true
 }
 
 $shortcutSource = @'
