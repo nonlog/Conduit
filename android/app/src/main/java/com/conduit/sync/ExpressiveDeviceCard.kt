@@ -27,6 +27,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -184,7 +185,10 @@ internal fun ExpressiveDeviceCard(
             if (connected) {
                 HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.55f))
                 BoxWithConstraints(Modifier.fillMaxWidth()) {
-                    if (maxWidth < 310.dp) {
+                    // The 360dp reference phone leaves ~280dp inside the padded
+                    // hero: the actions must remain a matched horizontal pair.
+                    // Stack only when truly narrow or system font scale is large.
+                    if (maxWidth < 270.dp || LocalDensity.current.fontScale >= 1.35f) {
                         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             ExpressiveSendAction(
                                 label = "Send files",

@@ -39,6 +39,12 @@ jobs:
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v6
 
+      - name: Install Android SDK 36 for Compose instrumentation
+        shell: bash
+        run: |
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-36" "build-tools;36.0.0"
+
       - name: Prepare emulator KVM
         shell: bash
         run: |
@@ -57,8 +63,7 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: |
-            cd android
-            ./gradlew --no-daemon --stacktrace connectedDebugAndroidTest
+            cd "$GITHUB_WORKSPACE/android" && ./gradlew --no-daemon --stacktrace connectedDebugAndroidTest
             mkdir -p "$GITHUB_WORKSPACE/android-ui-smoke"
             adb pull /sdcard/Android/data/com.conduit.sync/files/ui-smoke "$GITHUB_WORKSPACE/android-ui-smoke" || true
 

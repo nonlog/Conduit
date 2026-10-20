@@ -133,12 +133,15 @@ internal fun ExpressiveSectionTitle(title: String, detail: String? = null) {
     ) {
         Text(
             text = title,
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onSurface,
         )
         if (!detail.isNullOrBlank()) {
-            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.width(10.dp))
             Text(
                 text = detail,
                 style = MaterialTheme.typography.labelMedium,

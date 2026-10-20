@@ -9,14 +9,18 @@ and Jetpack Compose.
 
 ## Appearance contract
 
+- Theme engine: real Compose Material 3 `MaterialExpressiveTheme`, including
+  expressive component defaults and motion, over Android wallpaper dynamic colors.
+  This is not just a custom palette with the old MaterialTheme wrapper.
 - Page background and hierarchy: the Android wallpaper's light/dark dynamic Material
-  color scheme, with Material 3 surfaces and consistent, rounded cards.
+  color scheme, with tonal Material 3 surfaces and consistent, rounded cards.
 - Suspended bottom dock: 76 dp high, rounded lens, two destinations, animated selected
   pill, 48+ dp touch target; page content scrolls behind no occluding fixed toolbar.
 - Connected device hero: clearly differentiated paired, connecting, connected,
   disconnected and pairing states; live route chip; same original actions.
-- File/photo actions: two exactly 60 dp high buttons with matched width; on narrower
-  layouts stack them vertically instead of wrapping an icon or action label.
+- File/photo actions: two exactly 60 dp high buttons with matched width on a
+  standard 360 dp phone; when the usable content width drops below 270 dp, or the
+  font scale is at least 1.35, stack vertically instead of wrapping labels.
 - Active transfers: filename, direction, independent progress, completion/error state
   and the same per-transfer cancel callback. Clipboard history remains searchable.
 - Settings: separate Appearance, Devices, Sync & Privacy, Background delivery and About

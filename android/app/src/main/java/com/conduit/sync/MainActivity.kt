@@ -41,6 +41,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.MaterialExpressiveTheme
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -437,6 +439,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun ConduitTheme(content: @Composable () -> Unit) {
     val dark = isSystemInDarkTheme()
@@ -448,7 +451,10 @@ private fun ConduitTheme(content: @Composable () -> Unit) {
         dark -> darkColorScheme()
         else -> lightColorScheme()
     }
-    MaterialTheme(
+    // Genuine Material 3 Expressive: dynamic wallpaper colour plus Expressive
+    // component defaults, typography, shapes and spring motion. FlClash inspires
+    // the presentation, but this remains independent native Compose code.
+    MaterialExpressiveTheme(
         colorScheme = scheme,
         shapes = Shapes(
             extraSmall = RoundedCornerShape(10.dp),
@@ -942,7 +948,7 @@ private fun DeviceManagementCard(
                     if (pairing || pairedDeviceId == null) {
                         Text(
                             if (pairing) {
-                                "Pairing open · same Wi-Fi required"
+                                "Pairing in progress · LAN or Relay"
                             } else {
                                 "Pair a desktop to enable LAN and Relay reconnect"
                             },
@@ -1137,7 +1143,7 @@ private fun SwitchPreferenceRow(
         trailing = {
             Switch(
                 checked = checked,
-                onCheckedChange = null,
+                onCheckedChange = onCheckedChange,
                 modifier = Modifier.semantics { contentDescription = title },
             )
         },
