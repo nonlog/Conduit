@@ -1074,15 +1074,9 @@ async fn serve(
         while index < queued.len() {
             if queued[index].owner != *owner || transfers.cancelled(owner, &queued[index].id) {
                 let mut request = queued.remove(index).unwrap();
-                let cancelled = request.owner == *owner;
-                transfers.update(
-                    &request.owner,
-                    &request.id,
-                    0,
-                    if cancelled { "cancelled" } else { "failed" },
-                    "Transfer no longer queued",
-                );
-                request.finish(Err(if cancelled {
+                let (state, detail) = queued_request_terminal(request.owner == *owner);
+                transfers.update(&request.owner, &request.id, 0, state, detail);
+                request.finish(Err(if state == "cancelled" {
                     "Cancelled"
                 } else {
                     "Session changed"
@@ -1815,9 +1809,30 @@ fn config_dir() -> Result<PathBuf> {
     data_dir::resolve()
 }
 
+/// A queued cancellation is an expected user action, not a stale-queue protocol failure.
+fn queued_request_terminal(same_session: bool) -> (&'static str, &'static str) {
+    if same_session {
+        ("cancelled", "Cancelled before sending")
+    } else {
+        ("failed", "Session changed")
+    }
+}
+
 #[cfg(test)]
 mod heartbeat_tests {
     use super::*;
+
+    #[test]
+    fn cancelled_queued_file_is_not_reported_as_a_stale_queue_failure() {
+        assert_eq!(
+            queued_request_terminal(true),
+            ("cancelled", "Cancelled before sending")
+        );
+        assert_eq!(
+            queued_request_terminal(false),
+            ("failed", "Session changed")
+        );
+    }
 
     #[test]
     fn only_a_pong_satisfies_an_outstanding_liveness_challenge() {

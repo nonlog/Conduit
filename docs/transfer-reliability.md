@@ -38,6 +38,9 @@ checkout or reintroduce the rejected sensitive-notification setting.
   `.local` addresses into NSD's resolution, a single bounded mDNS A/QU query
   over the physical discovery Network recovers the advertised on-link IPv4;
   there is no continuous scanner, hard-coded desktop address or bypass of Noise.
+- A queued Windows file cancelled before its turn shows `Cancelled before sending`,
+  not a misleading stale-queue error. A queued file owned by a prior authenticated
+  session is instead marked failed with `Session changed`.
 - A VPN that forbids bypassing can reject `Network.bindSocket` on the physical Wi-Fi
   with `EPERM`, even after mDNS finds the correct on-link peer. For this exact
   direct-LAN permission error, the Android client may attempt its already-validated
