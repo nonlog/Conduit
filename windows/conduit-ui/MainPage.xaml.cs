@@ -178,6 +178,7 @@ public sealed partial class MainPage : Page
     {
         Notifications,
         Links,
+        Transfers,
         General,
         About,
     }
@@ -186,18 +187,23 @@ public sealed partial class MainPage : Page
     {
         var notifications = section == DesktopSection.Notifications;
         var links = section == DesktopSection.Links;
+        var transfers = section == DesktopSection.Transfers;
         var general = section == DesktopSection.General;
         var about = section == DesktopSection.About;
         var settings = general || about;
 
+        ViewModel.SetTransfersPageActive(transfers);
         NotificationsPage.Visibility = notifications ? Visibility.Visible : Visibility.Collapsed;
         SharedLinksPage.Visibility = links ? Visibility.Visible : Visibility.Collapsed;
+        TransfersPage.Visibility = transfers ? Visibility.Visible : Visibility.Collapsed;
         SettingsPage.Visibility = settings ? Visibility.Visible : Visibility.Collapsed;
 
         NotificationsNavHighlight.Visibility = NotificationsNavAccent.Visibility =
             notifications ? Visibility.Visible : Visibility.Collapsed;
         LinksNavHighlight.Visibility = LinksNavAccent.Visibility =
             links ? Visibility.Visible : Visibility.Collapsed;
+        TransfersNavHighlight.Visibility = TransfersNavAccent.Visibility =
+            transfers ? Visibility.Visible : Visibility.Collapsed;
         SettingsNavHighlight.Visibility = SettingsNavAccent.Visibility =
             general ? Visibility.Visible : Visibility.Collapsed;
         AboutNavHighlight.Visibility = AboutNavAccent.Visibility =
@@ -216,6 +222,9 @@ public sealed partial class MainPage : Page
 
     private void ShowSharedLinks_Click(object sender, RoutedEventArgs e) =>
         NavigateTo(DesktopSection.Links);
+
+    private void ShowTransfers_Click(object sender, RoutedEventArgs e) =>
+        NavigateTo(DesktopSection.Transfers);
 
     private void ShowSettings_Click(object sender, RoutedEventArgs e) =>
         NavigateTo(DesktopSection.General);
