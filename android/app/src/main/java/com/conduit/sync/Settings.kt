@@ -30,6 +30,7 @@ object Settings {
     private const val FILE = "settings.txt"
     private const val HIDE_NOTIFICATION_CONTENT = "hide_notification_content"
     private const val LINK_WANTED = "link_wanted"
+    private const val LIQUID_GLASS = "liquid_glass"
 
     /**
      * Whether a mirrored notification arrives on the desktop with its text removed.
@@ -61,8 +62,17 @@ object Settings {
             save()
         }
 
+    /** Purely visual preference; the background companion service never renders glass. */
+    var liquidGlassEnabled: Boolean
+        get() = glass
+        set(value) {
+            glass = value
+            save()
+        }
+
     /** The snapshot state behind [hideNotificationContent]; the settings screen reads it. */
     private var hidden by mutableStateOf(false)
+    private var glass by mutableStateOf(true)
 
     /**
      * Volatile rather than snapshot state: nothing recomposes on it, but [SyncService] reads
@@ -90,13 +100,14 @@ object Settings {
         // link stuck down reads as an app that stopped working.
         hidden = stored[HIDE_NOTIFICATION_CONTENT].toBoolean()
         wanted = stored[LINK_WANTED]?.toBooleanStrictOrNull() ?: true
+        glass = stored[LIQUID_GLASS]?.toBooleanStrictOrNull() ?: true
         // Says what was restored, because a setting that silently fails to persist looks
         // exactly like one that was never toggled.
         Log.i(TAG, "settings loaded, hide=$hidden wanted=$wanted")
     }
 
     /**
-     * Rewrites the whole file, which for two lines is the simplest thing that cannot
+     * Rewrites the whole file, which for a few lines is the simplest thing that cannot
      * half-succeed. Best effort: a setting that fails to save is worth less than a crash on
      * the main thread, and [load] falls back to the defaults.
      */
@@ -108,7 +119,7 @@ object Settings {
         }
         runCatching {
             File(files, FILE).writeText(
-                "$HIDE_NOTIFICATION_CONTENT=$hidden\n$LINK_WANTED=$wanted\n",
+                "$HIDE_NOTIFICATION_CONTENT=$hidden\n$LINK_WANTED=$wanted\n$LIQUID_GLASS=$glass\n",
             )
         }.onFailure { Log.w(TAG, "could not save settings", it) }
     }

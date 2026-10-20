@@ -55,6 +55,7 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -454,7 +455,17 @@ private fun ConduitTheme(content: @Composable () -> Unit) {
         dark -> darkColorScheme()
         else -> lightColorScheme()
     }
-    MaterialTheme(colorScheme = scheme, content = content)
+    MaterialTheme(
+        colorScheme = scheme,
+        shapes = Shapes(
+            extraSmall = RoundedCornerShape(10.dp),
+            small = RoundedCornerShape(14.dp),
+            medium = RoundedCornerShape(20.dp),
+            large = RoundedCornerShape(28.dp),
+            extraLarge = RoundedCornerShape(36.dp),
+        ),
+        content = content,
+    )
 }
 
 private enum class MainTab(val title: String) {
@@ -574,68 +585,37 @@ private fun ConduitApp(
     }
 
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.surfaceContainer,
         topBar = {
             TopAppBar(
                 colors = TopAppBarDefaults.topAppBarColors(
-                    titleContentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                    containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                    titleContentColor = MaterialTheme.colorScheme.onSurface,
                 ),
                 title = {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(1.dp),
                     ) {
                         Text(
                             if (tab == MainTab.Home) "Conduit" else "Settings",
-                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.headlineMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            if (tab == MainTab.Home) "Your devices, in sync" else "Personalize your companion",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 },
             )
         },
         bottomBar = {
-            NavigationBar(
-                // Keep the system navigation gesture area on the same tonal surface as the bar.
-                // NavigationBar supplies the platform window insets; the item indicator remains
-                // the single expressive accent for the selected destination.
-                containerColor = MaterialTheme.colorScheme.surface,
-            ) {
-                MainTab.entries.forEach { item ->
-                    val selected = item == tab
-                    NavigationBarItem(
-                        selected = selected,
-                        onClick = { tabName = item.name },
-                        icon = {
-                            Icon(
-                                painter = painterResource(
-                                    when (item) {
-                                        MainTab.Home -> if (selected) {
-                                            R.drawable.ic_home
-                                        } else {
-                                            R.drawable.ic_home_outline
-                                        }
-                                        MainTab.Settings -> if (selected) {
-                                            R.drawable.ic_settings
-                                        } else {
-                                            R.drawable.ic_settings_outline
-                                        }
-                                    },
-                                ),
-                                contentDescription = item.title,
-                                modifier = Modifier.size(24.dp),
-                            )
-                        },
-                        label = { Text(item.title) },
-                        alwaysShowLabel = true,
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                            selectedTextColor = MaterialTheme.colorScheme.onSurface,
-                            indicatorColor = MaterialTheme.colorScheme.secondaryContainer,
-                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                        ),
-                    )
-                }
-            }
+            ExpressiveNavigationDock(
+                selectedSettings = tab == MainTab.Settings,
+                onHome = { tabName = MainTab.Home.name },
+                onSettings = { tabName = MainTab.Settings.name },
+            )
         },
     ) { insets ->
         when (tab) {
@@ -707,12 +687,17 @@ private fun HomeTab(
     }
 
     LazyColumn(
-        modifier = modifier,
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        modifier = modifier.fillMaxWidth(),
+        contentPadding = PaddingValues(
+            start = ExpressiveLayout.pageInset,
+            top = 12.dp,
+            end = ExpressiveLayout.pageInset,
+            bottom = 26.dp,
+        ),
+        verticalArrangement = Arrangement.spacedBy(ExpressiveLayout.cardSpacing),
     ) {
         item {
-            SefirahDeviceCard(
+            ExpressiveDeviceCard(
                 state = state,
                 peerName = peerName,
                 pairedDeviceId = pairedDeviceId,
@@ -728,11 +713,17 @@ private fun HomeTab(
         }
         if (transfers.isNotEmpty()) {
             item {
-                Text("Transfers", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                ExpressiveSectionTitle(
+                    title = "Transfers",
+                    detail = transfers.count { !it.phase.terminal }.takeIf { it > 0 }?.let { it.toString() + " active" },
+                )
             }
             items(transfers, key = { "${it.direction}:${it.id}" }) {
-                TransferCard(it, peerName, onCancelTransfer)
+                ExpressiveTransferCard(it, peerName, onCancelTransfer)
             }
+        }
+        item {
+            ExpressiveSectionTitle("Clipboard", "Recent activity")
         }
         item {
             DeviceActionsCard(
@@ -789,17 +780,29 @@ private fun SettingsTab(
     }
 
     LazyColumn(
-        modifier = modifier,
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        modifier = modifier.fillMaxWidth(),
+        contentPadding = PaddingValues(
+            start = ExpressiveLayout.pageInset,
+            top = 8.dp,
+            end = ExpressiveLayout.pageInset,
+            bottom = 26.dp,
+        ),
+        verticalArrangement = Arrangement.spacedBy(ExpressiveLayout.cardSpacing),
     ) {
+        item { ExpressiveSectionTitle("Appearance") }
         item {
-            Text(
-                "Devices",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.Bold,
-            )
+            ExpressiveCard(modifier = Modifier.fillMaxWidth()) {
+                SwitchPreferenceRow(
+                    icon = R.drawable.ic_brand_sync,
+                    title = "Liquid glass",
+                    subtitle = "Floating glass navigation and device surfaces",
+                    checked = Settings.liquidGlassEnabled,
+                    onCheckedChange = { Settings.liquidGlassEnabled = it },
+                )
+            }
+        }
+        item {
+            ExpressiveSectionTitle("Devices")
         }
         item {
             DeviceManagementCard(
@@ -812,21 +815,10 @@ private fun SettingsTab(
             )
         }
         item {
-            Text(
-                "Sync & Privacy",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.Bold,
-            )
+            ExpressiveSectionTitle("Sync & privacy")
         }
         item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-                ),
-            ) {
+            ExpressiveCard(modifier = Modifier.fillMaxWidth()) {
                 Column {
                     PreferenceRow(
                         icon = R.drawable.ic_history,
@@ -863,21 +855,10 @@ private fun SettingsTab(
             }
         }
         item {
-            Text(
-                "Background delivery",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.Bold,
-            )
+            ExpressiveSectionTitle("Background delivery")
         }
         item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-                ),
-            ) {
+            ExpressiveCard(modifier = Modifier.fillMaxWidth()) {
                 PreferenceRow(
                     icon = R.drawable.ic_settings,
                     title = "Battery optimization",
@@ -912,234 +893,15 @@ private fun SettingsTab(
             }
         }
         item {
-            Text(
-                "About",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.Bold,
-            )
+            ExpressiveSectionTitle("About")
         }
         item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-                ),
-            ) {
+            ExpressiveCard(modifier = Modifier.fillMaxWidth()) {
                 PreferenceRow(
                     icon = R.drawable.ic_brand_sync,
                     title = "Conduit",
                     subtitle = "Version $appVersion · Fast, lightweight companion",
                 )
-            }
-        }
-    }
-}
-
-@Composable
-private fun SefirahDeviceCard(
-    state: LinkState,
-    peerName: String?,
-    pairedDeviceId: String?,
-    pairing: Boolean,
-    path: String?,
-    onConnect: () -> Unit,
-    onDisconnect: () -> Unit,
-    onPair: () -> Unit,
-    onCancelPair: () -> Unit,
-    onSendFiles: () -> Unit = {},
-    onSendPhoto: () -> Unit = {},
-) {
-    val isPaired = pairedDeviceId != null
-    val linkRequested = isLinkRequestedState(state)
-    val isConnected = state == LinkState.Connected
-
-    val statusColor = when {
-        isConnected -> Color(0xFF22C55E) // Vibrant green
-        pairing || state == LinkState.Discovering || state == LinkState.Retrying ->
-            Color(0xFFF59E0B) // Amber
-        else -> MaterialTheme.colorScheme.outline
-    }
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = if (isConnected) {
-                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
-            } else {
-                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
-            },
-        ),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Surface(
-                    modifier = Modifier.size(52.dp),
-                    shape = CircleShape,
-                    color = if (isConnected) {
-                        MaterialTheme.colorScheme.primaryContainer
-                    } else {
-                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
-                    },
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            painter = painterResource(R.drawable.ic_desktop),
-                            contentDescription = "Desktop",
-                            modifier = Modifier.size(28.dp),
-                            tint = if (isConnected) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                        )
-                    }
-                }
-                Spacer(Modifier.width(14.dp))
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Text(
-                        when {
-                            pairing -> "Pairing for a desktop"
-                            isPaired -> peerName ?: "Paired desktop"
-                            else -> "No paired computer"
-                        },
-                        style = MaterialTheme.typography.titleMedium,
-                        fontSize = 19.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .background(statusColor, CircleShape),
-                        )
-                        Text(
-                            when {
-                                pairing -> "Open pairing on the desktop too"
-                                !isPaired -> "Ready to pair"
-                                else -> state.label
-                            },
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontWeight = FontWeight.Medium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    path?.takeIf(String::isNotBlank)?.let { routeText ->
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f),
-                        ) {
-                            Text(
-                                routeText,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer,
-                                fontWeight = FontWeight.Medium,
-                                maxLines = 1,
-                            )
-                        }
-                    }
-                }
-                if (pairing || !isPaired) {
-                    FilledTonalButton(
-                        onClick = if (pairing) onCancelPair else onPair,
-                        shape = RoundedCornerShape(12.dp),
-                    ) {
-                        Text(if (pairing) "Cancel" else "Pair")
-                    }
-                } else {
-                    FilledIconToggleButton(
-                        checked = linkRequested,
-                        onCheckedChange = { if (linkRequested) onDisconnect() else onConnect() },
-                        colors = IconButtonDefaults.filledIconToggleButtonColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                            checkedContainerColor = MaterialTheme.colorScheme.primary,
-                            checkedContentColor = MaterialTheme.colorScheme.onPrimary,
-                        ),
-                        modifier = Modifier.size(44.dp),
-                    ) {
-                        Icon(
-                            painter = painterResource(R.drawable.ic_sync),
-                            contentDescription = if (linkRequested) "Disconnect" else "Connect",
-                            modifier = Modifier.size(22.dp),
-                        )
-                    }
-                }
-            }
-
-            if (!isPaired || pairing) {
-                Text(
-                    if (pairing) {
-                        "Keep both devices on the same Wi-Fi and open Pair new device on Windows within two minutes."
-                    } else {
-                        "Pair once on the same Wi-Fi. After that Conduit can reconnect through Relay automatically."
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-
-            if (isConnected) {
-                HorizontalDivider(
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
-                    modifier = Modifier.padding(top = 2.dp),
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    FilledTonalButton(
-                        onClick = onSendFiles,
-                        modifier = Modifier.weight(1f).fillMaxHeight().heightIn(min = 48.dp)
-                            .semantics { contentDescription = "Send files" },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
-                        shape = RoundedCornerShape(12.dp),
-                    ) {
-                        Icon(
-                            painter = painterResource(R.drawable.ic_stat_upload),
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text("Send files", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                    FilledTonalButton(
-                        onClick = onSendPhoto,
-                        modifier = Modifier.weight(1f).fillMaxHeight().heightIn(min = 48.dp)
-                            .semantics { contentDescription = "Send photo" },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp),
-                        shape = RoundedCornerShape(12.dp),
-                    ) {
-                        Icon(
-                            painter = painterResource(R.drawable.ic_photo),
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text("Send photo", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                }
             }
         }
     }
@@ -1154,13 +916,7 @@ private fun DeviceManagementCard(
     onCancelPair: () -> Unit,
     onForget: () -> Unit,
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-        ),
-    ) {
+    ExpressiveCard(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.fillMaxWidth().padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -1170,8 +926,8 @@ private fun DeviceManagementCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Surface(
-                    modifier = Modifier.size(40.dp),
-                    shape = CircleShape,
+                    modifier = Modifier.size(48.dp),
+                    shape = RoundedCornerShape(16.dp),
                     color = MaterialTheme.colorScheme.secondaryContainer,
                 ) {
                     Box(contentAlignment = Alignment.Center) {
@@ -1213,7 +969,7 @@ private fun DeviceManagementCard(
                 }
                 FilledTonalButton(
                     onClick = if (pairing) onCancelPair else onPair,
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(19.dp),
                 ) {
                     Text(
                         when {
@@ -1231,42 +987,38 @@ private fun DeviceManagementCard(
 @Composable
 private fun DeviceActionsCard(history: List<HistoryEntry>, onOpenHistory: () -> Unit) {
     val latest = history.firstOrNull()
-    Card(
+    ExpressiveCard(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onOpenHistory),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-        ),
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+                .padding(19.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Surface(
-                    modifier = Modifier.size(36.dp),
-                    shape = CircleShape,
+                    modifier = Modifier.size(46.dp),
+                    shape = RoundedCornerShape(17.dp),
                     color = MaterialTheme.colorScheme.secondaryContainer,
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
                             painter = painterResource(R.drawable.ic_history),
                             contentDescription = null,
-                            modifier = Modifier.size(18.dp),
+                            modifier = Modifier.size(23.dp),
                             tint = MaterialTheme.colorScheme.onSecondaryContainer,
                         )
                     }
                 }
                 Spacer(Modifier.width(10.dp))
                 Text(
-                    "Clipboard",
+                    "Latest item",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                 )
@@ -1297,7 +1049,7 @@ private fun DeviceActionsCard(history: List<HistoryEntry>, onOpenHistory: () -> 
 
             Text(
                 latest?.preview?.takeIf(String::isNotBlank) ?: "No clipboard history yet",
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.bodyLarge,
                 maxLines = 3,
                 overflow = TextOverflow.Ellipsis,
                 color = if (latest == null) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
@@ -1342,22 +1094,22 @@ private fun PreferenceRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 64.dp)
+            .heightIn(min = 68.dp)
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
             painter = painterResource(icon),
             contentDescription = null,
-            modifier = Modifier.padding(start = 16.dp, end = 8.dp).size(24.dp),
+            modifier = Modifier.padding(start = 20.dp, end = 10.dp).size(24.dp),
             tint = MaterialTheme.colorScheme.primary,
         )
         Column(
-            modifier = Modifier.weight(1f).padding(vertical = 16.dp),
+                modifier = Modifier.weight(1f).padding(vertical = 14.dp),
         ) {
             Text(
                 title,
-                modifier = Modifier.padding(horizontal = 16.dp),
+                modifier = Modifier.padding(end = 14.dp),
                 style = MaterialTheme.typography.titleLarge,
                 fontSize = 16.sp,
                 maxLines = 2,
@@ -1366,13 +1118,13 @@ private fun PreferenceRow(
             subtitle?.takeIf(String::isNotBlank)?.let {
                 Text(
                     it,
-                    modifier = Modifier.padding(horizontal = 16.dp),
+                    modifier = Modifier.padding(end = 14.dp),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                 )
             }
         }
-        trailing?.let { Box(Modifier.padding(end = 16.dp), contentAlignment = Alignment.Center) { it() } }
+        trailing?.let { Box(Modifier.padding(end = 18.dp), contentAlignment = Alignment.Center) { it() } }
     }
 }
 
@@ -1399,37 +1151,6 @@ private fun SwitchPreferenceRow(
     )
 }
 
-@Composable
-private fun TransferCard(transfer: FileTransfer, peerName: String?, onCancel: (String) -> Unit) {
-    val peer = peerName ?: "desktop"
-    val direction = when (transfer.direction) {
-        FileTransferDirection.ToDesktop -> "To $peer"
-        FileTransferDirection.ToPhone -> "From $peer"
-    }
-    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors()) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(direction, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.weight(1f))
-                Text("${transfer.percent}%", style = MaterialTheme.typography.titleSmall)
-            }
-            Text(transfer.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(transfer.phase.label, style = MaterialTheme.typography.bodyMedium)
-            if (!transfer.phase.terminal) {
-                LinearProgressIndicator(progress = { transfer.fraction }, modifier = Modifier.fillMaxWidth())
-            }
-            if (transfer.error.isNotBlank()) Text(transfer.error, style = MaterialTheme.typography.bodySmall)
-            if (transfer.canCancel) {
-                TextButton(onClick = { onCancel(transfer.id) },
-                    modifier = Modifier.heightIn(min = 48.dp).semantics {
-                        contentDescription = "Cancel ${transfer.name}"
-                    }) { Text("Cancel") }
-            }
-            Text("${formatBytes(transfer.transferred)} of ${formatBytes(transfer.total)}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-    }
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun HistoryScreen(
@@ -1440,9 +1161,19 @@ private fun HistoryScreen(
     var query by rememberSaveable { mutableStateOf("") }
     val filtered = filterHistory(history, query)
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.surfaceContainer,
         topBar = {
             TopAppBar(
-                title = { Text("Clipboard history") },
+                title = {
+                    Text(
+                        "Clipboard history",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                ),
                 navigationIcon = {
                     TextButton(onClick = onBack, modifier = Modifier.heightIn(min = 48.dp)) {
                         Text("Back")
@@ -1460,14 +1191,20 @@ private fun HistoryScreen(
     ) { insets ->
         LazyColumn(
             modifier = Modifier.padding(insets),
-            contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 28.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            contentPadding = PaddingValues(
+                start = ExpressiveLayout.pageInset,
+                top = 12.dp,
+                end = ExpressiveLayout.pageInset,
+                bottom = 28.dp,
+            ),
+            verticalArrangement = Arrangement.spacedBy(ExpressiveLayout.cardSpacing),
         ) {
             item {
                 OutlinedTextField(
                     value = query,
                     onValueChange = { query = it },
                     modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(19.dp),
                     singleLine = true,
                     label = { Text("Search") },
                 )
@@ -1509,7 +1246,7 @@ internal fun filterHistory(entries: List<HistoryEntry>, query: String): List<His
 @Composable
 private fun ClipRow(entry: HistoryEntry) {
     val directionLabel = if (entry.direction == Direction.Sent) "Sent" else "Received"
-    Card(modifier = Modifier.fillMaxWidth()) {
+    ExpressiveCard(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
