@@ -15,6 +15,7 @@ android {
         targetSdk = 36
         versionCode = 8
         versionName = "0.1.7"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildFeatures {
@@ -95,4 +96,14 @@ dependencies {
     // Noise XX is hand-written, so it is checked against a transcript produced by the
     // Rust reference implementation. Plain JVM test — no device, no instrumentation.
     testImplementation("junit:junit:4.13.2")
+
+    // Instrumented Compose layout checks run only on GitHub Actions emulator. They never
+    // touch an actual phone's pairing, notification permissions or persisted state.
+    // androidTest has its own Gradle dependency configuration, so the main source-set
+    // Compose BOM does not supply test-module versions here.
+    androidTestImplementation(platform("androidx.compose:compose-bom:2026.06.01"))
+    androidTestImplementation("androidx.test:runner:1.7.0")
+    androidTestImplementation("androidx.test.ext:junit:1.3.0")
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
