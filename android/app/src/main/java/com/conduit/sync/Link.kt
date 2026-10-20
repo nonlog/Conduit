@@ -21,7 +21,9 @@ import com.conduit.sync.proto.SharedUrl
 import com.conduit.sync.proto.WallpaperPreview
 import java.net.InetSocketAddress
 import java.net.InetAddress
+import java.net.Inet4Address
 import java.net.Socket
+import java.net.SocketException
 import java.util.concurrent.ConcurrentHashMap
 import com.google.protobuf.ByteString
 import java.util.concurrent.atomic.AtomicLong
@@ -94,6 +96,19 @@ internal fun isVpnFakeIp(address: InetAddress): Boolean {
     return first == 198 && (second == 18 || second == 19)
 }
 
+/**
+ * VPNs that disallow bypass reject binding an app socket to physical Wi-Fi with EPERM.
+ * Only a resolved, previously selected LAN IPv4 candidate may retry without an explicit
+ * network binding. This does not bypass the VPN: Android's ordinary routing and VPN policy
+ * still decide whether the unbound connection is permitted to reach the desktop.
+ */
+internal fun shouldRetryLanThroughSystemRoute(address: InetSocketAddress, error: SocketException): Boolean {
+    val ip = address.address
+    return ip is Inet4Address && !ip.isAnyLocalAddress && !ip.isLoopbackAddress &&
+        !ip.isMulticastAddress && !isVpnFakeIp(ip) &&
+        generateSequence<Throwable>(error) { it.cause }
+            .any { cause -> cause.message?.contains("EPERM") == true }
+}
 
 /**
  * Each connection owns its reader and receive state. One blocked scheduler thread owns all
@@ -563,14 +578,24 @@ class Link(
         var established = false
         try {
             owner.socket.use { sock ->
-                if (rendezvous == null) network?.bindSocket(sock)
-                sock.tcpNoDelay = true
-                sock.keepAlive = true
-                sock.soTimeout = initialReadDeadlineMs(rendezvous)
                 val target = if (address.isUnresolved) {
                     val resolved = InetAddress.getByName(address.hostString)
                     InetSocketAddress(if (rendezvous != null) relayTargetAddress(resolved, fallbackIp) else resolved, address.port)
                 } else address
+                if (rendezvous == null && network != null) {
+                    try {
+                        network.bindSocket(sock)
+                    } catch (denied: SocketException) {
+                        if (!shouldRetryLanThroughSystemRoute(target, denied)) throw denied
+                        // The VPN disallows bypassing it to choose the physical Wi-Fi. Keep this
+                        // exact LAN target, but let Android/VPN route an ordinary app socket.
+                        // There is no fwmark/source-IP bypass or change to device VPN settings.
+                        Log.i(TAG, "VPN denied physical LAN socket binding; trying system-routed LAN")
+                    }
+                }
+                sock.tcpNoDelay = true
+                sock.keepAlive = true
+                sock.soTimeout = initialReadDeadlineMs(rendezvous)
                 sock.connect(target, CONNECT_TIMEOUT_MS)
                 if (rendezvous != null) {
                     sock.getOutputStream().apply { write(relayPreamble(rendezvous)); flush() }
