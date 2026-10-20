@@ -250,6 +250,19 @@ class ExpressiveLayoutInstrumentedTest {
         compose.runOnIdle { assertEquals(1, calls) }
     }
 
+    @Test
+    fun fourDestinationsOpenRealTransferAndClipboardPages() {
+        compose.setContent { ConduitTheme(darkOverride = true) { DashboardFixture() } }
+        compose.onNodeWithContentDescription("Transfers").performClick()
+        compose.onNodeWithText("No transfers yet").assertIsDisplayed()
+        saveScreenshot("transfers-empty-dark.png")
+        compose.onNodeWithContentDescription("Clipboard").performClick()
+        compose.onNodeWithText("Search clipboard").assertIsDisplayed()
+        saveScreenshot("clipboard-empty-dark.png")
+        compose.onNodeWithContentDescription("Home").performClick()
+        compose.onNodeWithContentDescription("Send files").assertIsDisplayed()
+    }
+
     @androidx.compose.runtime.Composable
     private fun DashboardFixture() {
         ConduitApp(

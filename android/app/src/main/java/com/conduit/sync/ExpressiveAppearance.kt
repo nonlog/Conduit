@@ -95,7 +95,12 @@ internal fun ExpressiveTopBar(title: String, action: (() -> Unit)? = null, back:
 
 /** Compact floating bar. Selection uses the official Expressive spatial motion token. */
 @Composable
-internal fun ExpressiveNavigationDock(selectedSettings: Boolean, onHome: () -> Unit, onSettings: () -> Unit) {
+internal fun ExpressiveNavigationDock(
+    selectedSettings: Boolean, onHome: () -> Unit, onSettings: () -> Unit,
+    destination: String = if (selectedSettings) "Settings" else "Home",
+    onTransfers: () -> Unit = {}, onClipboard: () -> Unit = {},
+) {
+    val selectedIndex = listOf("Home", "Transfers", "Clipboard", "Settings").indexOf(destination).coerceAtLeast(0)
     Box(
         Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 20.dp, vertical = 6.dp),
         contentAlignment = Alignment.Center,
@@ -107,17 +112,19 @@ internal fun ExpressiveNavigationDock(selectedSettings: Boolean, onHome: () -> U
             shadowElevation = 6.dp,
         ) {
             BoxWithConstraints(Modifier.height(ExpressiveLayout.dockHeight).padding(4.dp)) {
-                val cell = maxWidth / 2
+                val cell = maxWidth / 4
                 val offset by animateDpAsState(
-                    targetValue = if (selectedSettings) cell else 0.dp,
+                    targetValue = cell * selectedIndex,
                     animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
                     label = "Navigation selection",
                 )
                 Box(Modifier.offset(x = offset).width(cell).fillMaxHeight()
                     .clip(CircleShape).background(MaterialTheme.colorScheme.surfaceContainerHighest))
                 Row(Modifier.fillMaxSize().selectableGroup()) {
-                    DockItem("Home", R.drawable.ic_dashboard, !selectedSettings, onHome, Modifier.weight(1f))
-                    DockItem("Settings", R.drawable.ic_settings_outline, selectedSettings, onSettings, Modifier.weight(1f))
+                    DockItem("Home", R.drawable.ic_dashboard, selectedIndex == 0, onHome, Modifier.weight(1f))
+                    DockItem("Transfers", R.drawable.ic_transfer, selectedIndex == 1, onTransfers, Modifier.weight(1f))
+                    DockItem("Clipboard", R.drawable.ic_file_outline, selectedIndex == 2, onClipboard, Modifier.weight(1f))
+                    DockItem("Settings", R.drawable.ic_settings_outline, selectedIndex == 3, onSettings, Modifier.weight(1f))
                 }
             }
         }

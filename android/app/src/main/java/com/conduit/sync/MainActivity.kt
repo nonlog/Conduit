@@ -443,6 +443,8 @@ class MainActivity : ComponentActivity() {
 
 private enum class MainTab(val title: String) {
     Home("Home"),
+    Transfers("Transfers"),
+    Clipboard("Clipboard"),
     Settings("Settings"),
 }
 
@@ -547,7 +549,7 @@ internal fun ConduitApp(
         )
     }
 
-    BackHandler(enabled = page == "history" || tab == MainTab.Settings) {
+    BackHandler(enabled = page == "history" || tab != MainTab.Home) {
         if (page == "history") page = "main" else tabName = MainTab.Home.name
     }
     if (page == "history") {
@@ -563,7 +565,7 @@ internal fun ConduitApp(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             ExpressiveTopBar(
-                title = if (tab == MainTab.Home) "Conduit" else "Settings",
+                title = if (tab == MainTab.Home) "Conduit" else tab.title,
                 action = if (tab == MainTab.Home) requestPair else null,
             )
         },
@@ -572,6 +574,9 @@ internal fun ConduitApp(
                 selectedSettings = tab == MainTab.Settings,
                 onHome = { tabName = MainTab.Home.name },
                 onSettings = { tabName = MainTab.Settings.name },
+                destination = tabName,
+                onTransfers = { tabName = MainTab.Transfers.name },
+                onClipboard = { tabName = MainTab.Clipboard.name },
             )
         },
     ) { insets ->
@@ -591,8 +596,10 @@ internal fun ConduitApp(
                 onPair = requestPair,
                 onCancelPair = onCancelPair,
                 onSendFiles = onSendFiles,
-                onOpenHistory = { page = "history" },
+                onOpenHistory = { tabName = MainTab.Clipboard.name },
             )
+            MainTab.Transfers -> TransfersTab(Modifier.padding(insets), transfers, peerName, onCancelTransfer)
+            MainTab.Clipboard -> ClipboardTab(Modifier.padding(insets), history, onClearHistory)
             MainTab.Settings -> SettingsTab(
                 modifier = Modifier.padding(insets),
                 appVersion = appVersion,
@@ -612,7 +619,7 @@ internal fun ConduitApp(
                 onPair = requestPair,
                 onCancelPair = onCancelPair,
                 onForget = onForget,
-                onOpenHistory = { page = "history" },
+                onOpenHistory = { tabName = MainTab.Clipboard.name },
             )
         }
     }
@@ -1094,7 +1101,7 @@ internal fun filterHistory(entries: List<HistoryEntry>, query: String): List<His
 }
 
 @Composable
-private fun ClipRow(entry: HistoryEntry) {
+internal fun ClipRow(entry: HistoryEntry) {
     val directionLabel = if (entry.direction == Direction.Sent) "Sent" else "Received"
     ExpressiveCard(modifier = Modifier.fillMaxWidth()) {
         Column(
