@@ -9,9 +9,12 @@ and Jetpack Compose.
 
 ## Appearance contract
 
-- Theme engine: real Compose Material 3 `MaterialExpressiveTheme`, including
-  expressive component defaults and motion, over Android wallpaper dynamic colors.
-  This is not just a custom palette with the old MaterialTheme wrapper.
+- Material 3 Expressive design language built with the project's supported public
+  Compose APIs: Android wallpaper dynamic colors, continuous rounded shapes, elevated
+  tonal surfaces, pill navigation, and event-driven spring motion. The experimental
+  `MaterialExpressiveTheme` symbol in the pinned 2026.06 BOM is still internal;
+  upgrading to its public 1.5 beta also requires the SDK 37/AGP 9 toolchain, which
+  is deliberately not bundled with this UI-only patch.
 - Page background and hierarchy: the Android wallpaper's light/dark dynamic Material
   color scheme, with tonal Material 3 surfaces and consistent, rounded cards.
 - Suspended bottom dock: 76 dp high, rounded lens, two destinations, animated selected

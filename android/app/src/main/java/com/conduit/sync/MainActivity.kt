@@ -41,8 +41,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.MaterialExpressiveTheme
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -439,7 +437,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun ConduitTheme(content: @Composable () -> Unit) {
     val dark = isSystemInDarkTheme()
@@ -451,10 +448,10 @@ private fun ConduitTheme(content: @Composable () -> Unit) {
         dark -> darkColorScheme()
         else -> lightColorScheme()
     }
-    // Genuine Material 3 Expressive: dynamic wallpaper colour plus Expressive
-    // component defaults, typography, shapes and spring motion. FlClash inspires
-    // the presentation, but this remains independent native Compose code.
-    MaterialExpressiveTheme(
+    // Material 3 Expressive visual language using public, version-compatible APIs:
+    // dynamic wallpaper colours, a generously rounded shape system, and responsive
+    // native Compose components with event-driven spring transitions in the dock.
+    MaterialTheme(
         colorScheme = scheme,
         shapes = Shapes(
             extraSmall = RoundedCornerShape(10.dp),

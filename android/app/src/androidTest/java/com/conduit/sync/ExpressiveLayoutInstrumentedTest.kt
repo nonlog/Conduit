@@ -4,8 +4,7 @@ import android.graphics.Bitmap
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.MaterialExpressiveTheme
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -36,7 +35,6 @@ import org.junit.runner.RunWith
 
 /** Runs on a clean GitHub Actions emulator, never on the user's linked device. */
 @RunWith(AndroidJUnit4::class)
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 class ExpressiveLayoutInstrumentedTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
 
@@ -45,7 +43,7 @@ class ExpressiveLayoutInstrumentedTest {
         var sendFiles = 0
         var sendPhoto = 0
         compose.setContent {
-            MaterialExpressiveTheme {
+            MaterialTheme {
                 Box(Modifier.width(360.dp)) {
                     ExpressiveDeviceCard(
                         state = LinkState.Connected,
@@ -87,7 +85,7 @@ class ExpressiveLayoutInstrumentedTest {
     @Test
     fun narrowWidthStacksButtonsWithoutClipping() {
         compose.setContent {
-            MaterialExpressiveTheme {
+            MaterialTheme {
                 Box(Modifier.width(276.dp)) {
                     ExpressiveDeviceCard(
                         state = LinkState.Connected,
@@ -117,7 +115,7 @@ class ExpressiveLayoutInstrumentedTest {
     fun suspendedNavigationRemainsInteractiveAndSelected() {
         var showSettings by mutableStateOf(false)
         compose.setContent {
-            MaterialExpressiveTheme {
+            MaterialTheme {
                 ExpressiveNavigationDock(
                     selectedSettings = showSettings,
                     onHome = { showSettings = false },
@@ -137,7 +135,7 @@ class ExpressiveLayoutInstrumentedTest {
         compose.setContent {
             val base = LocalDensity.current
             CompositionLocalProvider(LocalDensity provides Density(base.density, 1.5f)) {
-                MaterialExpressiveTheme {
+                MaterialTheme {
                     Box(Modifier.width(360.dp)) {
                         ExpressiveDeviceCard(
                             state = LinkState.Connected,
@@ -169,7 +167,7 @@ class ExpressiveLayoutInstrumentedTest {
     @Test
     fun disconnectedStateDoesNotOfferFileActions() {
         compose.setContent {
-            MaterialExpressiveTheme {
+            MaterialTheme {
                 Box(Modifier.width(360.dp)) {
                     ExpressiveDeviceCard(
                         state = LinkState.Retrying,
