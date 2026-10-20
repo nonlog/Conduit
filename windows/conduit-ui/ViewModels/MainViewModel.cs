@@ -41,7 +41,22 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public ObservableCollection<NotificationEntry> Notifications { get; } = [];
     public ObservableCollection<SharedLinkEntry> SharedLinks { get; } = [];
     public ObservableCollection<TransferEntry> Transfers { get; } = [];
-    public Visibility TransfersVisibility => Transfers.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+
+    // The daemon persists terminal history. Only nonterminal records may occupy
+    // the compact live strip; the full collection is reserved for TransfersPage.
+    public TransferEntry? FeaturedTransfer => Transfers.FirstOrDefault(item => !item.IsTerminal);
+    public Visibility ActiveTransfersVisibility =>
+        FeaturedTransfer is null ? Visibility.Collapsed : Visibility.Visible;
+    public Visibility EmptyTransferHistoryVisibility =>
+        Transfers.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    public string ActiveTransferCountLabel
+    {
+        get
+        {
+            var count = Transfers.Count(item => !item.IsTerminal);
+            return count == 1 ? "1 active transfer" : $"{count} active transfers";
+        }
+    }
 
     public string DeviceName { get => _deviceName; private set => SetProperty(ref _deviceName, value); }
     public string ConnectionState { get => _connectionState; private set => SetProperty(ref _connectionState, value); }
@@ -346,7 +361,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 if (row is null) Transfers.Insert(index, next[index]);
                 else { row.Update(next[index]); var old = Transfers.IndexOf(row); if (old != index) Transfers.Move(old, index); }
             }
-            OnPropertyChanged(nameof(TransfersVisibility));
+            // File watcher updates need to invalidate all computed live-strip bindings.
+            // This also collapses the strip as soon as the last transfer completes.
+            OnPropertyChanged(nameof(FeaturedTransfer));
+            OnPropertyChanged(nameof(ActiveTransfersVisibility));
+            OnPropertyChanged(nameof(ActiveTransferCountLabel));
+            OnPropertyChanged(nameof(EmptyTransferHistoryVisibility));
         }
         catch (IOException) { /* The next atomic snapshot/event retries without polling. */ }
         catch (UnauthorizedAccessException) { }
