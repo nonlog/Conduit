@@ -30,8 +30,10 @@ $sidebarNodes = $page.SelectNodes("//*[local-name()='Button' and @Click='ShowTra
 Assert-Layout ($sidebarNodes.Count -eq 2) 'sidebar and live strip must both open transfer history'
 Assert-Layout ($code.Contains('TransfersPage.Visibility = transfers ? Visibility.Visible : Visibility.Collapsed;')) 'transfer page must be explicitly navigated'
 Assert-Layout ($code.Contains('NavigateTo(DesktopSection.Transfers);')) 'navigation handler must open history'
+Assert-Layout ($code.Contains('ViewModel.SetTransfersPageActive(transfers);')) 'navigation must suppress the live strip on its history page'
 
 Assert-Layout ($viewModel.Contains('Transfers.FirstOrDefault(item => !item.IsTerminal)')) 'only nonterminal records can occupy the live strip'
+Assert-Layout ($viewModel.Contains('_isTransfersPage || FeaturedTransfer is null')) 'the history page must never duplicate an active transfer in the footer'
 Assert-Layout ($viewModel.Contains('OnPropertyChanged(nameof(ActiveTransfersVisibility));')) 'the strip must collapse after the final transfer'
 Assert-Layout ($viewModel.Contains('OnPropertyChanged(nameof(FeaturedTransfer));')) 'the highlighted transfer must react to new snapshots'
 Assert-Layout ($model.Contains('State is "completed" or "failed" or "cancelled"')) 'finished, failed and cancelled transfers must all be terminal'

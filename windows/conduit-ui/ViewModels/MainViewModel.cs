@@ -37,6 +37,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private bool _explorerIntegration;
     private bool _hasNotifications;
     private bool _hasLinks;
+    private bool _isTransfersPage;
 
     public ObservableCollection<NotificationEntry> Notifications { get; } = [];
     public ObservableCollection<SharedLinkEntry> SharedLinks { get; } = [];
@@ -46,7 +47,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     // the compact live strip; the full collection is reserved for TransfersPage.
     public TransferEntry? FeaturedTransfer => Transfers.FirstOrDefault(item => !item.IsTerminal);
     public Visibility ActiveTransfersVisibility =>
-        FeaturedTransfer is null ? Visibility.Collapsed : Visibility.Visible;
+        _isTransfersPage || FeaturedTransfer is null ? Visibility.Collapsed : Visibility.Visible;
+    public void SetTransfersPageActive(bool active)
+    {
+        if (_isTransfersPage == active) return;
+        _isTransfersPage = active;
+        // The dedicated page already contains active rows and their Cancel buttons.
+        // Never show a second copy in the shared live strip underneath it.
+        OnPropertyChanged(nameof(ActiveTransfersVisibility));
+    }
     public Visibility EmptyTransferHistoryVisibility =>
         Transfers.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
     public string ActiveTransferCountLabel

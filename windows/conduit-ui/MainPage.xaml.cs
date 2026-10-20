@@ -192,6 +192,7 @@ public sealed partial class MainPage : Page
         var about = section == DesktopSection.About;
         var settings = general || about;
 
+        ViewModel.SetTransfersPageActive(transfers);
         NotificationsPage.Visibility = notifications ? Visibility.Visible : Visibility.Collapsed;
         SharedLinksPage.Visibility = links ? Visibility.Visible : Visibility.Collapsed;
         TransfersPage.Visibility = transfers ? Visibility.Visible : Visibility.Collapsed;
