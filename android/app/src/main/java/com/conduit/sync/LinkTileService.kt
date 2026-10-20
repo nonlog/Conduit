@@ -1,7 +1,8 @@
 package com.conduit.sync
 
 import android.app.PendingIntent
-import android.os.Build
+import androidx.core.service.quicksettings.PendingIntentActivityWrapper
+import androidx.core.service.quicksettings.TileServiceCompat
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -27,16 +28,12 @@ class LinkTileService : TileService() {
         val paired = Identity.peer(filesDir) != null
         if (!paired && !LinkStatus.pairing) {
             val open = Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            if (Build.VERSION.SDK_INT >= 34) {
-                // Android 14+ rejects the old Intent overload for target SDK 34+ apps.
-                val pending = PendingIntent.getActivity(
-                    this, 0x4351, open, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-                )
-                startActivityAndCollapse(pending)
-            } else {
-                @Suppress("DEPRECATION")
-                startActivityAndCollapse(open)
-            }
+            // AndroidX chooses the supported launch overload on each Android version
+            // and enforces immutable PendingIntent behavior on Android 14+.
+            TileServiceCompat.startActivityAndCollapse(
+                this,
+                PendingIntentActivityWrapper(this, 0x4351, open, PendingIntent.FLAG_UPDATE_CURRENT, false),
+            )
             return
         }
         val linkRequested = Settings.linkWanted
