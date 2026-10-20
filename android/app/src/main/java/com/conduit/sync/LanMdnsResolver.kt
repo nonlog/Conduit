@@ -6,6 +6,7 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.util.Locale
 
@@ -46,7 +47,15 @@ internal object LanMdnsResolver {
         val question = question(host)
         return DatagramSocket(null).use { socket ->
             socket.bind(InetSocketAddress(0))
-            network.bindSocket(socket)
+            try {
+                network.bindSocket(socket)
+            } catch (denied: SocketException) {
+                if (!isNetworkBindingDenied(denied)) throw denied
+                // Some VPNs reject explicit physical-network socket binds. A regular socket
+                // uses Android/VPN routing instead; if multicast is blocked there, this one
+                // bounded probe simply fails and the existing Relay path stays available.
+                // Never forge a VPN exemption or change the device's network policy.
+            }
             socket.send(DatagramPacket(question, question.size, multicast, 5353))
             val result = linkedSetOf<InetAddress>()
             val deadline = SystemClock.elapsedRealtime() + TIMEOUT_MS

@@ -38,6 +38,21 @@ checkout or reintroduce the rejected sensitive-notification setting.
   `.local` addresses into NSD's resolution, a single bounded mDNS A/QU query
   over the physical discovery Network recovers the advertised on-link IPv4;
   there is no continuous scanner, hard-coded desktop address or bypass of Noise.
+- A queued Windows file cancelled before its turn shows `Cancelled before sending`,
+  not a misleading stale-queue error. A queued file owned by a prior authenticated
+  session is instead marked failed with `Session changed`.
+- A VPN that forbids bypassing can reject `Network.bindSocket` on the physical Wi-Fi
+  with `EPERM`, even after mDNS finds the correct on-link peer. For this exact
+  direct-LAN permission error, the Android client may attempt its already-validated
+  literal LAN IPv4 using an ordinary, unbound socket; Android/VPN routing still
+  decides whether it is reachable. Do not fake a VPN exemption, force source-IP
+  binding, change VPN settings, or fall back this way for other errors/Relay.
+- The same VPN permission restriction may affect the bounded multicast A/QU
+  resolver. It also attempts an unbound query only for explicit `EPERM`; if VPN
+  routing cannot reach multicast, discovery times out normally and uses Relay.
+- If a newly discovered LAN candidate still fails before authentication, fall
+  straight through to the paired Relay once instead of repeating the same mDNS
+  candidate until its retry backoff is exhausted. LAN pairing windows remain LAN-only.
 - Stale callbacks and default-VPN changes must not relabel a live route or tear
   down a valid physical socket. Optional Relay-to-LAN promotion waits for active
   file transfers and pending publication results.
