@@ -44,6 +44,12 @@ checkout or reintroduce the rejected sensitive-notification setting.
   literal LAN IPv4 using an ordinary, unbound socket; Android/VPN routing still
   decides whether it is reachable. Do not fake a VPN exemption, force source-IP
   binding, change VPN settings, or fall back this way for other errors/Relay.
+- The same VPN permission restriction may affect the bounded multicast A/QU
+  resolver. It also attempts an unbound query only for explicit `EPERM`; if VPN
+  routing cannot reach multicast, discovery times out normally and uses Relay.
+- If a newly discovered LAN candidate still fails before authentication, fall
+  straight through to the paired Relay once instead of repeating the same mDNS
+  candidate until its retry backoff is exhausted. LAN pairing windows remain LAN-only.
 - Stale callbacks and default-VPN changes must not relabel a live route or tear
   down a valid physical socket. Optional Relay-to-LAN promotion waits for active
   file transfers and pending publication results.

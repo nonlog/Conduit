@@ -102,12 +102,14 @@ internal fun isVpnFakeIp(address: InetAddress): Boolean {
  * network binding. This does not bypass the VPN: Android's ordinary routing and VPN policy
  * still decide whether the unbound connection is permitted to reach the desktop.
  */
+internal fun isNetworkBindingDenied(error: SocketException): Boolean =
+    generateSequence<Throwable>(error) { it.cause }
+        .any { cause -> cause.message?.contains("EPERM") == true }
+
 internal fun shouldRetryLanThroughSystemRoute(address: InetSocketAddress, error: SocketException): Boolean {
     val ip = address.address
     return ip is Inet4Address && !ip.isAnyLocalAddress && !ip.isLoopbackAddress &&
-        !ip.isMulticastAddress && !isVpnFakeIp(ip) &&
-        generateSequence<Throwable>(error) { it.cause }
-            .any { cause -> cause.message?.contains("EPERM") == true }
+        !ip.isMulticastAddress && !isVpnFakeIp(ip) && isNetworkBindingDenied(error)
 }
 
 /**

@@ -114,6 +114,21 @@ internal fun shouldRecheckLanAfterRelay(
 ): Boolean = connectedViaRelay && networkHasLan && !alreadyChecked
 
 /**
+ * A real mDNS advertisement is only a LAN candidate, not proof that the direct TCP/Noise
+ * handshake works. If it fails, choose Relay immediately rather than rediscovering the same
+ * unreachable candidate indefinitely; no new background polling is introduced.
+ */
+internal fun shouldFallbackToRelayAfterLanFailure(
+    wasLinked: Boolean,
+    route: String?,
+    relayAttemptActive: Boolean,
+    networkUp: Boolean,
+    linkWanted: Boolean,
+    hasPairedPeer: Boolean,
+): Boolean = !wasLinked && route == "LAN" && !relayAttemptActive &&
+    networkUp && linkWanted && hasPairedPeer
+
+/**
  * A link that was genuinely established gets one immediate repair attempt before we demote the
  * service and enter notification-free offline backoff. This keeps a screen-off transient from
  * turning into a long outage while still removing the notification when the desktop is really gone.
@@ -538,6 +553,24 @@ class SyncService : Service() {
                                             )
                                         }
                                     }
+                                }
+                                if (shouldFallbackToRelayAfterLanFailure(
+                                        wasLinked = wasLinked,
+                                        route = LinkStatus.path,
+                                        relayAttemptActive = endpoint != null,
+                                        networkUp = networkUp,
+                                        linkWanted = Settings.linkWanted,
+                                        hasPairedPeer = knownPeer != null,
+                                    )
+                                ) {
+                                    // NSD can find an authentic on-link address whose socket is
+                                    // forbidden by VPN policy. A second mDNS burst would find the
+                                    // same unreachable desktop and starve a working Relay forever.
+                                    Log.i(TAG, "direct LAN candidate failed; trying the paired Relay instead")
+                                    clearRelayPlan()
+                                    main.removeCallbacks(retry)
+                                    dialRelay()
+                                    return@post
                                 }
                                 if (shouldRecoverEstablishedLinkImmediately(
                                         wasLinked,

@@ -19,6 +19,12 @@ class LanSocketFallbackTest {
         ))
     }
 
+    @Test fun physicalMdnsBindUsesSystemRouteOnlyWhenExplicitBindingIsDenied() {
+        assertTrue(isNetworkBindingDenied(SocketException("network 112 bind: EPERM")))
+        assertFalse(isNetworkBindingDenied(SocketException("network 112 bind: EACCES")))
+        assertFalse(isNetworkBindingDenied(SocketException("network 112 bind: ENETUNREACH")))
+    }
+
     @Test fun arbitraryBindFailuresMustNotBeSilentlyRerouted() {
         val lan = InetSocketAddress("192.168.50.42", 41112)
         for (reason in listOf("ENETUNREACH", "EBADF", "EACCES", "EADDRNOTAVAIL")) {
