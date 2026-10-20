@@ -263,6 +263,23 @@ class ExpressiveLayoutInstrumentedTest {
         compose.onNodeWithContentDescription("Send files").assertIsDisplayed()
     }
 
+    @Test
+    fun groupedSurfaceNeverOverlaysSequentialSettingsRows() {
+        compose.setContent {
+            ConduitTheme(darkOverride = true) {
+                ExpressiveCard {
+                    SwitchPreferenceRow(R.drawable.ic_settings, "First preference", checked = false, onCheckedChange = {})
+                    SettingsDivider()
+                    SwitchPreferenceRow(R.drawable.ic_settings, "Second preference", checked = true, onCheckedChange = {})
+                }
+            }
+        }
+        val first = compose.onNodeWithContentDescription("First preference").assertIsDisplayed().getUnclippedBoundsInRoot()
+        val second = compose.onNodeWithContentDescription("Second preference").assertIsDisplayed().getUnclippedBoundsInRoot()
+        assertTrue("Rows in a grouped card must not overlap", second.top >= first.bottom)
+        saveScreenshot("grouped-settings-rows.png")
+    }
+
     @androidx.compose.runtime.Composable
     private fun DashboardFixture() {
         ConduitApp(

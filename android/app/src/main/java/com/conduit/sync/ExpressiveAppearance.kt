@@ -39,8 +39,11 @@ internal fun ExpressiveCard(modifier: Modifier = Modifier, content: @Composable 
         shape = RoundedCornerShape(ExpressiveLayout.cardCorner),
         color = MaterialTheme.colorScheme.surfaceContainerLow,
         shadowElevation = 1.dp,
-        content = content,
-    )
+    ) {
+        // Surface is a Box, unlike the previous Material Card's ColumnScope.
+        // Keep sequential settings rows vertical, including the OEM battery controls.
+        Column { content() }
+    }
 }
 
 @Composable
