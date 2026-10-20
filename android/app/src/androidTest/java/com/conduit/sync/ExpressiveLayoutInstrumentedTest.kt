@@ -12,8 +12,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.asAndroidBitmap
-import androidx.compose.ui.test.assertDoesNotExist
-import androidx.compose.ui.test.assertExists
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
@@ -67,11 +65,11 @@ class ExpressiveLayoutInstrumentedTest {
         photo.assertExists().assertIsDisplayed()
         val fb = files.getUnclippedBoundsInRoot()
         val pb = photo.getUnclippedBoundsInRoot()
-        assertEquals(60f, fb.height.value, 0.75f)
-        assertEquals(fb.height.value, pb.height.value, 0.75f)
+        assertEquals(60f, (fb.bottom - fb.top).value, 0.75f)
+        assertEquals((fb.bottom - fb.top).value, (pb.bottom - pb.top).value, 0.75f)
         assertEquals(fb.top.value, pb.top.value, 0.75f)
         assertEquals(fb.bottom.value, pb.bottom.value, 0.75f)
-        assertEquals(fb.width.value, pb.width.value, 0.75f)
+        assertEquals((fb.right - fb.left).value, (pb.right - pb.left).value, 0.75f)
         assertTrue("Standard phone must show actions side by side", pb.left > fb.right)
         files.performClick()
         photo.performClick()
@@ -105,8 +103,8 @@ class ExpressiveLayoutInstrumentedTest {
         }
         val fb = compose.onNodeWithContentDescription("Send files").assertIsDisplayed().getUnclippedBoundsInRoot()
         val pb = compose.onNodeWithContentDescription("Send photo").assertIsDisplayed().getUnclippedBoundsInRoot()
-        assertEquals(60f, fb.height.value, 0.75f)
-        assertEquals(fb.height.value, pb.height.value, 0.75f)
+        assertEquals(60f, (fb.bottom - fb.top).value, 0.75f)
+        assertEquals((fb.bottom - fb.top).value, (pb.bottom - pb.top).value, 0.75f)
         assertTrue("Photo action must stack below files", pb.top > fb.bottom)
         saveScreenshot("phone-narrow-276dp.png")
     }
@@ -158,8 +156,8 @@ class ExpressiveLayoutInstrumentedTest {
             .assertIsDisplayed().getUnclippedBoundsInRoot()
         val photo = compose.onNodeWithContentDescription("Send photo")
             .assertIsDisplayed().getUnclippedBoundsInRoot()
-        assertEquals(60f, files.height.value, 0.75f)
-        assertEquals(60f, photo.height.value, 0.75f)
+        assertEquals(60f, (files.bottom - files.top).value, 0.75f)
+        assertEquals(60f, (photo.bottom - photo.top).value, 0.75f)
         assertTrue("Large fonts must stack rather than clip action text", photo.top > files.bottom)
         saveScreenshot("phone-large-font-360dp.png")
     }
