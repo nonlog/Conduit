@@ -1,6 +1,12 @@
 package com.conduit.sync
 
 import android.os.Build
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import androidx.core.view.WindowCompat
+import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialExpressiveTheme
 import androidx.compose.material3.MotionScheme
@@ -25,6 +31,17 @@ internal fun ConduitTheme(darkOverride: Boolean? = null, content: @Composable ()
         else -> isSystemInDarkTheme()
     }
     val context = LocalContext.current
+    val view = LocalView.current
+    SideEffect {
+        val activity = generateSequence<Context>(view.context) { current ->
+            (current as? ContextWrapper)?.baseContext?.takeIf { it !== current }
+        }.filterIsInstance<Activity>().firstOrNull()
+        if (activity != null) {
+            val bars = WindowCompat.getInsetsController(activity.window, view)
+            bars.isAppearanceLightStatusBars = !dark
+            bars.isAppearanceLightNavigationBars = !dark
+        }
+    }
     val accent = if (Settings.wallpaperAccent && Build.VERSION.SDK_INT >= 31) {
         if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
     } else if (dark) {

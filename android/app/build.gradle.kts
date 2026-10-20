@@ -80,6 +80,8 @@ dependencies {
     implementation("androidx.compose.material3:material3:1.5.0-beta01")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.activity:activity-compose:1.13.0")
+    // Code Scanner brings an obsolete Fragment transitively; align ActivityResult support.
+    implementation("androidx.fragment:fragment:1.9.1")
 
     // On-demand QR pairing. Google Code Scanner delegates camera access and image processing to
     // Play services, so Conduit itself needs no CAMERA permission and no resident camera pipeline.

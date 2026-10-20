@@ -287,9 +287,16 @@ class ExpressiveLayoutInstrumentedTest {
         }
         // Copy through the emulator shell while the test APK still exists. AGP uninstalls
         // it after tests and removes app-specific external storage, so pulling that later loses PNGs.
-        val output = instrumentation.uiAutomation.executeShellCommand(
-            "mkdir -p /sdcard/Download/conduit-ui-smoke && cp '${png.absolutePath}' '/sdcard/Download/conduit-ui-smoke/$name'"
-        ).use { fd -> FileInputStream(fd.fileDescriptor).use { it.readBytes().decodeToString() } }
-        assertTrue("Screenshot export failed: $output", output.isBlank())
+        fun shell(command: String): String = instrumentation.uiAutomation.executeShellCommand(command).use { fd ->
+            FileInputStream(fd.fileDescriptor).use { it.readBytes().decodeToString().trim() }
+        }
+        // UiAutomation executes an argv, NOT a shell script: chaining with && merely
+        // passes those words to mkdir. Separate commands ensure the PNG is really copied.
+        val destination = "/sdcard/Download/conduit-ui-smoke/$name"
+        assertTrue(shell("mkdir -p /sdcard/Download/conduit-ui-smoke").isBlank())
+        assertTrue(shell("cp ${png.absolutePath} $destination").isBlank())
+        val exportedBytes = shell("stat -c %s $destination").toLongOrNull()
+        assertEquals("Screenshot must survive AGP test-app uninstall", png.length(), exportedBytes)
+
     }
 }
