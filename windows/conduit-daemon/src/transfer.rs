@@ -153,6 +153,66 @@ struct State {
     live: Option<(String, bool)>,
     rows: VecDeque<Row>,
 }
+
+// transfers.tsv is also the desktop's recent-transfer history. Its rows are
+// newest-first, while the in-memory queue is oldest-first. Rebuild the bounded
+// queue before the snapshot writer starts, otherwise restarting the daemon
+// replaces perfectly good persisted history with an empty file.
+fn restore_snapshot(body: &str) -> VecDeque<Row> {
+    let mut newest_first: Vec<Row> = Vec::new();
+    for line in body.lines() {
+        if newest_first.len() == HISTORY {
+            break;
+        }
+        let fields: Vec<_> = line.splitn(7, '\t').collect();
+        if fields.len() != 7 {
+            continue;
+        }
+        let Ok(id) = parse_id(fields[0]) else {
+            continue;
+        };
+        if id.len() < 16 || id.len() > 64 || newest_first.iter().any(|row| row.id == id) {
+            continue;
+        }
+        let direction = match fields[1] {
+            "inbound" => "inbound",
+            "outbound" => "outbound",
+            _ => continue,
+        };
+        let (Ok(bytes), Ok(total)) = (fields[2].parse::<u64>(), fields[3].parse::<u64>()) else {
+            continue;
+        };
+        if bytes > total {
+            continue;
+        }
+        // A previous process's socket, queued work and cancellation lease no
+        // longer exist. Never resurrect them as actionable tasks in the UI.
+        let (state, detail) = match fields[4] {
+            "completed" => ("completed", fields[6].chars().take(512).collect()),
+            "failed" => ("failed", fields[6].chars().take(512).collect()),
+            "cancelled" => ("cancelled", fields[6].chars().take(512).collect()),
+            "queued" | "transferring" | "waiting confirmation" => (
+                "failed",
+                "Transfer interrupted by desktop restart".to_owned(),
+            ),
+            _ => continue,
+        };
+        newest_first.push(Row {
+            id,
+            owner: String::new(), // old rows must not belong to a new session
+            name: fields[5].chars().take(256).collect(),
+            direction,
+            bytes,
+            total,
+            state,
+            detail,
+            cancel: false,
+        });
+    }
+    newest_first.reverse();
+    newest_first.into()
+}
+
 pub struct Transfers {
     state: Mutex<State>,
     changed: watch::Sender<u64>,
@@ -161,16 +221,24 @@ pub struct Transfers {
 }
 impl Transfers {
     pub fn start(dir: &Path) -> Arc<Self> {
+        let path = dir.join("transfers.tsv");
+        let rows = match std::fs::read_to_string(&path) {
+            Ok(body) => restore_snapshot(&body),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => VecDeque::new(),
+            Err(error) => {
+                tracing::warn!(%error, "could not restore transfer history");
+                VecDeque::new()
+            }
+        };
         let (changed, mut rx) = watch::channel(0u64);
         let (sessions, _) = watch::channel(None);
         let this = Arc::new(Self {
-            state: Mutex::new(State::default()),
+            state: Mutex::new(State { live: None, rows }),
             changed,
             sessions,
             wake: Notify::new(),
         });
         let state = Arc::downgrade(&this);
-        let path = dir.join("transfers.tsv");
         // One coalescing local writer, asleep while idle. The existing UI watcher reads this file.
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return this;
@@ -693,6 +761,84 @@ mod tests {
             transfer_id: vec![id; 16],
             timestamp_ms: 0,
         }
+    }
+
+    #[test]
+    fn completed_history_survives_reloading_and_a_new_session() -> Result<()> {
+        let first = "11".repeat(16);
+        let second = "22".repeat(16);
+        let body = format!(
+            "{second}\toutbound\t0\t10\tcancelled\tphoto.jpg\tUser cancelled\n\
+             {first}\tinbound\t4\t4\tcompleted\tfile.bin\t\n"
+        );
+        let restored = restore_snapshot(&body);
+        assert_eq!(restored.len(), 2);
+        let registry = registry();
+        registry.state.lock().unwrap().rows = restored;
+        assert_eq!(registry.snapshot(), body);
+        let lease = registry.session(true)?;
+        let (id, _) = registry.enqueue(&lease.owner, Path::new("new.bin"), 10)?;
+        let updated = registry.snapshot();
+        assert!(updated.contains(&first));
+        assert!(updated.contains(&second));
+        assert!(updated.contains(&hex(&id)));
+        Ok(())
+    }
+
+    #[test]
+    fn restart_never_reactivates_interrupted_or_malformed_transfers() {
+        let first = "33".repeat(16);
+        let second = "44".repeat(16);
+        let body = format!(
+            "{first}\toutbound\t5\t10\ttransferring\tin-flight.bin\t\n\
+             {second}\tinbound\t0\t10\twaiting confirmation\twaiting.bin\t\n\
+             broken\toutbound\t3\t2\tcompleted\tbad.bin\t\n"
+        );
+        let rows = restore_snapshot(&body);
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| terminal(row.state)));
+        assert!(rows
+            .iter()
+            .all(|row| row.detail == "Transfer interrupted by desktop restart"));
+        assert!(rows.iter().all(|row| row.owner.is_empty() && !row.cancel));
+        let registry = registry();
+        registry.state.lock().unwrap().rows = rows;
+        assert!(!registry.has_active());
+        assert!(!registry.snapshot().contains("\ttransferring\t"));
+        assert!(!registry.snapshot().contains("\twaiting confirmation\t"));
+    }
+
+    #[tokio::test]
+    async fn daemon_start_does_not_clear_existing_disk_history() -> Result<()> {
+        let name = format!(
+            "conduit-history-recovery-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        );
+        let dir = std::env::temp_dir().join(name);
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("transfers.tsv");
+        let original = format!(
+            "{}\tinbound\t10\t10\tcompleted\timportant.bin\t\n",
+            "55".repeat(16)
+        );
+        std::fs::write(&path, &original)?;
+        let registry = Transfers::start(&dir);
+        assert_eq!(registry.snapshot(), original);
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        assert_eq!(std::fs::read_to_string(&path)?, original);
+        let lease = registry.session(true)?;
+        registry.enqueue(&lease.owner, Path::new("new.bin"), 8)?;
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        let latest = std::fs::read_to_string(&path)?;
+        assert!(latest.contains("important.bin"));
+        assert!(latest.contains("new.bin"));
+        drop(lease);
+        drop(registry);
+        let _ = std::fs::remove_dir_all(dir);
+        Ok(())
     }
 
     #[tokio::test]
