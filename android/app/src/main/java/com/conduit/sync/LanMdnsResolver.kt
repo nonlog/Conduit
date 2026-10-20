@@ -33,6 +33,13 @@ internal object LanMdnsResolver {
         return host
     }
 
+    /** NsdServiceInfo.getHostname() omits the trailing `.local` domain (API 36+). */
+    fun nsdHostname(value: String?): String? {
+        val label = value?.trim()?.trimEnd('.')?.takeIf { it.isNotEmpty() } ?: return null
+        if ('.' in label && !label.endsWith(".local", ignoreCase = true)) return null
+        return hostname(if (label.endsWith(".local", ignoreCase = true)) label else "$label.local")
+    }
+
     /** Called only by Discovery's bounded miss handler, never on Android's main thread. */
     fun query(network: Network, rawHostname: String): List<InetAddress> {
         val host = hostname(rawHostname) ?: return emptyList()

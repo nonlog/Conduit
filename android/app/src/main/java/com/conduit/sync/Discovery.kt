@@ -118,8 +118,8 @@ class Discovery(
             // discovered the TXT record over the physical Wi-Fi. Windows advertised its real
             // 192.168.x.x mDNS address, but Android's resolver never returned that candidate.
             // Query the already-verified SRV hostname once through the same physical Network.
-            val hostname = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
-                LanMdnsResolver.hostname(service.hostname)
+            val hostname = if (Build.VERSION.SDK_INT >= 36) {
+                LanMdnsResolver.nsdHostname(service.hostname)
             } else null
             val fallback = hostname ?: LanMdnsResolver.hostname("${service.serviceName}.local")
             if (serviceNetwork != null && fallback != null) {
