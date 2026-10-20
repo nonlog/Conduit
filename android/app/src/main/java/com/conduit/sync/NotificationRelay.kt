@@ -405,8 +405,7 @@ class NotificationRelay : NotificationListenerService() {
                     ?.let(Notification.MessagingStyle.Message::getMessagesFromBundleArray)
                     .orEmpty()
             } else {
-                Notification.MessagingStyle.extractMessagingStyleFromNotification(notification)
-                    ?.messages.orEmpty()
+                legacyMessagingMessages(notification, this@NotificationRelay)
             }
         }.getOrDefault(emptyList())
 
