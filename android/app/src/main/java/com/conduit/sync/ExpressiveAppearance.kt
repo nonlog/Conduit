@@ -72,7 +72,7 @@ internal fun GlassPane(
         Surface(
             modifier = modifier,
             shape = RoundedCornerShape(corner),
-            color = colors.surfaceContainerLow,
+            color = if (isSystemInDarkTheme()) colors.surfaceContainerHigh else colors.surfaceBright,
             border = BorderStroke(1.dp, colors.outlineVariant.copy(alpha = 0.30f)),
         ) { content() }
         return
@@ -118,7 +118,9 @@ internal fun ExpressiveCard(
     Card(
         modifier = modifier,
         shape = RoundedCornerShape(26.dp),
-        colors = CardDefaults.cardColors(containerColor = colors.surfaceContainerLow),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isSystemInDarkTheme()) colors.surfaceContainerHigh else colors.surfaceBright,
+        ),
         border = BorderStroke(1.dp, colors.outlineVariant.copy(alpha = 0.32f)),
     ) { content() }
 }
