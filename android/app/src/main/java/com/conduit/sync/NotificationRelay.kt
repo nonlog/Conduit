@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.Drawable
+import android.os.Build
 import android.os.Bundle
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
@@ -381,10 +382,14 @@ class NotificationRelay : NotificationListenerService() {
         ranking?.importance?.let { it < NotificationManager.IMPORTANCE_DEFAULT } ?: false
 
     /** Falls back to the package name, which is still better than an empty toast source. */
+    @Suppress("DEPRECATION")
     private fun appLabel(pkg: String): String = runCatching {
-        packageManager.getApplicationLabel(
-            packageManager.getApplicationInfo(pkg, PackageManager.ApplicationInfoFlags.of(0)),
-        ).toString()
+        val info = if (Build.VERSION.SDK_INT >= 33) {
+            packageManager.getApplicationInfo(pkg, PackageManager.ApplicationInfoFlags.of(0))
+        } else {
+            packageManager.getApplicationInfo(pkg, 0)
+        }
+        packageManager.getApplicationLabel(info).toString()
     }.getOrDefault(pkg)
 
     /**
@@ -394,10 +399,15 @@ class NotificationRelay : NotificationListenerService() {
     @Suppress("DEPRECATION")
     private fun messagingMessages(notification: Notification): List<Notification.MessagingStyle.Message> =
         runCatching {
-            notification.extras
-                .getParcelableArray(Notification.EXTRA_MESSAGES)
-                ?.let(Notification.MessagingStyle.Message::getMessagesFromBundleArray)
-                .orEmpty()
+            if (Build.VERSION.SDK_INT >= 30) {
+                notification.extras
+                    .getParcelableArray(Notification.EXTRA_MESSAGES)
+                    ?.let(Notification.MessagingStyle.Message::getMessagesFromBundleArray)
+                    .orEmpty()
+            } else {
+                Notification.MessagingStyle.extractMessagingStyleFromNotification(notification)
+                    ?.messages.orEmpty()
+            }
         }.getOrDefault(emptyList())
 
     /**
