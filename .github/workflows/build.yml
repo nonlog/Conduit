@@ -43,7 +43,7 @@ jobs:
         shell: bash
         run: |
           "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
-            "platforms;android-37" "build-tools;37.0.0"
+            "platforms;android-37.0" "build-tools;37.0.0"
 
       - name: Prepare emulator KVM
         shell: bash
@@ -96,7 +96,7 @@ jobs:
         shell: bash
         run: |
           "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
-            "platforms;android-37" \
+            "platforms;android-37.0" \
             "build-tools;37.0.0"
 
       - name: Set up Gradle cache

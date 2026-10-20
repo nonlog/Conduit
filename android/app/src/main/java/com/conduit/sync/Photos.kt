@@ -61,7 +61,7 @@ class Photos(private val context: Context, private val link: Link) {
             // too heavy for a callback, and `sendImage` already runs its lambda on the
             // thread dedicated to outbound frames. The notified URI is ignored on purpose:
             // it is not always the item, so the newest row is looked up either way.
-            link.sendImage("photo", photo = true) { next() }
+            link.sendImage("photo", photo = true, emptyIsNoop = true) { next() }
         }
     }
 
