@@ -97,8 +97,8 @@ internal fun GlassPane(
             .shadow(
                 elevation = if (prominent) 12.dp else 9.dp,
                 shape = shape,
-                ambientColor = colors.shadow.copy(alpha = 0.12f),
-                spotColor = colors.shadow.copy(alpha = 0.13f),
+                ambientColor = colors.onSurface.copy(alpha = 0.12f),
+                spotColor = colors.onSurface.copy(alpha = 0.13f),
             )
             .clip(shape)
             .background(Brush.verticalGradient(listOf(tint, background, background)))
