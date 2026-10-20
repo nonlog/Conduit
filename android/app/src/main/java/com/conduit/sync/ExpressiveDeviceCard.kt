@@ -1,28 +1,12 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
+
 package com.conduit.sync
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.FilledIconToggleButton
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButtonDefaults
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
+import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -35,10 +19,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
-/**
- * FlClash-inspired expressive device overview. This remains presentation-only:
- * connection, pairing, file selection and cancellation continue through the existing callbacks.
- */
+/** Dashboard structure drawn from the user's reference; no transport ownership in the UI. */
 @Composable
 internal fun ExpressiveDeviceCard(
     state: LinkState,
@@ -53,177 +34,85 @@ internal fun ExpressiveDeviceCard(
     onSendFiles: () -> Unit,
     onSendPhoto: () -> Unit,
 ) {
-    val colors = MaterialTheme.colorScheme
+    val c = MaterialTheme.colorScheme
     val paired = pairedDeviceId != null
-    val connected = state == LinkState.Connected
+    val linked = state == LinkState.Connected
     val requested = isLinkRequestedState(state)
-    val stateColor = when {
-        connected -> colors.tertiary
-        pairing || state == LinkState.Discovering || state == LinkState.Retrying -> colors.primary
-        else -> colors.outline
+    val stateLabel = when {
+        pairing -> "Pairing"
+        !paired -> "Not paired"
+        linked -> "Linked"
+        requested -> "Connecting"
+        else -> "Not connected"
     }
-
-    GlassPane(
-        modifier = Modifier.fillMaxWidth(),
-        corner = 32.dp,
-        prominent = connected,
-    ) {
-        Column(
-            modifier = Modifier.fillMaxWidth().padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(13.dp),
-            ) {
-                Surface(
-                    shape = RoundedCornerShape(23.dp),
-                    color = colors.primaryContainer,
-                    modifier = Modifier.size(64.dp),
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            painter = painterResource(R.drawable.ic_desktop),
-                            contentDescription = "Paired desktop",
-                            tint = colors.onPrimaryContainer,
-                            modifier = Modifier.size(31.dp),
-                        )
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        ExpressiveCard(Modifier.fillMaxWidth()) {
+            Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(28.dp))) {
+                // Real Material Expressive shape API. Static decoration, no background renderer.
+                Box(Modifier.align(Alignment.TopEnd).offset(x = 72.dp, y = (-26).dp)
+                    .size(204.dp).background(c.surfaceContainer, MaterialShapes.Cookie9Sided.toShape()))
+                Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                        Icon(painterResource(R.drawable.ic_connection_status), null, Modifier.size(20.dp), tint = c.onSurfaceVariant)
+                        Text("Connection", style = MaterialTheme.typography.titleMedium)
+                        StatusPill(stateLabel, active = linked)
                     }
-                }
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Text(
-                        text = when {
-                            pairing -> "Pairing a desktop"
-                            paired -> peerName ?: "Your computer"
-                            else -> "Add your computer"
-                        },
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(7.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Box(
-                            Modifier.size(8.dp).clip(CircleShape).background(stateColor),
-                        )
-                        Text(
-                            text = when {
-                                pairing -> "Pairing in progress"
-                                !paired -> "Ready to pair"
-                                else -> state.label
-                            },
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Medium,
-                            color = colors.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-                if (!paired || pairing) {
-                    FilledTonalButton(
-                        onClick = if (pairing) onCancelPair else onPair,
-                        modifier = Modifier.height(52.dp),
-                        shape = CircleShape,
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp),
-                    ) { Text(if (pairing) "Cancel" else "Pair") }
-                } else {
-                    FilledIconToggleButton(
-                        checked = requested,
-                        onCheckedChange = { if (requested) onDisconnect() else onConnect() },
-                        colors = IconButtonDefaults.filledIconToggleButtonColors(
-                            containerColor = colors.surfaceContainerHighest,
-                            contentColor = colors.onSurfaceVariant,
-                            checkedContainerColor = colors.primary,
-                            checkedContentColor = colors.onPrimary,
-                        ),
-                        modifier = Modifier.size(54.dp),
-                    ) {
-                        Icon(
-                            painter = painterResource(R.drawable.ic_sync),
-                            contentDescription = if (requested) "Disconnect" else "Connect",
-                            modifier = Modifier.size(27.dp),
-                        )
-                    }
-                }
-            }
-
-            path?.takeIf(String::isNotBlank)?.let { route ->
-                Surface(
-                    color = colors.secondaryContainer.copy(alpha = 0.78f),
-                    shape = CircleShape,
-                ) {
-                    Text(
-                        text = route,
-                        modifier = Modifier.padding(horizontal = 13.dp, vertical = 7.dp),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = colors.onSecondaryContainer,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-            if (!paired || pairing) {
-                Text(
-                    text = if (pairing) {
-                        "Keep pairing open on Windows until both devices recognize each other."
-                    } else {
-                        "Pair once to share files, photos and clipboard items over LAN or Relay."
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = colors.onSurfaceVariant,
-                )
-            }
-
-            if (connected) {
-                HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.55f))
-                BoxWithConstraints(Modifier.fillMaxWidth()) {
-                    // The 360dp reference phone leaves ~280dp inside the padded
-                    // hero: the actions must remain a matched horizontal pair.
-                    // Stack only when truly narrow or system font scale is large.
-                    if (maxWidth < 270.dp || LocalDensity.current.fontScale >= 1.35f) {
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            ExpressiveSendAction(
-                                label = "Send files",
-                                icon = R.drawable.ic_stat_upload,
-                                onClick = onSendFiles,
-                                modifier = Modifier.fillMaxWidth(),
-                                primary = true,
-                            )
-                            ExpressiveSendAction(
-                                label = "Send photo",
-                                icon = R.drawable.ic_photo,
-                                onClick = onSendPhoto,
-                                modifier = Modifier.fillMaxWidth(),
-                                primary = false,
-                            )
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Box(Modifier.size(44.dp).background(c.surfaceContainerHighest, MaterialShapes.Clover4Leaf.toShape()),
+                                    contentAlignment = Alignment.Center) {
+                                    Icon(painterResource(R.drawable.ic_desktop), null, Modifier.size(23.dp), tint = c.onSurfaceVariant)
+                                }
+                                Text(peerName ?: if (paired) "Your desktop" else "Add a desktop",
+                                    style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold,
+                                    maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                if (paired && !path.isNullOrBlank()) StatusPill(path, active = false)
+                                Text(if (linked) "Connected" else if (pairing) "Waiting for approval" else if (paired) "Ready to reconnect" else "Pair to get started",
+                                    style = MaterialTheme.typography.bodySmall, color = c.onSurfaceVariant,
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                            }
                         }
-                    } else {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        val description = when {
+                            pairing -> "Cancel pairing"
+                            !paired -> "Pair desktop"
+                            requested -> "Disconnect"
+                            else -> "Connect"
+                        }
+                        FilledIconButton(
+                            onClick = { when { pairing -> onCancelPair(); !paired -> onPair(); requested -> onDisconnect(); else -> onConnect() } },
+                            shapes = IconButtonDefaults.shapes(shape = CircleShape, pressedShape = RoundedCornerShape(26.dp)),
+                            modifier = Modifier.size(82.dp).semantics { contentDescription = description },
+                            colors = IconButtonDefaults.filledIconButtonColors(containerColor = c.primary, contentColor = c.onPrimary),
                         ) {
-                            ExpressiveSendAction(
-                                label = "Send files",
-                                icon = R.drawable.ic_stat_upload,
-                                onClick = onSendFiles,
-                                modifier = Modifier.weight(1f),
-                                primary = true,
-                            )
-                            ExpressiveSendAction(
-                                label = "Send photo",
-                                icon = R.drawable.ic_photo,
-                                onClick = onSendPhoto,
-                                modifier = Modifier.weight(1f),
-                                primary = false,
-                            )
+                            Icon(painterResource(when { pairing -> R.drawable.ic_close; !paired -> R.drawable.ic_add; requested -> R.drawable.ic_pause; else -> R.drawable.ic_play }),
+                                contentDescription = null, modifier = Modifier.size(32.dp))
+                        }
+                    }
+                }
+            }
+        }
+        if (linked) {
+            ExpressiveCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                        Icon(painterResource(R.drawable.ic_stat_upload), null, Modifier.size(20.dp), tint = c.onSurfaceVariant)
+                        Text("Send", style = MaterialTheme.typography.titleMedium)
+                    }
+                    BoxWithConstraints(Modifier.fillMaxWidth()) {
+                        if (maxWidth < 270.dp || LocalDensity.current.fontScale >= 1.35f) {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                SendAction("Send files", R.drawable.ic_file_outline, onSendFiles, Modifier.fillMaxWidth())
+                                SendAction("Send photo", R.drawable.ic_photo, onSendPhoto, Modifier.fillMaxWidth())
+                            }
+                        } else {
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                SendAction("Send files", R.drawable.ic_file_outline, onSendFiles, Modifier.weight(1f))
+                                SendAction("Send photo", R.drawable.ic_photo, onSendPhoto, Modifier.weight(1f))
+                            }
                         }
                     }
                 }
@@ -233,28 +122,28 @@ internal fun ExpressiveDeviceCard(
 }
 
 @Composable
-private fun ExpressiveSendAction(
-    label: String,
-    icon: Int,
-    onClick: () -> Unit,
-    modifier: Modifier,
-    primary: Boolean,
-) {
-    val colors = MaterialTheme.colorScheme
+internal fun StatusPill(text: String, active: Boolean = false) {
+    val c = MaterialTheme.colorScheme
+    Surface(shape = CircleShape, color = if (active) c.primaryContainer else c.surfaceContainer) {
+        Text(text, Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            style = MaterialTheme.typography.labelMedium,
+            color = if (active) c.primary else c.onSurfaceVariant,
+            maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+@Composable
+private fun SendAction(label: String, icon: Int, onClick: () -> Unit, modifier: Modifier) {
+    val c = MaterialTheme.colorScheme
     FilledTonalButton(
         onClick = onClick,
-        modifier = modifier
-            .height(60.dp)
-            .semantics { contentDescription = label },
-        shape = RoundedCornerShape(21.dp),
-        colors = ButtonDefaults.filledTonalButtonColors(
-            containerColor = if (primary) colors.primaryContainer else colors.tertiaryContainer,
-            contentColor = if (primary) colors.onPrimaryContainer else colors.onTertiaryContainer,
-        ),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 9.dp),
+        modifier = modifier.height(56.dp).semantics { contentDescription = label },
+        shapes = ButtonDefaults.shapes(shape = RoundedCornerShape(24.dp), pressedShape = RoundedCornerShape(16.dp)),
+        colors = ButtonDefaults.filledTonalButtonColors(containerColor = c.surfaceContainer, contentColor = c.onSurface),
+        contentPadding = PaddingValues(horizontal = 10.dp),
     ) {
-        Icon(painterResource(icon), contentDescription = null, modifier = Modifier.size(20.dp))
-        Spacer(Modifier.width(7.dp))
+        Icon(painterResource(icon), null, Modifier.size(21.dp), tint = c.primary)
+        Spacer(Modifier.width(8.dp))
         Text(label, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }

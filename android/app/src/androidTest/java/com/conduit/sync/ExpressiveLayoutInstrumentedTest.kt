@@ -1,6 +1,13 @@
 package com.conduit.sync
 
 import android.graphics.Bitmap
+import androidx.compose.material3.MotionScheme
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.assertIsOff
+import java.io.FileInputStream
+import org.junit.Assert.assertSame
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.width
@@ -32,6 +39,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /** Runs on a clean GitHub Actions emulator, never on the user's linked device. */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
 @RunWith(AndroidJUnit4::class)
 class ExpressiveLayoutInstrumentedTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
@@ -41,7 +49,7 @@ class ExpressiveLayoutInstrumentedTest {
         var sendFiles = 0
         var sendPhoto = 0
         compose.setContent {
-            MaterialTheme {
+            ConduitTheme(darkOverride = true) {
                 Box(Modifier.width(360.dp)) {
                     ExpressiveDeviceCard(
                         state = LinkState.Connected,
@@ -65,7 +73,7 @@ class ExpressiveLayoutInstrumentedTest {
         photo.assertExists().assertIsDisplayed()
         val fb = files.getUnclippedBoundsInRoot()
         val pb = photo.getUnclippedBoundsInRoot()
-        assertEquals(60f, (fb.bottom - fb.top).value, 0.75f)
+        assertEquals(56f, (fb.bottom - fb.top).value, 0.75f)
         assertEquals((fb.bottom - fb.top).value, (pb.bottom - pb.top).value, 0.75f)
         assertEquals(fb.top.value, pb.top.value, 0.75f)
         assertEquals(fb.bottom.value, pb.bottom.value, 0.75f)
@@ -83,7 +91,7 @@ class ExpressiveLayoutInstrumentedTest {
     @Test
     fun narrowWidthStacksButtonsWithoutClipping() {
         compose.setContent {
-            MaterialTheme {
+            ConduitTheme(darkOverride = true) {
                 Box(Modifier.width(276.dp)) {
                     ExpressiveDeviceCard(
                         state = LinkState.Connected,
@@ -103,7 +111,7 @@ class ExpressiveLayoutInstrumentedTest {
         }
         val fb = compose.onNodeWithContentDescription("Send files").assertIsDisplayed().getUnclippedBoundsInRoot()
         val pb = compose.onNodeWithContentDescription("Send photo").assertIsDisplayed().getUnclippedBoundsInRoot()
-        assertEquals(60f, (fb.bottom - fb.top).value, 0.75f)
+        assertEquals(56f, (fb.bottom - fb.top).value, 0.75f)
         assertEquals((fb.bottom - fb.top).value, (pb.bottom - pb.top).value, 0.75f)
         assertTrue("Photo action must stack below files", pb.top > fb.bottom)
         saveScreenshot("phone-narrow-276dp.png")
@@ -113,7 +121,7 @@ class ExpressiveLayoutInstrumentedTest {
     fun suspendedNavigationRemainsInteractiveAndSelected() {
         var showSettings by mutableStateOf(false)
         compose.setContent {
-            MaterialTheme {
+            ConduitTheme(darkOverride = true) {
                 ExpressiveNavigationDock(
                     selectedSettings = showSettings,
                     onHome = { showSettings = false },
@@ -133,7 +141,7 @@ class ExpressiveLayoutInstrumentedTest {
         compose.setContent {
             val base = LocalDensity.current
             CompositionLocalProvider(LocalDensity provides Density(base.density, 1.5f)) {
-                MaterialTheme {
+                ConduitTheme(darkOverride = true) {
                     Box(Modifier.width(360.dp)) {
                         ExpressiveDeviceCard(
                             state = LinkState.Connected,
@@ -156,8 +164,8 @@ class ExpressiveLayoutInstrumentedTest {
             .assertIsDisplayed().getUnclippedBoundsInRoot()
         val photo = compose.onNodeWithContentDescription("Send photo")
             .assertIsDisplayed().getUnclippedBoundsInRoot()
-        assertEquals(60f, (files.bottom - files.top).value, 0.75f)
-        assertEquals(60f, (photo.bottom - photo.top).value, 0.75f)
+        assertEquals(56f, (files.bottom - files.top).value, 0.75f)
+        assertEquals(56f, (photo.bottom - photo.top).value, 0.75f)
         assertTrue("Large fonts must stack rather than clip action text", photo.top > files.bottom)
         saveScreenshot("phone-large-font-360dp.png")
     }
@@ -165,7 +173,7 @@ class ExpressiveLayoutInstrumentedTest {
     @Test
     fun disconnectedStateDoesNotOfferFileActions() {
         compose.setContent {
-            MaterialTheme {
+            ConduitTheme(darkOverride = true) {
                 Box(Modifier.width(360.dp)) {
                     ExpressiveDeviceCard(
                         state = LinkState.Retrying,
@@ -188,12 +196,87 @@ class ExpressiveLayoutInstrumentedTest {
         saveScreenshot("phone-reconnecting.png")
     }
 
+    @Test
+    fun publicExpressiveThemeUsesNeutralReferenceSurfaceAndOfficialMotion() {
+        compose.setContent {
+            ConduitTheme(darkOverride = true) {
+                assertSame(MotionScheme.expressive(), MaterialTheme.motionScheme)
+                assertEquals(0xFF111414.toInt(), MaterialTheme.colorScheme.background.toArgb())
+                assertEquals(0xFF1E2020.toInt(), MaterialTheme.colorScheme.surfaceContainerLow.toArgb())
+                assertEquals(24f, MaterialTheme.typography.headlineLarge.fontSize.value, 0.01f)
+            }
+        }
+    }
+
+    @Test
+    fun dashboardDarkShowsCompactActionsWithoutMarketingSubtitle() {
+        compose.setContent { ConduitTheme(darkOverride = true) { DashboardFixture() } }
+        compose.onNodeWithContentDescription("Send files").assertIsDisplayed()
+        compose.onNodeWithText("Your devices, in sync").assertDoesNotExist()
+        compose.onNodeWithText("Connection").assertIsDisplayed()
+        saveScreenshot("dashboard-dark.png")
+    }
+
+    @Test
+    fun settingsLightUsesGroupedRowsAndThemeControls() {
+        compose.setContent { ConduitTheme(darkOverride = false) { DashboardFixture() } }
+        compose.onNodeWithContentDescription("Settings").performClick()
+        compose.onNodeWithText("Theme").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Wallpaper accent").assertIsDisplayed()
+        compose.onNodeWithText("Liquid glass").assertDoesNotExist()
+        saveScreenshot("settings-light.png")
+    }
+
+    @Test
+    fun settingsDarkHasNoOversizedSectionHeadings() {
+        compose.setContent { ConduitTheme(darkOverride = true) { DashboardFixture() } }
+        compose.onNodeWithContentDescription("Settings").performClick()
+        compose.onNodeWithText("Devices").assertIsDisplayed()
+        saveScreenshot("settings-dark.png")
+    }
+
+    @Test
+    fun wholeSwitchRowHasSingleAccessibleToggleAction() {
+        var enabled by mutableStateOf(false)
+        var calls = 0
+        compose.setContent {
+            ConduitTheme(darkOverride = true) {
+                SwitchPreferenceRow(R.drawable.ic_palette, "Test preference", checked = enabled,
+                    onCheckedChange = { enabled = it; calls++ })
+            }
+        }
+        val row = compose.onNodeWithContentDescription("Test preference")
+        row.assertIsOff().performClick().assertIsOn()
+        compose.runOnIdle { assertEquals(1, calls) }
+    }
+
+    @androidx.compose.runtime.Composable
+    private fun DashboardFixture() {
+        ConduitApp(
+            appVersion = "test", peerName = "Desktop", pairedDeviceId = "ui-fixture", pairing = false,
+            path = "LAN", state = LinkState.Connected, history = emptyList(), transfers = emptyList(),
+            onCancelTransfer = {}, hideNotifications = false, onHideNotifications = {},
+            clipboardMode = ClipboardSyncMode.Unavailable, clipboardAccessibilityEnabled = false,
+            onOpenClipboardAccessibility = {}, batteryOptimizationIgnored = true,
+            oplusAppFreezeSupported = false, onRequestBatteryOptimization = {}, onOpenOplusFreezeSettings = {},
+            onConnect = {}, onDisconnect = {}, onPair = {}, onScanPairQr = {}, onCancelPair = {},
+            onForget = {}, onSendFiles = {}, onClearHistory = {},
+        )
+    }
+
     private fun saveScreenshot(name: String) {
-        val appContext = InstrumentationRegistry.getInstrumentation().targetContext
-        val folder = File(appContext.getExternalFilesDir(null), "ui-smoke")
-        folder.mkdirs()
-        FileOutputStream(File(folder, name)).use {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        val folder = File(context.getExternalFilesDir(null), "ui-smoke").apply { mkdirs() }
+        val png = File(folder, name)
+        FileOutputStream(png).use {
             compose.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it)
         }
+        // Copy through the emulator shell while the test APK still exists. AGP uninstalls
+        // it after tests and removes app-specific external storage, so pulling that later loses PNGs.
+        val output = instrumentation.uiAutomation.executeShellCommand(
+            "mkdir -p /sdcard/Download/conduit-ui-smoke && cp '${png.absolutePath}' '/sdcard/Download/conduit-ui-smoke/$name'"
+        ).use { fd -> FileInputStream(fd.fileDescriptor).use { it.readBytes().decodeToString() } }
+        assertTrue("Screenshot export failed: $output", output.isBlank())
     }
 }

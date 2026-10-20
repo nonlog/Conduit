@@ -31,6 +31,8 @@ object Settings {
     private const val HIDE_NOTIFICATION_CONTENT = "hide_notification_content"
     private const val LINK_WANTED = "link_wanted"
     private const val LIQUID_GLASS = "liquid_glass"
+    private const val THEME_MODE = "theme_mode"
+    private const val WALLPAPER_ACCENT = "wallpaper_accent"
 
     /**
      * Whether a mirrored notification arrives on the desktop with its text removed.
@@ -61,6 +63,21 @@ object Settings {
             wanted = value
             save()
         }
+
+    var themeMode: String
+        get() = appearanceMode
+        set(value) {
+            require(value in setOf("system", "light", "dark"))
+            appearanceMode = value
+            save()
+        }
+
+    var wallpaperAccent: Boolean
+        get() = wallpaperColors
+        set(value) { wallpaperColors = value; save() }
+
+    private var appearanceMode by mutableStateOf("system")
+    private var wallpaperColors by mutableStateOf(false)
 
     /** Purely visual preference; the background companion service never renders glass. */
     var liquidGlassEnabled: Boolean
@@ -101,6 +118,8 @@ object Settings {
         hidden = stored[HIDE_NOTIFICATION_CONTENT].toBoolean()
         wanted = stored[LINK_WANTED]?.toBooleanStrictOrNull() ?: true
         glass = stored[LIQUID_GLASS]?.toBooleanStrictOrNull() ?: true
+        appearanceMode = stored[THEME_MODE]?.takeIf { it in setOf("system", "light", "dark") } ?: "system"
+        wallpaperColors = stored[WALLPAPER_ACCENT]?.toBooleanStrictOrNull() ?: false
         // Says what was restored, because a setting that silently fails to persist looks
         // exactly like one that was never toggled.
         Log.i(TAG, "settings loaded, hide=$hidden wanted=$wanted")
@@ -119,7 +138,7 @@ object Settings {
         }
         runCatching {
             File(files, FILE).writeText(
-                "$HIDE_NOTIFICATION_CONTENT=$hidden\n$LINK_WANTED=$wanted\n$LIQUID_GLASS=$glass\n",
+                "$HIDE_NOTIFICATION_CONTENT=$hidden\n$LINK_WANTED=$wanted\n$LIQUID_GLASS=$glass\n$THEME_MODE=$appearanceMode\n$WALLPAPER_ACCENT=$wallpaperColors\n",
             )
         }.onFailure { Log.w(TAG, "could not save settings", it) }
     }

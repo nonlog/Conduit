@@ -19,6 +19,9 @@ import androidx.activity.result.contract.ActivityResultContracts.GetMultipleCont
 import androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions
 import androidx.compose.foundation.background
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -44,6 +47,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -437,33 +441,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@Composable
-private fun ConduitTheme(content: @Composable () -> Unit) {
-    val dark = isSystemInDarkTheme()
-    val context = LocalContext.current
-    val scheme = when {
-        // Material You wallpaper colours where the platform has them.
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
-            if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        dark -> darkColorScheme()
-        else -> lightColorScheme()
-    }
-    // Material 3 Expressive visual language using public, version-compatible APIs:
-    // dynamic wallpaper colours, a generously rounded shape system, and responsive
-    // native Compose components with event-driven spring transitions in the dock.
-    MaterialTheme(
-        colorScheme = scheme,
-        shapes = Shapes(
-            extraSmall = RoundedCornerShape(10.dp),
-            small = RoundedCornerShape(14.dp),
-            medium = RoundedCornerShape(20.dp),
-            large = RoundedCornerShape(28.dp),
-            extraLarge = RoundedCornerShape(36.dp),
-        ),
-        content = content,
-    )
-}
-
 private enum class MainTab(val title: String) {
     Home("Home"),
     Settings("Settings"),
@@ -471,7 +448,7 @@ private enum class MainTab(val title: String) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ConduitApp(
+internal fun ConduitApp(
     appVersion: String,
     peerName: String?,
     pairedDeviceId: String?,
@@ -570,7 +547,9 @@ private fun ConduitApp(
         )
     }
 
-    BackHandler(enabled = page == "history") { page = "main" }
+    BackHandler(enabled = page == "history" || tab == MainTab.Settings) {
+        if (page == "history") page = "main" else tabName = MainTab.Home.name
+    }
     if (page == "history") {
         HistoryScreen(
             history = history,
@@ -581,29 +560,11 @@ private fun ConduitApp(
     }
 
     Scaffold(
-        containerColor = MaterialTheme.colorScheme.surfaceContainer,
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainer,
-                    titleContentColor = MaterialTheme.colorScheme.onSurface,
-                ),
-                title = {
-                    Column(
-                        verticalArrangement = Arrangement.spacedBy(1.dp),
-                    ) {
-                        Text(
-                            if (tab == MainTab.Home) "Conduit" else "Settings",
-                            style = MaterialTheme.typography.headlineMedium,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        Text(
-                            if (tab == MainTab.Home) "Your devices, in sync" else "Personalize your companion",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                },
+            ExpressiveTopBar(
+                title = if (tab == MainTab.Home) "Conduit" else "Settings",
+                action = if (tab == MainTab.Home) requestPair else null,
             )
         },
         bottomBar = {
@@ -752,6 +713,32 @@ private fun SettingsTab(
     onForget: () -> Unit,
     onOpenHistory: () -> Unit,
 ) {
+    var showTheme by rememberSaveable { mutableStateOf(false) }
+    if (showTheme) {
+        AlertDialog(
+            onDismissRequest = { showTheme = false },
+            title = { Text("Theme") },
+            text = {
+                Column {
+                    listOf("system" to "Follow system", "light" to "Light", "dark" to "Dark").forEach { (value, label) ->
+                        Row(
+                            Modifier.fillMaxWidth().heightIn(min = 52.dp)
+                                .selectable(Settings.themeMode == value, role = Role.RadioButton) {
+                                    Settings.themeMode = value
+                                    showTheme = false
+                                },
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(selected = Settings.themeMode == value, onClick = null)
+                            Spacer(Modifier.width(12.dp))
+                            Text(label)
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showTheme = false }) { Text("Close") } },
+        )
+    }
     var confirmForget by rememberSaveable { mutableStateOf(false) }
     if (confirmForget) {
         AlertDialog(
@@ -787,14 +774,20 @@ private fun SettingsTab(
     ) {
         item { ExpressiveSectionTitle("Appearance") }
         item {
-            ExpressiveCard(modifier = Modifier.fillMaxWidth()) {
-                SwitchPreferenceRow(
-                    icon = R.drawable.ic_brand_sync,
-                    title = "Liquid glass",
-                    subtitle = "Floating glass navigation and device surfaces",
-                    checked = Settings.liquidGlassEnabled,
-                    onCheckedChange = { Settings.liquidGlassEnabled = it },
-                )
+            ExpressiveCard(Modifier.fillMaxWidth()) {
+                Column {
+                    PreferenceRow(
+                        icon = R.drawable.ic_palette, title = "Theme",
+                        subtitle = when (Settings.themeMode) { "dark" -> "Dark"; "light" -> "Light"; else -> "Follow system" },
+                        onClick = { showTheme = true },
+                    )
+                    SettingsDivider()
+                    SwitchPreferenceRow(
+                        icon = R.drawable.ic_palette, title = "Wallpaper accent",
+                        checked = Settings.wallpaperAccent,
+                        onCheckedChange = { Settings.wallpaperAccent = it },
+                    )
+                }
             }
         }
         item {
@@ -822,7 +815,7 @@ private fun SettingsTab(
                         subtitle = if (historyCount == 0) "No saved items" else "$historyCount saved items",
                         onClick = onOpenHistory,
                     )
-                    HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+                    SettingsDivider()
                     PreferenceRow(
                         icon = R.drawable.ic_sync,
                         title = "Clipboard sync mode",
@@ -839,7 +832,7 @@ private fun SettingsTab(
                         },
                         onClick = onOpenClipboardAccessibility,
                     )
-                    HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+                    SettingsDivider()
                     SwitchPreferenceRow(
                         icon = R.drawable.ic_notifications,
                         title = "Hide notification content",
@@ -870,7 +863,7 @@ private fun SettingsTab(
                     Build.BRAND.equals("oneplus", ignoreCase = true) ||
                     Build.BRAND.equals("oppo", ignoreCase = true)
                 ) {
-                    HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+                    SettingsDivider()
                     PreferenceRow(
                         icon = R.drawable.ic_settings,
                         title = if (oplusAppFreezeSupported) {
@@ -896,7 +889,7 @@ private fun SettingsTab(
                 PreferenceRow(
                     icon = R.drawable.ic_brand_sync,
                     title = "Conduit",
-                    subtitle = "Version $appVersion · Fast, lightweight companion",
+                    subtitle = "Version $appVersion",
                 )
             }
         }
@@ -905,76 +898,20 @@ private fun SettingsTab(
 
 @Composable
 private fun DeviceManagementCard(
-    peerName: String?,
-    pairedDeviceId: String?,
-    pairing: Boolean,
-    onPair: () -> Unit,
-    onCancelPair: () -> Unit,
-    onForget: () -> Unit,
+    peerName: String?, pairedDeviceId: String?, pairing: Boolean,
+    onPair: () -> Unit, onCancelPair: () -> Unit, onForget: () -> Unit,
 ) {
-    ExpressiveCard(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.fillMaxWidth().padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Surface(
-                    modifier = Modifier.size(48.dp),
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.secondaryContainer,
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            painter = painterResource(R.drawable.ic_desktop),
-                            contentDescription = null,
-                            modifier = Modifier.size(22.dp),
-                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                        )
-                    }
-                }
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        peerName ?: if (pairedDeviceId != null) "Paired desktop" else "No paired desktop",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    if (pairing || pairedDeviceId == null) {
-                        Text(
-                            if (pairing) {
-                                "Pairing in progress · LAN or Relay"
-                            } else {
-                                "Pair a desktop to enable LAN and Relay reconnect"
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                if (pairedDeviceId != null && !pairing) {
-                    TextButton(onClick = onForget) { Text("Forget") }
-                }
-                FilledTonalButton(
-                    onClick = if (pairing) onCancelPair else onPair,
-                    shape = RoundedCornerShape(19.dp),
-                ) {
-                    Text(
-                        when {
-                            pairing -> "Cancel pairing"
-                            pairedDeviceId != null -> "Pair new desktop"
-                            else -> "Pair desktop"
-                        },
-                    )
-                }
+    ExpressiveCard(Modifier.fillMaxWidth()) {
+        Column {
+            PreferenceRow(R.drawable.ic_desktop, peerName ?: "Your desktop",
+                subtitle = if (pairedDeviceId != null) "Paired computer" else "No computer paired")
+            SettingsDivider()
+            PreferenceRow(R.drawable.ic_add,
+                if (pairing) "Cancel pairing" else if (pairedDeviceId != null) "Pair another desktop" else "Pair desktop",
+                onClick = if (pairing) onCancelPair else onPair)
+            if (pairedDeviceId != null && !pairing) {
+                SettingsDivider()
+                PreferenceRow(R.drawable.ic_close, "Forget desktop", onClick = onForget)
             }
         }
     }
@@ -983,168 +920,85 @@ private fun DeviceManagementCard(
 @Composable
 private fun DeviceActionsCard(history: List<HistoryEntry>, onOpenHistory: () -> Unit) {
     val latest = history.firstOrNull()
-    ExpressiveCard(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onOpenHistory),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(19.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Surface(
-                    modifier = Modifier.size(46.dp),
-                    shape = RoundedCornerShape(17.dp),
-                    color = MaterialTheme.colorScheme.secondaryContainer,
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            painter = painterResource(R.drawable.ic_history),
-                            contentDescription = null,
-                            modifier = Modifier.size(23.dp),
-                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                        )
-                    }
-                }
+    val c = MaterialTheme.colorScheme
+    ExpressiveCard(Modifier.fillMaxWidth().clickable(onClick = onOpenHistory)) {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Icon(painterResource(R.drawable.ic_history), null, Modifier.size(20.dp), tint = c.onSurfaceVariant)
                 Spacer(Modifier.width(10.dp))
-                Text(
-                    "Latest item",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                if (history.isNotEmpty()) {
-                    Spacer(Modifier.width(6.dp))
-                    Surface(
-                        shape = CircleShape,
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-                    ) {
-                        Text(
-                            "${history.size}",
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.Bold,
-                        )
-                    }
-                }
-                Spacer(Modifier.weight(1f))
-                latest?.let {
-                    Text(
-                        it.ago().toString(),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                Text("Latest item", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                if (history.isNotEmpty()) StatusPill(history.size.toString())
+                Icon(painterResource(R.drawable.ic_chevron), "Open clipboard history", Modifier.size(20.dp), tint = c.onSurfaceVariant)
             }
-
-            Text(
-                latest?.preview?.takeIf(String::isNotBlank) ?: "No clipboard history yet",
-                style = MaterialTheme.typography.bodyLarge,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis,
-                color = if (latest == null) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
-            )
-
-            latest?.let { clip ->
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        val sent = clip.direction == Direction.Sent
-                        Icon(
-                            painter = painterResource(if (sent) R.drawable.ic_stat_upload else R.drawable.ic_stat_download),
-                            contentDescription = null,
-                            modifier = Modifier.size(14.dp),
-                            tint = MaterialTheme.colorScheme.primary,
-                        )
-                        Text(
-                            if (sent) "Sent to desktop" else "Received from desktop",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+            Text(latest?.preview?.takeIf(String::isNotBlank) ?: "No clipboard items yet",
+                style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (latest != null) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(if (latest.direction == Direction.Sent) "Sent to desktop" else "Received from desktop",
+                        style = MaterialTheme.typography.bodySmall, color = c.onSurfaceVariant)
+                    Text(latest.ago().toString(), style = MaterialTheme.typography.bodySmall, color = c.onSurfaceVariant)
                 }
             }
         }
     }
 }
+
+@Composable
+internal fun SettingsDivider() {
+    HorizontalDivider(Modifier.padding(start = 56.dp, end = 14.dp), thickness = 0.5.dp,
+        color = MaterialTheme.colorScheme.outlineVariant)
+}
+
 @Composable
 private fun PreferenceRow(
-    icon: Int,
-    title: String,
-    subtitle: String? = null,
-    onClick: (() -> Unit)? = null,
-    trailing: (@Composable () -> Unit)? = null,
+    icon: Int, title: String, subtitle: String? = null,
+    onClick: (() -> Unit)? = null, trailing: (@Composable () -> Unit)? = null,
 ) {
+    val c = MaterialTheme.colorScheme
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = 68.dp)
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+        Modifier.fillMaxWidth().heightIn(min = 62.dp)
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(start = 18.dp, end = 16.dp, top = 14.dp, bottom = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Icon(
-            painter = painterResource(icon),
-            contentDescription = null,
-            modifier = Modifier.padding(start = 20.dp, end = 10.dp).size(24.dp),
-            tint = MaterialTheme.colorScheme.primary,
-        )
-        Column(
-                modifier = Modifier.weight(1f).padding(vertical = 14.dp),
-        ) {
-            Text(
-                title,
-                modifier = Modifier.padding(end = 14.dp),
-                style = MaterialTheme.typography.titleLarge,
-                fontSize = 16.sp,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
+        Icon(painterResource(icon), null, Modifier.size(22.dp), tint = c.onSurfaceVariant)
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
             subtitle?.takeIf(String::isNotBlank)?.let {
-                Text(
-                    it,
-                    modifier = Modifier.padding(end = 14.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                )
+                Text(it, style = MaterialTheme.typography.bodySmall, color = c.onSurfaceVariant,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
         }
-        trailing?.let { Box(Modifier.padding(end = 18.dp), contentAlignment = Alignment.Center) { it() } }
+        if (trailing != null) trailing()
+        else if (onClick != null) Icon(painterResource(R.drawable.ic_chevron), null, Modifier.size(20.dp), tint = c.onSurfaceVariant)
     }
 }
 
 @Composable
-private fun SwitchPreferenceRow(
-    icon: Int,
-    title: String,
-    subtitle: String? = null,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
+internal fun SwitchPreferenceRow(
+    icon: Int, title: String, subtitle: String? = null,
+    checked: Boolean, onCheckedChange: (Boolean) -> Unit,
 ) {
-    PreferenceRow(
-        icon = icon,
-        title = title,
-        subtitle = subtitle,
-        onClick = { onCheckedChange(!checked) },
-        trailing = {
-            Switch(
-                checked = checked,
-                onCheckedChange = onCheckedChange,
-                modifier = Modifier.semantics { contentDescription = title },
-            )
-        },
-    )
+    val c = MaterialTheme.colorScheme
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 64.dp)
+            .toggleable(value = checked, role = Role.Switch, onValueChange = onCheckedChange)
+            .semantics(mergeDescendants = true) { contentDescription = title }
+            .padding(horizontal = 18.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Icon(painterResource(icon), null, Modifier.size(22.dp), tint = c.onSurfaceVariant)
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            subtitle?.takeIf(String::isNotBlank)?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = c.onSurfaceVariant, maxLines = 2,
+                    overflow = TextOverflow.Ellipsis)
+            }
+        }
+        Switch(checked = checked, onCheckedChange = null)
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1157,7 +1011,7 @@ private fun HistoryScreen(
     var query by rememberSaveable { mutableStateOf("") }
     val filtered = filterHistory(history, query)
     Scaffold(
-        containerColor = MaterialTheme.colorScheme.surfaceContainer,
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
                 title = {
@@ -1168,7 +1022,7 @@ private fun HistoryScreen(
                     )
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                    containerColor = MaterialTheme.colorScheme.background,
                 ),
                 navigationIcon = {
                     TextButton(onClick = onBack, modifier = Modifier.heightIn(min = 48.dp)) {
@@ -1320,7 +1174,7 @@ private fun SettingsGroup(
                 )
             }
 
-            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+            SettingsDivider()
 
             Row(
                 modifier = Modifier
