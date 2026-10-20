@@ -1,20 +1,19 @@
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("com.google.protobuf")
 }
 
 android {
     namespace = "com.conduit.sync"
-    compileSdk = 36
+    compileSdk { version = release(37) { minorApiLevel = 0 } }
 
     defaultConfig {
         applicationId = "com.conduit.sync"
         minSdk = 29
         targetSdk = 36
-        versionCode = 8
-        versionName = "0.1.7"
+        versionCode = 9
+        versionName = "0.1.8-dev"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -75,14 +74,14 @@ dependencies {
     // Noise library is published for Java, and minSdk 29 predates platform XDH.
     implementation("org.bouncycastle:bcprov-jdk18on:1.85.2")
 
-    // One screen, Material 3 with dynamic colour. Compose is not resident: nothing
-    // here is loaded while only the sync service is running.
-    // BOM pinned below 2026.08.00, whose Compose 1.12 demands AGP 9.1 and compileSdk 37;
-    // AGP cannot move while Gradle is pinned at 8.14.3. Bump both together or not at all.
-    implementation(platform("androidx.compose:compose-bom:2026.06.01"))
-    implementation("androidx.compose.material3:material3")
+    // Official public Material 3 Expressive theme and component APIs.
+    // The beta is explicitly pinned; the remaining Compose libraries use the stable BOM.
+    implementation(platform("androidx.compose:compose-bom:2026.09.00"))
+    implementation("androidx.compose.material3:material3:1.5.0-beta01")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.activity:activity-compose:1.13.0")
+    // Code Scanner brings an obsolete Fragment transitively; align ActivityResult support.
+    implementation("androidx.fragment:fragment:1.9.1")
 
     // On-demand QR pairing. Google Code Scanner delegates camera access and image processing to
     // Play services, so Conduit itself needs no CAMERA permission and no resident camera pipeline.
@@ -101,7 +100,7 @@ dependencies {
     // touch an actual phone's pairing, notification permissions or persisted state.
     // androidTest has its own Gradle dependency configuration, so the main source-set
     // Compose BOM does not supply test-module versions here.
-    androidTestImplementation(platform("androidx.compose:compose-bom:2026.06.01"))
+    androidTestImplementation(platform("androidx.compose:compose-bom:2026.09.00"))
     androidTestImplementation("androidx.test:runner:1.7.0")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")

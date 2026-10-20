@@ -311,19 +311,32 @@ class Link(
         what: String,
         photo: Boolean = false,
         screenshot: Boolean = false,
+        emptyIsNoop: Boolean = false,
         load: () -> Images.Payload?,
     ) {
         val owner = current?.takeIf { it.authenticated && usable(it) }
-        if (owner == null) { events.onSendRejected("$what: desktop is offline"); return }
+        if (owner == null) {
+            if (!emptyIsNoop) events.onSendRejected("$what: desktop is offline")
+            return
+        }
         var outgoing: Images.Outgoing? = null
         var size = 0L
         var started = 0L
         val accepted = sender.bulk {
             if (!usable(owner)) return@bulk false
             if (outgoing == null) {
-                val payload = runCatching { load() }.getOrNull()
-                if (payload == null || payload.bytes.size !in 1..MAX_IMAGE) {
-                    events.onSendRejected("$what is unavailable or too large")
+                val result = runCatching { load() }
+                val payload = result.getOrNull()
+                if (payload == null) {
+                    // MediaStore emits changes for unrelated/deleted/already-sent rows too.
+                    // A capture observer returning "nothing new" is not a failed user send.
+                    if (shouldReportMissingCapture(emptyIsNoop, result.isFailure)) {
+                        events.onSendRejected("$what could not be read")
+                    }
+                    return@bulk false
+                }
+                if (payload.bytes.size !in 1..MAX_IMAGE) {
+                    events.onSendRejected("$what is empty or too large")
                     return@bulk false
                 }
                 if (!usable(owner)) return@bulk false

@@ -1,5 +1,8 @@
 package com.conduit.sync
 
+import android.app.PendingIntent
+import androidx.core.service.quicksettings.PendingIntentActivityWrapper
+import androidx.core.service.quicksettings.TileServiceCompat
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -24,8 +27,13 @@ class LinkTileService : TileService() {
         // in-progress search impossible to stop: the tap simply issued CONNECT again.
         val paired = Identity.peer(filesDir) != null
         if (!paired && !LinkStatus.pairing) {
-            @Suppress("DEPRECATION")
-            startActivityAndCollapse(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            val open = Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            // AndroidX chooses the supported launch overload on each Android version
+            // and enforces immutable PendingIntent behavior on Android 14+.
+            TileServiceCompat.startActivityAndCollapse(
+                this,
+                PendingIntentActivityWrapper(this, 0x4351, open, PendingIntent.FLAG_UPDATE_CURRENT, false),
+            )
             return
         }
         val linkRequested = Settings.linkWanted

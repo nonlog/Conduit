@@ -39,7 +39,7 @@ class Screenshots(private val context: Context, private val link: Link) {
         override fun onChange(selfChange: Boolean, uri: Uri?) {
             // `photo=true` is intentional compatibility: an older desktop that does not
             // know the screenshot field still keeps the image out of the clipboard.
-            link.sendImage("screenshot", photo = true, screenshot = true) { next() }
+            link.sendImage("screenshot", photo = true, screenshot = true, emptyIsNoop = true) { next() }
         }
     }
 
