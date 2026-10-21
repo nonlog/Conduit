@@ -2,7 +2,11 @@ name: Android Expressive
 
 on:
   push:
-    branches: [codex/android-expressive-glass-20261020]
+    branches: [master]
+    paths: ['android/**', '.github/workflows/android-expressive.yml', 'tools/ci-expressive-ui.sh']
+  pull_request:
+    branches: [master]
+    paths: ['android/**', '.github/workflows/android-expressive.yml', 'tools/ci-expressive-ui.sh']
   workflow_dispatch:
 
 permissions:

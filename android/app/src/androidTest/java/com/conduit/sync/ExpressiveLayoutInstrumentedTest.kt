@@ -280,12 +280,92 @@ class ExpressiveLayoutInstrumentedTest {
         saveScreenshot("grouped-settings-rows.png")
     }
 
+    @Test
+    fun homeShowsTransferCountButKeepsTerminalHistoryOnTransfersPage() {
+        val history = listOf(
+            FileTransfer(FileTransferDirection.ToPhone, "qa-received.bin",
+                2097152L, 2097152L, "qa-received", TransferPhase.Completed),
+            FileTransfer(FileTransferDirection.ToDesktop, "qa-cancelled.bin",
+                0L, 1048576L, "qa-cancelled", TransferPhase.Cancelled),
+        )
+        compose.setContent { ConduitTheme(darkOverride = false) { DashboardFixture(transfers = history) } }
+        compose.onNodeWithContentDescription("Open transfer history").assertIsDisplayed()
+        compose.onNodeWithText("File transfers", useUnmergedTree = true).assertExists()
+        compose.onNodeWithText("2", useUnmergedTree = true).assertExists()
+        compose.onNodeWithText("qa-received.bin").assertDoesNotExist()
+        compose.onNodeWithText("qa-cancelled.bin").assertDoesNotExist()
+        saveScreenshot("home-transfer-summary-light.png")
+        compose.onNodeWithContentDescription("Open transfer history").performClick()
+        compose.onNodeWithText("Recent transfers").assertIsDisplayed()
+        compose.onNodeWithText("qa-received.bin").assertExists()
+        compose.onNodeWithText("qa-cancelled.bin").assertExists()
+    }
+
+    @Test
+    fun homeSummarizesActiveTransferAndPreservesCancellationInHistory() {
+        val active = FileTransfer(FileTransferDirection.ToDesktop, "upload-in-progress.bin",
+            262144L, 1048576L, "active-upload", TransferPhase.Sending, canCancel = true)
+        var cancelledId: String? = null
+        compose.setContent {
+            ConduitTheme(darkOverride = true) {
+                DashboardFixture(transfers = listOf(active),
+                    onCancelTransfer = { cancelledId = it })
+            }
+        }
+        compose.onNodeWithContentDescription("Open transfer history").assertIsDisplayed()
+        compose.onNodeWithText("1 in progress · Tap to manage", useUnmergedTree = true).assertExists()
+        compose.onNodeWithText("upload-in-progress.bin · 25%", useUnmergedTree = true).assertExists()
+        // Home never renders a full-size history card or its cancel button.
+        compose.onNodeWithContentDescription("Cancel upload-in-progress.bin").assertDoesNotExist()
+        saveScreenshot("home-active-transfer-summary-dark.png")
+        compose.onNodeWithContentDescription("Open transfer history").performClick()
+        compose.onNodeWithContentDescription("Cancel upload-in-progress.bin").assertIsDisplayed().performClick()
+        compose.runOnIdle { assertEquals("active-upload", cancelledId) }
+    }
+
+    @Test
+    fun realOnePlusBatterySettingsRowsNeverOverlapAtLargeFontScale() {
+        var optimizationsOpened = 0
+        var backgroundSettingsOpened = 0
+        compose.setContent {
+            val base = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(base.density, 1.4f)) {
+                ConduitTheme(darkOverride = false) {
+                    Box(Modifier.width(320.dp)) {
+                        BackgroundDeliverySettingsCard(
+                            batteryOptimizationIgnored = true,
+                            showOplusBatteryRow = true,
+                            oplusAppFreezeSupported = false,
+                            onRequestBatteryOptimization = { optimizationsOpened++ },
+                            onOpenOplusFreezeSettings = { backgroundSettingsOpened++ },
+                        )
+                    }
+                }
+            }
+        }
+        val first = compose.onNodeWithText("Battery optimization", useUnmergedTree = true)
+            .assertIsDisplayed().getUnclippedBoundsInRoot()
+        val second = compose.onNodeWithText("Background battery settings", useUnmergedTree = true)
+            .assertIsDisplayed().getUnclippedBoundsInRoot()
+        assertTrue("OEM battery controls must occupy separate vertical rows", second.top >= first.bottom)
+        saveScreenshot("oneplus-battery-settings-light-large-font.png")
+        compose.onNodeWithText("Battery optimization").performClick()
+        compose.onNodeWithText("Background battery settings").performClick()
+        compose.runOnIdle {
+            assertEquals(1, optimizationsOpened)
+            assertEquals(1, backgroundSettingsOpened)
+        }
+    }
+
     @androidx.compose.runtime.Composable
-    private fun DashboardFixture() {
+    private fun DashboardFixture(
+        transfers: List<FileTransfer> = emptyList(),
+        onCancelTransfer: (String) -> Unit = {},
+    ) {
         ConduitApp(
             appVersion = "test", peerName = "Desktop", pairedDeviceId = "ui-fixture", pairing = false,
-            path = "LAN", state = LinkState.Connected, history = emptyList(), transfers = emptyList(),
-            onCancelTransfer = {}, hideNotifications = false, onHideNotifications = {},
+            path = "LAN", state = LinkState.Connected, history = emptyList(), transfers = transfers,
+            onCancelTransfer = onCancelTransfer, hideNotifications = false, onHideNotifications = {},
             clipboardMode = ClipboardSyncMode.Unavailable, clipboardAccessibilityEnabled = false,
             onOpenClipboardAccessibility = {}, batteryOptimizationIgnored = true,
             oplusAppFreezeSupported = false, onRequestBatteryOptimization = {}, onOpenOplusFreezeSettings = {},

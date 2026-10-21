@@ -31,6 +31,10 @@ Kotlin/Compose implementation, not copied Flutter source, fonts, shaders, or ass
   toggle action per switch. Theme supports system/light/dark plus optional wallpaper accent.
 - The former simulated Liquid glass UI is removed; its stored key is retained only for
   migration compatibility. There is no hidden renderer or continuously running animation.
+- Home shows one compact transfer count/active-progress summary linked to Transfers;
+  completed or cancelled file history cards appear only in the Transfers destination.
+- The real OnePlus/Oppo Background delivery controls are in distinct vertical rows;
+  a large-font small-screen regression checks their bounds and tap actions.
 - Existing pairing, privacy, clipboard search, transfer progress/cancellation and background
   delivery controls retain their real service callbacks.
 
@@ -43,7 +47,9 @@ toast. Explicit sends and actual load/size failures remain visible.
 ## Verification
 
 All builds, lint, release optimization and emulator tests run in GitHub Actions only.
-android-expressive.yml runs debug/release builds, unit tests, lint and Android 16 UI tests.
+android-expressive.yml runs automatically on Android-related pull requests to master
+and matching master pushes, and remains manually dispatchable. It verifies debug/release
+builds, unit tests, lint and Android 16 UI tests.
 The UI tests verify actual public theme/motion, compact geometry, four destinations, dark
 and light rendering, large fonts, and switch semantics. Screenshot export is checked for
 nonempty PNG files before the visual job may pass.
