@@ -590,7 +590,7 @@ internal fun ConduitApp(
                 state = state,
                 history = history,
                 transfers = transfers,
-                onCancelTransfer = onCancelTransfer,
+                onOpenTransfers = { tabName = MainTab.Transfers.name },
                 onConnect = onConnect,
                 onDisconnect = onDisconnect,
                 onPair = requestPair,
@@ -635,7 +635,7 @@ private fun HomeTab(
     state: LinkState,
     history: List<HistoryEntry>,
     transfers: List<FileTransfer>,
-    onCancelTransfer: (String) -> Unit,
+    onOpenTransfers: () -> Unit,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
     onPair: () -> Unit,
@@ -675,16 +675,12 @@ private fun HomeTab(
                 onSendPhoto = { pickPhoto.launch("image/*") },
             )
         }
-        if (transfers.isNotEmpty()) {
-            item {
-                ExpressiveSectionTitle(
-                    title = "Transfers",
-                    detail = transfers.count { !it.phase.terminal }.takeIf { it > 0 }?.let { it.toString() + " active" },
-                )
-            }
-            items(transfers, key = { "${it.direction}:${it.id}" }) {
-                ExpressiveTransferCard(it, peerName, onCancelTransfer)
-            }
+        item { ExpressiveSectionTitle("Transfers") }
+        item {
+            HomeTransfersSummary(
+                transfers = transfers,
+                onOpenTransfers = onOpenTransfers,
+            )
         }
         item {
             ExpressiveSectionTitle("Clipboard", "Recent activity")
@@ -854,39 +850,16 @@ private fun SettingsTab(
             ExpressiveSectionTitle("Background delivery")
         }
         item {
-            ExpressiveCard(modifier = Modifier.fillMaxWidth()) {
-                PreferenceRow(
-                    icon = R.drawable.ic_settings,
-                    title = "Battery optimization",
-                    subtitle = if (batteryOptimizationIgnored) {
-                        "Ignored · screen-off delivery is allowed"
-                    } else {
-                        "Tap to allow Conduit to run while the screen is off"
-                    },
-                    onClick = onRequestBatteryOptimization,
-                )
-                if (Build.MANUFACTURER.equals("oneplus", ignoreCase = true) ||
+            BackgroundDeliverySettingsCard(
+                batteryOptimizationIgnored = batteryOptimizationIgnored,
+                showOplusBatteryRow = Build.MANUFACTURER.equals("oneplus", ignoreCase = true) ||
                     Build.MANUFACTURER.equals("oppo", ignoreCase = true) ||
                     Build.BRAND.equals("oneplus", ignoreCase = true) ||
-                    Build.BRAND.equals("oppo", ignoreCase = true)
-                ) {
-                    SettingsDivider()
-                    PreferenceRow(
-                        icon = R.drawable.ic_settings,
-                        title = if (oplusAppFreezeSupported) {
-                            "ColorOS app freeze"
-                        } else {
-                            "Background battery settings"
-                        },
-                        subtitle = if (oplusAppFreezeSupported) {
-                            "Disable Quick Freeze for Conduit"
-                        } else {
-                            "Allow Conduit to run while the screen is off"
-                        },
-                        onClick = onOpenOplusFreezeSettings,
-                    )
-                }
-            }
+                    Build.BRAND.equals("oppo", ignoreCase = true),
+                oplusAppFreezeSupported = oplusAppFreezeSupported,
+                onRequestBatteryOptimization = onRequestBatteryOptimization,
+                onOpenOplusFreezeSettings = onOpenOplusFreezeSettings,
+            )
         }
         item {
             ExpressiveSectionTitle("About")
@@ -897,6 +870,48 @@ private fun SettingsTab(
                     icon = R.drawable.ic_brand_sync,
                     title = "Conduit",
                     subtitle = "Version $appVersion",
+                )
+            }
+        }
+    }
+}
+
+/** Group OEM battery controls vertically; never let Surface's Box slot overlay siblings. */
+@Composable
+internal fun BackgroundDeliverySettingsCard(
+    batteryOptimizationIgnored: Boolean,
+    showOplusBatteryRow: Boolean,
+    oplusAppFreezeSupported: Boolean,
+    onRequestBatteryOptimization: () -> Unit,
+    onOpenOplusFreezeSettings: () -> Unit,
+) {
+    ExpressiveCard(modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.fillMaxWidth()) {
+            PreferenceRow(
+                icon = R.drawable.ic_settings,
+                title = "Battery optimization",
+                subtitle = if (batteryOptimizationIgnored) {
+                    "Ignored · screen-off delivery is allowed"
+                } else {
+                    "Tap to allow Conduit to run while the screen is off"
+                },
+                onClick = onRequestBatteryOptimization,
+            )
+            if (showOplusBatteryRow) {
+                SettingsDivider()
+                PreferenceRow(
+                    icon = R.drawable.ic_settings,
+                    title = if (oplusAppFreezeSupported) {
+                        "ColorOS app freeze"
+                    } else {
+                        "Background battery settings"
+                    },
+                    subtitle = if (oplusAppFreezeSupported) {
+                        "Disable Quick Freeze for Conduit"
+                    } else {
+                        "Allow Conduit to run while the screen is off"
+                    },
+                    onClick = onOpenOplusFreezeSettings,
                 )
             }
         }
