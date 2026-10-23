@@ -94,6 +94,13 @@ function Desktop() {
   useEffect(() => {
     let active = true
     let unsubscribe: (() => void) | undefined
+    // Native file watchers deliver low-latency updates. A slow reconciliation
+    // additionally heals missed events, daemon restarts and network handoffs.
+    const reconcile = isNative() ? window.setInterval(() => {
+      if (!useUi.getState().busy) void fetchSnapshot()
+        .then((snapshot) => { if (active) useUi.getState().setSnapshot(snapshot) })
+        .catch(() => { /* keep last known state until the daemon is reachable */ })
+    }, 5000) : undefined
     async function initialize() {
       if (isNative()) {
         try { await ensureDaemon() } catch (error) {
@@ -128,7 +135,11 @@ function Desktop() {
       } catch (error) { setNotice(error instanceof Error ? error.message : String(error), true) }
     }
     void initialize()
-    return () => { active = false; unsubscribe?.() }
+    return () => {
+      active = false
+      unsubscribe?.()
+      if (reconcile !== undefined) window.clearInterval(reconcile)
+    }
   }, [setNotice])
 
   const transfers = snapshot ? activeTransfers(snapshot) : []
@@ -154,7 +165,7 @@ function Desktop() {
                   <Search size={14} className="pointer-events-none absolute left-2.5 text-muted-foreground"/>
                   <Input ref={searchRef} aria-label="Search current section" value={search} onChange={(event) => setSearch(event.target.value)}
                     placeholder={"Search " + pageLabels[page].toLowerCase()} className="h-8 w-[190px] pl-8 pr-10 text-xs lg:w-[235px]"/>
-                  <kbd className="pointer-events-none absolute right-2 rounded border bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">⌘K</kbd>
+                  <kbd className="pointer-events-none absolute right-2 rounded border bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">Ctrl K</kbd>
                 </div>}
                 <Button size="icon-sm" variant="ghost" aria-label="Toggle light or dark theme"
                   title={theme === "dark" ? "Dark mode" : "Light mode"}
