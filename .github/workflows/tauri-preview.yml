@@ -52,6 +52,14 @@ jobs:
           Expand-Archive $archive -DestinationPath $root
           (Join-Path $root 'bin') | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
+      - name: Render matching Windows Explorer icons
+        shell: pwsh
+        run: |
+          npm ci --prefix windows/conduit-daemon/tools/icon-render
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node windows/conduit-daemon/tools/icon-render/render-icons.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Install Nova UI dependencies
         working-directory: windows/conduit-tauri
         shell: pwsh
