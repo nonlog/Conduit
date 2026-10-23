@@ -1,7 +1,7 @@
 mod bridge;
 
 use notify::{RecursiveMode, Watcher};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 #[tauri::command]
 fn conduit_snapshot(app: AppHandle) -> bridge::Snapshot {
@@ -137,6 +137,14 @@ fn start_file_observer(app: AppHandle) {
 
 pub fn run() {
     tauri::Builder::default()
+        // Keep the preview isolated from the existing WinUI application, but
+        // prevent duplicate Tauri windows racing to update the same daemon UI.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let handle = app.handle().clone();

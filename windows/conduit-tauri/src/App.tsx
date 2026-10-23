@@ -63,9 +63,14 @@ function Desktop() {
   const theme = useUi((s) => s.theme)
   const setTheme = useUi((s) => s.setTheme)
   const searchRef = useRef<HTMLInputElement>(null)
+  const mainScrollRef = useRef<HTMLElement>(null)
   const actions = useDesktopController()
   const actionsRef = useRef(actions)
   useEffect(() => { actionsRef.current = actions }, [actions])
+
+  // The scroll container is shared between pages. Each navigation should start
+  // at the new page header, even when the previous page was scrolled to the end.
+  useEffect(() => { mainScrollRef.current?.scrollTo({ top: 0, behavior: "instant" }) }, [page])
 
   useEffect(() => {
     const matcher = window.matchMedia("(prefers-color-scheme: dark)")
@@ -180,7 +185,7 @@ function Desktop() {
               </div>
             </header>
 
-            <main className="main-scroll" id="content">
+            <main ref={mainScrollRef} className="main-scroll" id="content">
               {snapshot ? <AnimatePresence mode="wait">
                 <motion.div key={page} initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -3 }} transition={{ duration: 0.16, ease: "easeOut" }}>

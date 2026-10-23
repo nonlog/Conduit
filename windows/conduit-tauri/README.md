@@ -28,6 +28,8 @@ A Tauri development window requires native Windows Rust/MSVC and WebView2 prereq
 - Native open-file dialog and Windows file drop, daemon send and transfer progress
 - Existing relay, proxy, tray, receive folder, Windows autostart/Explorer controls through the daemon
 - Native light/dark/system theme, navigation reorder, sidebar resize and responsive layout
+- Single-instance Windows preview: opening the app again focuses the existing window rather than starting competing UI instances
+- Settings writes preserve unrelated configuration lines and atomically replace config.txt before requesting daemon reload
 
 Not yet swapped into production: Windows share-target and context menu are still served by the existing native daemon/WinUI package. The new preview does not register itself as the Windows share target or replace the Scoop installation.
 

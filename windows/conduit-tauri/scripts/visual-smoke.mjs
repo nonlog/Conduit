@@ -80,6 +80,17 @@ try {
   assert.ok(first && second && second.y >= first.y + first.height, "Settings rows overlap")
   await page.screenshot({ path: resolve(shots, "settings-light.png") })
 
+  // Regression: the native UI formerly retained Settings' scroll position when
+  // switching to Transfers, hiding the destination's title and newest rows.
+  const scrollContainer = page.locator("#content")
+  await scrollContainer.evaluate((element) => { element.scrollTop = element.scrollHeight })
+  assert.ok(await scrollContainer.evaluate((element) => element.scrollTop) > 100, "Settings must be scrollable")
+  await workspace.getByRole("button", { name: "File transfers", exact: true }).click()
+  await page.getByRole("heading", { name: "File transfers" }).waitFor()
+  await page.waitForFunction(() => document.querySelector("#content")?.scrollTop === 0)
+  await workspace.getByRole("button", { name: "Settings", exact: true }).click()
+  await page.getByRole("heading", { name: "Settings" }).waitFor()
+
   await page.getByRole("button", { name: "Toggle light or dark theme" }).click()
   assert.equal(await page.locator("html.dark").count(), 1, "Dark theme did not activate")
   await page.screenshot({ path: resolve(shots, "settings-dark.png") })

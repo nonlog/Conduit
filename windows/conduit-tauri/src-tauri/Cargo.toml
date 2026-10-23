@@ -25,6 +25,7 @@ notify = "8"
 base64 = "0.22"
 winreg = "0.55"
 url = "2"
+tauri-plugin-single-instance = "2.5.4"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }

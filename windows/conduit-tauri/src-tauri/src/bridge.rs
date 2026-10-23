@@ -2,10 +2,10 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     env,
     fs::{self, File},
-    io::Read,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{SystemTime, UNIX_EPOCH},
@@ -116,6 +116,19 @@ fn kv(path: &Path) -> BTreeMap<String, String> {
 
 fn get(values: &BTreeMap<String, String>, key: &str) -> String {
     values.get(key).cloned().unwrap_or_default()
+}
+
+fn tray_icon_enabled(config: &BTreeMap<String, String>) -> bool {
+    // Match the daemon's default (true) and its four accepted truthy spellings.
+    config
+        .get("tray_icon")
+        .map(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "true" | "1" | "yes" | "on"
+            )
+        })
+        .unwrap_or(true)
 }
 
 fn valid_scoop_root(root: PathBuf) -> Option<PathBuf> {
@@ -368,7 +381,7 @@ pub fn snapshot(app: &AppHandle) -> Snapshot {
         proxy_mode: proxy_mode.into(),
         manual_proxy: manual_proxy.into(),
         receive_dir: get(&config, "receive_dir"),
-        tray_icon: get(&config, "tray_icon").eq_ignore_ascii_case("true"),
+        tray_icon: tray_icon_enabled(&config),
         autostart,
         explorer_integration,
     };
@@ -479,6 +492,58 @@ pub fn snapshot(app: &AppHandle) -> Snapshot {
     }
 }
 
+fn merge_config(original: &str, changes: &[(&str, String)]) -> String {
+    let replacements = changes
+        .iter()
+        .map(|(key, value)| (*key, value))
+        .collect::<BTreeMap<_, _>>();
+    let mut written = BTreeSet::new();
+    let mut lines = Vec::new();
+    for line in original.lines() {
+        if let Some((key, _)) = line.split_once('=') {
+            let key = key.trim();
+            if let Some(value) = replacements.get(key) {
+                if written.insert(key.to_owned()) {
+                    lines.push(format!("{key}={value}"));
+                }
+                continue;
+            }
+        }
+        // Do not silently destroy existing comments and unrelated settings.
+        lines.push(line.to_owned());
+    }
+    for (key, value) in changes {
+        if !written.contains(*key) {
+            lines.push(format!("{key}={value}"));
+        }
+    }
+    format!("{}\n", lines.join("\n"))
+}
+
+fn write_config_atomically(file: &Path, contents: &str) -> Result<(), String> {
+    // Write to a new file in the same directory, then replace in one rename.
+    // A daemon reload must never observe a partially truncated config.txt.
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temporary = file.with_file_name(format!("config.{}.{}.tmp", std::process::id(), nonce));
+    let result = (|| -> std::io::Result<()> {
+        let mut writer = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        writer.write_all(contents.as_bytes())?;
+        writer.sync_all()?;
+        drop(writer);
+        fs::rename(&temporary, file)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result.map_err(|e| format!("Saving settings: {e}"))
+}
+
 pub fn save_settings(input: Settings, app: &AppHandle) -> Result<(), String> {
     if input.relays.len() > 12
         || !["system", "direct", "manual"].contains(&input.proxy_mode.as_str())
@@ -504,24 +569,28 @@ pub fn save_settings(input: Settings, app: &AppHandle) -> Result<(), String> {
     let dir = data_dir();
     fs::create_dir_all(&dir).map_err(|e| format!("Creating settings directory: {e}"))?;
     let file = dir.join("config.txt");
-    let mut existing = kv(&file);
-    existing.insert("relays".into(), input.relays.join(";"));
-    existing.insert(
-        "relay_proxy".into(),
-        match input.proxy_mode.as_str() {
-            "system" => "system".into(),
-            "manual" => input.manual_proxy.trim().into(),
-            _ => String::new(),
-        },
-    );
-    existing.insert("tray_icon".into(), input.tray_icon.to_string());
-    existing.insert("receive_dir".into(), input.receive_dir.trim().into());
-    let contents = existing
-        .iter()
-        .map(|(k, v)| format!("{k}={v}\n"))
-        .collect::<String>();
+    let original = match fs::read_to_string(&file) {
+        Ok(contents) if contents.len() <= 128 * 1024 => contents,
+        Ok(_) => return Err("Existing configuration is too large to safely update".into()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("Reading existing settings: {e}")),
+    };
+    let updates = [
+        ("relays", input.relays.join(";")),
+        (
+            "relay_proxy",
+            match input.proxy_mode.as_str() {
+                "system" => "system".into(),
+                "manual" => input.manual_proxy.trim().into(),
+                _ => String::new(),
+            },
+        ),
+        ("tray_icon", input.tray_icon.to_string()),
+        ("receive_dir", input.receive_dir.trim().into()),
+    ];
+    let contents = merge_config(&original, &updates);
     // Use the existing daemon reload contract; never overwrite identity/peer/history.
-    fs::write(&file, contents).map_err(|e| format!("Saving settings: {e}"))?;
+    write_config_atomically(&file, &contents)?;
     let _ = daemon_command(app, &["reload"])?;
     Ok(())
 }
@@ -655,5 +724,47 @@ mod tests {
         assert!(parse_transfer("aabb\toutbound\t1\t2\tcancelled\tfile\tCancelled").is_some());
         assert!(parse_transfer("aabb\toutbound\t1\t2\texecuting\tfile\t").is_none());
         assert!(parse_transfer("aabb\toutbound\t1\t2\tqueued\tfile").is_none());
+    }
+    #[test]
+    fn preserves_daemon_tray_default_and_aliases() {
+        let mut config = BTreeMap::new();
+        assert!(tray_icon_enabled(&config));
+        config.insert("tray_icon".into(), "on".into());
+        assert!(tray_icon_enabled(&config));
+        config.insert("tray_icon".into(), "false".into());
+        assert!(!tray_icon_enabled(&config));
+    }
+    #[test]
+    fn settings_merge_keeps_comments_and_other_fields() {
+        let changes = [
+            ("relays", "conduit.example:41113".to_owned()),
+            ("tray_icon", "true".to_owned()),
+        ];
+        let merged = merge_config(
+            "# keep this note\nrelays=old:123\nother=untouched\nrelays=duplicate:123\n",
+            &changes,
+        );
+        assert_eq!(
+            merged,
+            "# keep this note\nrelays=conduit.example:41113\nother=untouched\ntray_icon=true\n"
+        );
+    }
+    #[test]
+    fn atomic_save_replaces_content_without_leftover_temp_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "conduit-tauri-config-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join("config.txt");
+        fs::write(&path, "old=true\n").unwrap();
+        write_config_atomically(&path, "tray_icon=true\n").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "tray_icon=true\n");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        fs::remove_dir_all(&dir).unwrap();
     }
 }
