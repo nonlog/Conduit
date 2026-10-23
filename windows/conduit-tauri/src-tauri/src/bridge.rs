@@ -1,5 +1,6 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     env,
@@ -117,9 +118,38 @@ fn get(values: &BTreeMap<String, String>, key: &str) -> String {
     values.get(key).cloned().unwrap_or_default()
 }
 
+fn valid_scoop_root(root: PathBuf) -> Option<PathBuf> {
+    // Never treat a guessed Scoop directory as authoritative unless it really
+    // contains the installed Conduit daemon. This also prevents false identity
+    // resets when users install Scoop in a custom location.
+    root.join("apps")
+        .join("conduit")
+        .join("current")
+        .join("conduit-daemon.exe")
+        .is_file()
+        .then_some(root)
+}
+
+fn scoop_root_from_exe(path: &Path) -> Option<PathBuf> {
+    let current = path.parent()?;
+    let conduit = current.parent()?;
+    let apps = conduit.parent()?;
+    if !conduit
+        .file_name()?
+        .to_string_lossy()
+        .eq_ignore_ascii_case("conduit")
+        || !apps
+            .file_name()?
+            .to_string_lossy()
+            .eq_ignore_ascii_case("apps")
+    {
+        return None;
+    }
+    valid_scoop_root(apps.parent()?.to_owned())
+}
+
 fn scoop_root() -> Option<PathBuf> {
-    // The existing WinUI/Scoop installation is authoritative for the phone identity.
-    // The registry Run entry works even for customized Scoop installations.
+    // A disabled startup entry MUST NOT hide existing pairing and history.
     #[cfg(windows)]
     {
         use winreg::{enums::HKEY_CURRENT_USER, RegKey};
@@ -127,20 +157,39 @@ fn scoop_root() -> Option<PathBuf> {
         if let Ok(run) = root.open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Run") {
             if let Ok(command) = run.get_value::<String, _>("Conduit") {
                 let path = PathBuf::from(command.trim().trim_matches('"'));
-                let apps = path.parent()?.parent()?.parent()?;
-                if apps
-                    .file_name()?
-                    .to_string_lossy()
-                    .eq_ignore_ascii_case("apps")
-                {
-                    return apps.parent().map(Path::to_path_buf);
+                if let Some(result) = scoop_root_from_exe(&path) {
+                    return Some(result);
                 }
             }
         }
     }
-    env::var_os("SCOOP")
+    if let Some(root) = env::var_os("SCOOP")
         .map(PathBuf::from)
-        .or_else(|| env::var_os("USERPROFILE").map(|root| PathBuf::from(root).join("scoop")))
+        .and_then(valid_scoop_root)
+    {
+        return Some(root);
+    }
+    // Scoop's shims directory is on PATH even if users turn off Conduit
+    // autostart or Explorer integration. This supports nonstandard Scoop roots.
+    if let Some(paths) = env::var_os("PATH") {
+        for shim_dir in env::split_paths(&paths) {
+            if shim_dir
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("shims"))
+            {
+                if let Some(root) = shim_dir
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .and_then(valid_scoop_root)
+                {
+                    return Some(root);
+                }
+            }
+        }
+    }
+    env::var_os("USERPROFILE")
+        .map(|user| PathBuf::from(user).join("scoop"))
+        .and_then(valid_scoop_root)
 }
 
 pub fn data_dir() -> PathBuf {
@@ -344,16 +393,21 @@ pub fn snapshot(app: &AppHandle) -> Snapshot {
                 .copied()
                 .filter(|s| !s.is_empty())
                 .unwrap_or("Notification");
-            // Only emit app-owned icons from a deterministic whitelist of hashed file names.
-            // The UI never receives a path that it could navigate to.
-            let icon = {
-                use std::hash::{Hash, Hasher};
-                // Native app filenames are derived from SHA-256; skip icons until the
-                // legacy icon lookup is migrated to avoid depending on host paths.
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                package.hash(&mut hasher);
-                let _ = hasher.finish();
+            // Match the existing WinUI icon filename protocol exactly. Keep the
+            // icon bytes in a bounded data URI; WebView never sees a filesystem path.
+            let icon = if package.is_empty() {
                 None
+            } else {
+                let hash = Sha256::digest(package.as_bytes());
+                let filename = hash[..8]
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>();
+                data_url(
+                    &dir.join("icons").join(format!("{filename}.png")),
+                    "image/png",
+                    64 * 1024,
+                )
             };
             Some(Notification {
                 id: format!("{timestamp}-{i}"),
