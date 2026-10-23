@@ -79,10 +79,6 @@ jobs:
           cargo fmt --manifest-path windows/conduit-tauri/src-tauri/Cargo.toml -- --check
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Test Tauri native bridge
-        shell: pwsh
-        run: cargo test --manifest-path windows/conduit-tauri/src-tauri/Cargo.toml --locked
-
       - name: Build original Conduit daemon (no protocol changes)
         shell: pwsh
         run: cargo build --release --locked -p conduit-daemon --bins
@@ -97,6 +93,10 @@ jobs:
           if ($manifest.identifier -eq 'com.conduit.desktop' -or $manifest.productName -notlike '*Preview*') {
             throw 'Preview must not replace the released Conduit Windows app'
           }
+
+      - name: Test Tauri native bridge
+        shell: pwsh
+        run: cargo test --manifest-path windows/conduit-tauri/src-tauri/Cargo.toml --locked
 
       - name: Build Tauri NSIS installer
         working-directory: windows/conduit-tauri
