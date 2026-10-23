@@ -5,6 +5,7 @@ using Microsoft.UI.Xaml.Media;
 using Microsoft.Win32;
 using Windows.Graphics;
 using System.Threading;
+using System.Diagnostics;
 
 namespace Conduit;
 
@@ -29,6 +30,19 @@ public partial class App : Application
         // can observe activation state, then hand it to the page after the shell exists.
         IActivatedEventArgs? activation = null;
         try { activation = Windows.ApplicationModel.AppInstance.GetActivatedEventArgs(); } catch { }
+
+        // Keep this mature WinUI process as the sparse MSIX Share Target host
+        // and an explicit emergency rollback UI. Ordinary Conduit.exe launches
+        // from old Scoop shims now open Nova, while --legacy-ui and actual
+        // ShareTarget activations remain on WinUI. If Nova is missing or cannot
+        // start, retain the working control surface rather than closing it.
+        if (activation?.Kind != ActivationKind.ShareTarget &&
+            !Environment.GetCommandLineArgs().Any(value => value == "--legacy-ui") &&
+            TryLaunchNova())
+        {
+            Environment.Exit(0);
+            return;
+        }
 
         // The resident tray can receive another double-click while the self-contained WinUI process
         // is still cold-starting. Keep a process-wide named mutex as a second line of defence so a
@@ -86,6 +100,21 @@ public partial class App : Application
         // replace a dark-taskbar white icon with the executable's default black icon.
         ApplyWindowTheme(mainPage.ActualTheme);
         MainWindow.DispatcherQueue.TryEnqueue(() => ApplyWindowTheme(mainPage.ActualTheme));
+    }
+
+    private static bool TryLaunchNova()
+    {
+        try
+        {
+            var installed = Path.Combine(AppContext.BaseDirectory, "conduit-nova.exe");
+            if (!File.Exists(installed)) return false;
+            return Process.Start(new ProcessStartInfo(installed)
+            {
+                UseShellExecute = false,
+                WorkingDirectory = AppContext.BaseDirectory,
+            }) is not null;
+        }
+        catch { return false; }
     }
 
     private bool TryOwnControlWindow()

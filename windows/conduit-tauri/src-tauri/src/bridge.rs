@@ -90,6 +90,7 @@ pub struct Snapshot {
     pub transfers: Vec<Transfer>,
     pub wallpaper: Option<String>,
     pub version: &'static str,
+    pub desktop_channel: String,
     pub data_dir: String,
     pub daemon_available: bool,
 }
@@ -162,6 +163,15 @@ fn scoop_root_from_exe(path: &Path) -> Option<PathBuf> {
 }
 
 fn scoop_root() -> Option<PathBuf> {
+    // Scoop's own current executable path is authoritative even when both
+    // sign-in and Explorer integration are disabled on a custom Scoop root.
+    if let Some(root) = env::current_exe()
+        .ok()
+        .as_deref()
+        .and_then(scoop_root_from_exe)
+    {
+        return Some(root);
+    }
     // A disabled startup entry MUST NOT hide existing pairing and history.
     #[cfg(windows)]
     {
@@ -213,9 +223,10 @@ pub fn data_dir() -> PathBuf {
     }
     if let Some(scoop) = scoop_root() {
         let persisted = scoop.join("persist").join("conduit").join("data");
-        if persisted.join("identity.bin").is_file() || persisted.join("peer.txt").is_file() {
-            return persisted;
-        }
+        // A verified Scoop installation owns this directory even before the
+        // very first pairing. Returning LocalAppData until identity.bin exists
+        // would hide freshly-created pairing and transfer status from the UI.
+        return persisted;
     }
     // The native daemon also uses this fallback outside Scoop. Never migrate or
     // synthesize an identity from the UI, and never store pairing data in WebView.
@@ -487,6 +498,11 @@ pub fn snapshot(app: &AppHandle) -> Snapshot {
         transfers,
         wallpaper: data_url(&dir.join("wallpaper.jpg"), "image/jpeg", 1024 * 1024),
         version: env!("CARGO_PKG_VERSION"),
+        desktop_channel: if app.config().identifier.ends_with(".preview") {
+            "preview".into()
+        } else {
+            "stable".into()
+        },
         data_dir: dir.to_string_lossy().into_owned(),
         daemon_available: daemon_path(app).is_some(),
     }
@@ -704,6 +720,29 @@ pub fn open_directory(path: &Path) -> Result<(), String> {
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("Opening folder: {e}"))
+}
+
+pub fn open_legacy_ui() -> Result<(), String> {
+    // A stable Scoop package keeps its original WinUI desktop alongside Nova
+    // for Share Target activation and a deliberate user-accessible rollback.
+    // Never accept a caller-supplied path or command-line argument.
+    let candidate = env::current_exe()
+        .map_err(|e| format!("Finding desktop installation: {e}"))?
+        .with_file_name("Conduit.exe");
+    if !candidate.is_file() || !candidate.with_file_name("conduit-nova.exe").is_file() {
+        return Err("Legacy desktop is available only in a released Conduit installation".into());
+    }
+    let mut launch = Command::new(candidate);
+    launch.arg("--legacy-ui");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        launch.creation_flags(0x08000000);
+    }
+    launch
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Opening legacy desktop: {e}"))
 }
 
 #[cfg(test)]

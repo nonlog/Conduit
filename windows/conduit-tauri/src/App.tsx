@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Sidebar, pageLabels } from "@/components/Sidebar"
 import { PageContents, type PageActions } from "@/components/Pages"
 import { activeTransfers, isNative } from "@/lib/model"
-import { fetchSnapshot, ensureDaemon, runAction, updateSettings, removeHistory, selectFileAndSend, sendDroppedFile, openLink, openFolder, watchDaemon, watchShellErrors } from "@/lib/bridge"
+import { fetchSnapshot, ensureDaemon, runAction, updateSettings, removeHistory, selectFileAndSend, sendDroppedFile, openLink, openFolder, openLegacyUi, watchDaemon, watchShellErrors } from "@/lib/bridge"
 import { useUi } from "@/store/ui"
 import "./App.css"
 
@@ -48,6 +48,7 @@ function useDesktopController(): PageActions {
     save: (settings) => perform(() => updateSettings(settings), "Settings saved to the native daemon"),
     openLink: (url) => perform(() => openLink(url)),
     openFolder: (kind) => perform(() => openFolder(kind)),
+    openLegacyUi: () => perform(() => openLegacyUi()),
   }
 }
 

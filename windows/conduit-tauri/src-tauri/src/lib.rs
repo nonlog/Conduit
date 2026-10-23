@@ -108,6 +108,11 @@ fn open_folder(kind: String, app: AppHandle) -> Result<(), String> {
     bridge::open_directory(&path)
 }
 
+#[tauri::command]
+fn open_legacy_ui() -> Result<(), String> {
+    bridge::open_legacy_ui()
+}
+
 fn start_file_observer(app: AppHandle) {
     std::thread::spawn(move || {
         let folder = bridge::data_dir();
@@ -182,8 +187,9 @@ pub fn run() {
             save_settings,
             clear_history,
             open_link,
-            open_folder
+            open_folder,
+            open_legacy_ui
         ])
         .run(tauri::generate_context!())
-        .expect("Conduit desktop preview failed to start");
+        .expect("Conduit desktop failed to start");
 }

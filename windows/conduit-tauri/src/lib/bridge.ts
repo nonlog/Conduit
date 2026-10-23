@@ -57,6 +57,11 @@ export async function openFolder(kind: "data" | "received") {
   await invoke<void>("open_folder", { kind })
 }
 
+export async function openLegacyUi() {
+  requireNative()
+  await invoke<void>("open_legacy_ui")
+}
+
 export async function watchShellErrors(onError: (message: string) => void): Promise<UnlistenFn> {
   if (!isNative()) return () => {}
   const drain = async () => {

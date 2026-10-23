@@ -21,6 +21,7 @@ export interface PageActions {
   save: (settings: DesktopSettings) => Promise<void>
   openLink: (url: string) => Promise<void>
   openFolder: (kind: "received" | "data") => Promise<void>
+  openLegacyUi: () => Promise<void>
   refresh: () => Promise<void>
 }
 
@@ -291,17 +292,18 @@ export function Settings({ snapshot, actions }: { snapshot: Snapshot; actions: P
 export function About({ snapshot, actions }: { snapshot: Snapshot; actions: PageActions }) {
   return <div className="page-inner"><Header page="about" subtitle="A small companion for the devices you already use."/>
     <div className="flex items-center gap-4 rounded-xl border bg-card p-6"><div className="brand-mark flex size-14 items-center justify-center rounded-2xl"><Laptop2 size={29}/></div>
-      <div><div className="font-heading text-xl font-semibold">Conduit</div><p className="mt-1 text-xs text-muted-foreground">Desktop Preview · v{snapshot.version}</p></div>
+      <div><div className="font-heading text-xl font-semibold">Conduit</div><p className="mt-1 text-xs text-muted-foreground">{snapshot.desktopChannel === "stable" ? "Nova Desktop" : "Desktop Preview"} · v{snapshot.version}</p></div>
     </div>
     <h2 className="minor-heading mb-3 mt-7">Under the hood</h2>
     <Card className="p-0">
       <SettingLine icon={ShieldCheck} label="Existing Rust daemon" description="Noise pairing, encrypted LAN/Relay transfer, clipboard and notification handling."><Badge variant="secondary">{snapshot.daemonAvailable ? "Detected" : "Unavailable"}</Badge></SettingLine>
       <Separator/>
-      <SettingLine icon={Settings2} label="New desktop UI" description="Tauri 2, React, shadcn/ui Nova, Lucide, Motion, Zustand and resizable panels."><Badge variant="outline">Preview</Badge></SettingLine>
+      <SettingLine icon={Settings2} label="New desktop UI" description="Tauri 2, React, shadcn/ui Nova, Lucide, Motion, Zustand and resizable panels."><Badge variant="outline">{snapshot.desktopChannel === "stable" ? "Default" : "Preview"}</Badge></SettingLine>
       <Separator/>
       <SettingLine icon={FolderOpen} label="Existing app data" description={snapshot.dataDir}><Button size="sm" variant="outline" onClick={() => actions.openFolder("data")}>Open</Button></SettingLine>
     </Card>
-    <p className="mt-5 max-w-xl text-xs leading-6 text-muted-foreground">This preview installs separately from Uno/WinUI. It does not replace the Windows share target, Scoop package, Explorer integration, or existing background process.</p>
+    {snapshot.desktopChannel === "stable" ? <div className="mt-5 flex items-center gap-3"><Button variant="outline" onClick={() => actions.openLegacyUi()}>Open legacy desktop</Button><p className="text-xs text-muted-foreground">Windows Share Target uses the retained WinUI compatibility host. Your pairing and transfers remain with the same daemon.</p></div> :
+      <p className="mt-5 max-w-xl text-xs leading-6 text-muted-foreground">This preview installs separately from Uno/WinUI. It does not replace the Windows share target, Scoop package, Explorer integration, or existing background process.</p>}
     <div className="mt-7 flex items-center gap-1.5 text-[12px] text-muted-foreground"><CircleHelp size={14}/> Report regressions through the existing Conduit repository.</div>
   </div>
 }

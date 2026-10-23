@@ -128,6 +128,12 @@ fn control_path() -> Result<PathBuf> {
     if let Some(tauri) = crate::data_dir::tauri_preview_exe(dir) {
         return Ok(tauri);
     }
+    // Scoop continues to ship WinUI as a Windows Share Target compatibility
+    // host and rollback, but Nova becomes the default desktop when present.
+    let nova = dir.join("conduit-nova.exe");
+    if nova.is_file() {
+        return Ok(nova);
+    }
     let installed = dir.join("Conduit.exe");
     if installed.is_file() {
         return Ok(installed);
@@ -433,6 +439,29 @@ unsafe fn open_control() {
             name.to_string_lossy()
                 .eq_ignore_ascii_case("conduit-tauri-preview.exe")
         });
+    let nova_stable = CONTROL_PATH
+        .get()
+        .and_then(|path| path.file_name())
+        .is_some_and(|name| {
+            name.to_string_lossy()
+                .eq_ignore_ascii_case("conduit-nova.exe")
+        });
+    if nova_stable {
+        // WinUI's Share Target has the same title "Conduit". Launch an
+        // activation and rely on Tauri's single-instance plugin to restore
+        // precisely its own window instead of focusing the wrong process.
+        if let Some(path) = CONTROL_PATH.get() {
+            match launch_control(path) {
+                Ok(handle) => {
+                    if !handle.is_null() {
+                        CloseHandle(handle);
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "could not open Conduit Nova from tray"),
+            }
+        }
+        return;
+    }
     let mut existing = if nova_preview {
         FindWindowW(null(), wide("Conduit Preview").as_ptr())
     } else {

@@ -57,6 +57,7 @@ export interface TransferEntry {
 
 export interface Snapshot {
   version: string;
+  desktopChannel: "preview" | "stable";
   connection: Connection;
   pairing: Pairing;
   settings: DesktopSettings;
@@ -72,7 +73,8 @@ export const isNative = () => typeof window !== "undefined" && "__TAURI_INTERNAL
 
 const now = Date.now();
 export const preview: Snapshot = {
-  version: "0.1.10-preview",
+  version: "0.1.11-preview",
+  desktopChannel: "preview",
   dataDir: "Demo content — preview mode",
   daemonAvailable: false,
   wallpaper: null,

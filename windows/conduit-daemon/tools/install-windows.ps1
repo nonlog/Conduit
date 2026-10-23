@@ -85,7 +85,7 @@ foreach ($name in $requiredIconAssets) {
 $hadAutostart = $null -ne (Get-ItemProperty -Path $runKey -Name Conduit -ErrorAction SilentlyContinue).Conduit
 $hadExplorerIntegration = Test-Path -LiteralPath $explorerVerbKey
 
-$running = @(Get-Process conduit-daemon, Conduit -ErrorAction SilentlyContinue)
+$running = @(Get-Process conduit-daemon, Conduit, conduit-nova -ErrorAction SilentlyContinue)
 if ($running.Count -gt 0) {
     $running | Stop-Process -Force -ErrorAction SilentlyContinue
     # Stop-Process requests termination but the executable image can stay mapped for a short
@@ -334,6 +334,18 @@ if (-not ('ConduitShortcut' -as [type])) {
 }
 
 $controlExe = Join-Path $installDir 'Conduit.exe'
+$novaExe = Join-Path $installDir 'conduit-nova.exe'
+if (Test-Path -LiteralPath $novaExe -PathType Leaf) {
+    # WinUI remains installed for Windows Share Target and rollback, but is no
+    # longer the default Start menu or tray control UI.
+    $controlExe = $novaExe
+    if ($hasPublishedUi -and (Test-Path -LiteralPath (Join-Path $source 'conduit-nova.exe') -PathType Leaf)) {
+        if ((Get-FileHash -LiteralPath (Join-Path $source 'conduit-nova.exe') -Algorithm SHA256).Hash -ne
+            (Get-FileHash -LiteralPath $novaExe -Algorithm SHA256).Hash) {
+            throw 'Nova desktop payload hash mismatch after installation'
+        }
+    }
+}
 $daemonExe = Join-Path $installDir 'conduit-daemon.exe'
 $systemUsesLightTheme = (Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name SystemUsesLightTheme -ErrorAction SilentlyContinue).SystemUsesLightTheme
 $lightShell = $null -eq $systemUsesLightTheme -or $systemUsesLightTheme -ne 0
@@ -404,6 +416,7 @@ if (-not $NoStart) {
     InstallDir = $installDir
     Shortcut = $shortcut
     AppUserModelId = 'Conduit.Desktop'
+    DefaultDesktop = $(if ($controlExe -eq $novaExe) { 'Nova' } else { 'WinUI' })
     ShareTargetRegistered = $shareTargetRegistered
     LanFirewallConfigured = $lanFirewallConfigured
     AutostartPreserved = $hadAutostart

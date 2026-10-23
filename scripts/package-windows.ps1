@@ -11,7 +11,9 @@ param(
 
     [string]$ShareTargetPackage,
 
-    [string]$ShareTargetCertificate
+    [string]$ShareTargetCertificate,
+
+    [string]$NovaExecutable
 )
 
 $ErrorActionPreference = 'Stop'
@@ -58,6 +60,20 @@ foreach ($name in $requiredRust) {
     Copy-Item -LiteralPath (Join-Path $rust $name) -Destination (Join-Path $stage $name) -Force
 }
 
+if (-not [string]::IsNullOrWhiteSpace($NovaExecutable)) {
+    $nova = (Resolve-Path -LiteralPath $NovaExecutable -ErrorAction Stop).Path
+    if ((Get-Item -LiteralPath $nova).Length -lt 1MB) {
+        throw 'Conduit Nova executable is unexpectedly small'
+    }
+    Copy-Item -LiteralPath $nova -Destination (Join-Path $stage 'conduit-nova.exe') -Force
+    if ((Get-FileHash -LiteralPath $nova -Algorithm SHA256).Hash -ne
+        (Get-FileHash -LiteralPath (Join-Path $stage 'conduit-nova.exe') -Algorithm SHA256).Hash) {
+        throw 'Nova executable changed while packaging'
+    }
+    # Conduit.exe is deliberately NOT renamed or removed. It is the existing
+    # sparse MSIX Share Target host and a reliable explicit WinUI fallback.
+}
+
 $toolsDir = Join-Path $stage 'tools'
 $assetsDir = Join-Path $stage 'assets'
 New-Item -ItemType Directory -Force -Path $toolsDir, $assetsDir | Out-Null
@@ -76,6 +92,13 @@ if (-not [string]::IsNullOrWhiteSpace($ShareTargetPackage)) {
 if (-not [string]::IsNullOrWhiteSpace($ShareTargetCertificate)) {
     $shareCertificate = (Resolve-Path -LiteralPath $ShareTargetCertificate).Path
     Copy-Item -LiteralPath $shareCertificate -Destination (Join-Path $stage 'Conduit.ShareTarget.cer') -Force
+}
+if (-not [string]::IsNullOrWhiteSpace($NovaExecutable)) {
+    foreach ($name in @('Conduit.exe', 'Conduit.dll', 'Conduit.ShareTarget.msix', 'Conduit.ShareTarget.cer', 'conduit-nova.exe', 'conduit-daemon.exe', 'conduit-send.exe')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $stage $name) -PathType Leaf)) {
+            throw "Incomplete stable Windows package: missing $name"
+        }
+    }
 }
 
 # Debug symbols are not required by the portable/Scoop runtime and make the WinUI package much larger.

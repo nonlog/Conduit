@@ -163,6 +163,12 @@ fn show_in_control_ui(message: &str) {
 
 fn control_ui_path(helper: &Path) -> PathBuf {
     let legacy = helper.with_file_name("Conduit.exe");
+    // Explorer errors belong in the primary Nova control window, not in the
+    // WinUI executable retained for packaged Share Target activation.
+    let nova = helper.with_file_name("conduit-nova.exe");
+    if nova.is_file() {
+        return nova;
+    }
     if legacy.is_file() {
         return legacy;
     }
@@ -214,6 +220,20 @@ mod tests {
         assert_eq!(control_ui_path(&helper), preview);
         std::fs::write(resources.join("Conduit.exe"), []).unwrap();
         assert_eq!(control_ui_path(&helper), resources.join("Conduit.exe"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn stable_nova_takes_priority_over_winui_for_shell_send_errors() {
+        let dir = std::env::temp_dir().join(format!("conduit-nova-shell-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let helper = dir.join("conduit-send.exe");
+        let legacy = dir.join("Conduit.exe");
+        let nova = dir.join("conduit-nova.exe");
+        std::fs::write(&legacy, []).unwrap();
+        assert_eq!(control_ui_path(&helper), legacy);
+        std::fs::write(&nova, []).unwrap();
+        assert_eq!(control_ui_path(&helper), nova);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

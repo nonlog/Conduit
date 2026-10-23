@@ -118,7 +118,7 @@ jobs:
   windows:
     name: Windows x64
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -176,6 +176,51 @@ jobs:
         shell: pwsh
         run: cargo build --release -p conduit-daemon --bins
 
+      - name: Set up Bun for stable Nova desktop
+        uses: oven-sh/setup-bun@v2
+
+      - name: Check Nova desktop and native bridge
+        working-directory: windows/conduit-tauri
+        shell: pwsh
+        run: |
+          bun install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          bun run check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          bun run lint
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          bun test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          bun run smoke
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Stage original daemon and icons for Nova
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $resources = 'windows/conduit-tauri/src-tauri/resources'
+          foreach ($name in @('conduit-daemon.exe', 'conduit-send.exe')) {
+            Copy-Item -LiteralPath (Join-Path 'target/release' $name) -Destination (Join-Path $resources $name)
+          }
+          foreach ($name in @('conduit-explorer-light.ico', 'conduit-explorer-dark.ico', 'conduit-icon-light.ico', 'conduit-icon-dark.ico')) {
+            Copy-Item -LiteralPath (Join-Path 'windows/conduit-daemon/assets' $name) -Destination (Join-Path $resources $name)
+          }
+
+      - name: Verify and build stable Tauri Nova GUI
+        working-directory: windows/conduit-tauri
+        shell: pwsh
+        run: |
+          cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --manifest-path src-tauri/Cargo.toml --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          bun run tauri build --ci --config src-tauri/tauri.production.conf.json --no-bundle
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $binary = 'src-tauri/target/release/conduit-tauri-preview.exe'
+          if (-not (Test-Path -LiteralPath $binary -PathType Leaf) -or (Get-Item $binary).Length -lt 1MB) {
+            throw 'Stable Nova GUI executable was not built'
+          }
+
       - name: Verify desktop transfer layout does not pin completed history
         shell: pwsh
         run: ./tools/test-desktop-transfer-layout.ps1
@@ -215,7 +260,12 @@ jobs:
           -RustReleaseDir ./target/release
           -ShareTargetPackage ./artifacts/Conduit.ShareTarget.msix
           -ShareTargetCertificate ./artifacts/Conduit.ShareTarget.cer
+          -NovaExecutable ./windows/conduit-tauri/src-tauri/target/release/conduit-tauri-preview.exe
           -OutputZip ./artifacts/Conduit-windows-x64.zip
+
+      - name: Verify stable Scoop payload and Share Target fallback
+        shell: pwsh
+        run: ./scripts/test-stable-nova-package.ps1 -PackageZip ./artifacts/Conduit-windows-x64.zip
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v7
