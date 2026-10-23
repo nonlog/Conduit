@@ -144,7 +144,7 @@ fn valid_scoop_root(root: PathBuf) -> Option<PathBuf> {
         .then_some(root)
 }
 
-fn scoop_root_from_exe(path: &Path) -> Option<PathBuf> {
+fn scoop_install_root_from_exe(path: &Path) -> Option<PathBuf> {
     let current = path.parent()?;
     let conduit = current.parent()?;
     let apps = conduit.parent()?;
@@ -159,7 +159,35 @@ fn scoop_root_from_exe(path: &Path) -> Option<PathBuf> {
     {
         return None;
     }
-    valid_scoop_root(apps.parent()?.to_owned())
+    Some(apps.parent()?.to_owned())
+}
+
+fn scoop_root_from_exe(path: &Path) -> Option<PathBuf> {
+    scoop_install_root_from_exe(path).and_then(valid_scoop_root)
+}
+
+fn portable_stable_daemon(ui_exe: &Path) -> Option<PathBuf> {
+    // A manually extracted stable Windows ZIP remains a portable installation:
+    // both the daemon and its data/ directory live beside conduit-nova.exe.
+    // Crucially, it must NOT quietly use an unrelated user's Scoop daemon or
+    // paired identity just because Scoop happens to be installed as well.
+    if !ui_exe
+        .file_name()?
+        .to_string_lossy()
+        .eq_ignore_ascii_case("conduit-nova.exe")
+        || scoop_install_root_from_exe(ui_exe).is_some()
+    {
+        return None;
+    }
+    let daemon = ui_exe.with_file_name("conduit-daemon.exe");
+    daemon.is_file().then_some(daemon)
+}
+
+fn own_portable_daemon() -> Option<PathBuf> {
+    env::current_exe()
+        .ok()
+        .as_deref()
+        .and_then(portable_stable_daemon)
 }
 
 fn scoop_root() -> Option<PathBuf> {
@@ -221,6 +249,9 @@ pub fn data_dir() -> PathBuf {
             return PathBuf::from(override_path);
         }
     }
+    if let Some(daemon) = own_portable_daemon() {
+        return daemon.parent().unwrap().join("data");
+    }
     if let Some(scoop) = scoop_root() {
         let persisted = scoop.join("persist").join("conduit").join("data");
         // A verified Scoop installation owns this directory even before the
@@ -243,6 +274,9 @@ pub fn daemon_path(app: &AppHandle) -> Option<PathBuf> {
         if candidate.is_file() {
             return Some(candidate);
         }
+    }
+    if let Some(daemon) = own_portable_daemon() {
+        return Some(daemon);
     }
     // Prefer the installed daemon, already owning the Noise session and autostart.
     if let Some(root) = scoop_root() {
@@ -748,6 +782,25 @@ pub fn open_legacy_ui() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn portable_stable_bundle_keeps_its_own_daemon_and_data_root() {
+        let root = env::temp_dir().join(format!(
+            "conduit-nova-portable-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let nova = root.join("conduit-nova.exe");
+        assert!(portable_stable_daemon(&nova).is_none());
+        let daemon = root.join("conduit-daemon.exe");
+        fs::write(&daemon, []).unwrap();
+        assert_eq!(portable_stable_daemon(&nova), Some(daemon));
+        assert!(portable_stable_daemon(&root.join("conduit-tauri-preview.exe")).is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn paired_state_never_serializes_the_private_peer_identifier() {
         let view = Pairing {

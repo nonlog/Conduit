@@ -15,6 +15,8 @@ To return to the legacy UI without touching device identity, history, services o
 
 The isolated NSIS `Conduit Preview` variant uses a different Windows identifier and installer. It does not replace the Scoop version or register itself as a Windows Share Target. You can safely compare both desktop UIs while the same installed daemon remains resident.
 
+The stable release ZIP can also be extracted as a portable bundle: Nova then uses its *sibling* daemon and the bundle's `data/` folder, even if Scoop is installed elsewhere. Scoop installations instead use the existing persisted `persist/conduit/data` directory; the standalone Preview uses `%LOCALAPPDATA%\\Conduit`. Never automatically cross these identities or silently start a second daemon over an already-active Windows session.
+
 The Tauri backend reads the daemon's existing bounded state/history snapshots, watches specific files for updates and invokes only allowlisted daemon CLI operations. It never reads or writes identity.bin or peer.txt, does not implement its own encryption, and stores only theme/sidebar preferences in the WebView.
 
 ## Build and test
