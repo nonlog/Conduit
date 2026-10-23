@@ -2,6 +2,10 @@ import { describe, expect, test } from "bun:test"
 import { activeTransfers, formatBytes, preview, relativeTime } from "./model"
 
 describe("Conduit Nova models", () => {
+  test("pairing state exposes only pairing status, not device identity", () => {
+    expect(preview.pairing.paired).toBe(true)
+    expect("deviceId" in preview.pairing).toBe(false)
+  })
   test("completed history never becomes a global active-transfer footer", () => {
     expect(activeTransfers(preview)).toHaveLength(0)
     const fixture = { ...preview, transfers: [

@@ -36,7 +36,7 @@ So the hard requirements are non-functional:
 | Component | Language | Runs on |
 |---|---|---|
 | `android/` | Kotlin | phone |
-| `windows/` | Rust + C# / Uno Platform | Windows (light resident daemon + on-demand WinUI 3 control surface) |
+| `windows/` | Rust daemon + Tauri 2/React Nova; retained Uno/WinUI | Windows (light resident daemon, on-demand Nova desktop; native WinUI Share Target and rollback host) |
 | `relay/` | Rust | a VPS, for when LAN is unavailable |
 | `proto/` | protobuf | wire contract, single source of truth |
 
@@ -48,12 +48,16 @@ that machinery is precisely the leak this project exists to avoid.
 
 ## Status
 
-The current release is **v0.1.4**, tagged at `8987c1b` and built and published by GitHub
-Actions. The successful release workflow was run `36249808688`; the preceding master build was
-`36249356300`.
+Tagged releases and their platform-specific binaries are built and published by GitHub Actions.
+For the exact current version and verified checksums, use the latest GitHub Release and the
+published Scoop manifest rather than copying an old version number from this README.
 
 The release has working clipboard, notification, file-transfer, capture-toast, webpage-share,
 pairing and Relay paths. The remaining evidence gates are deliberately separate from packaging:
+
+Windows v0.1.11 packages the Nova Tauri GUI as its default desktop while retaining `Conduit.exe`
+for Windows Share Target activation and explicit `--legacy-ui` rollback. The native daemon,
+pairing identity, file history, Explorer helper and sparse MSIX identity remain compatible.
 
 - M0 still needs a true same-LAN 48-hour endurance run with balanced lifecycle/resource counts.
 - M2 still needs a longer Wi-Fi/cellular/hotspot and Relay re-parking campaign.

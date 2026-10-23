@@ -9,7 +9,7 @@ export interface Connection {
 }
 
 export interface Pairing {
-  deviceId: string;
+  paired: boolean;
   deviceName: string;
   code: string;
   expiresMs: number;
@@ -79,7 +79,7 @@ export const preview: Snapshot = {
   daemonAvailable: false,
   wallpaper: null,
   connection: { state: "Connected", route: "LAN", relay: "", linked: true, deviceName: "Preview phone" },
-  pairing: { deviceId: "demo-only", deviceName: "Preview phone", code: "", expiresMs: 0, active: false },
+  pairing: { paired: true, deviceName: "Preview phone", code: "", expiresMs: 0, active: false },
   settings: { relays: ["conduit-us.example.net:41113", "conduit-wa.example.net:41113"], proxyMode: "system", manualProxy: "", receiveDir: "Downloads", trayIcon: true, autostart: true, explorerIntegration: true },
   notifications: [
     { id: "mock-1", app: "Messages", title: "Project update", body: "Latest build is ready for review.", timestamp: now - 3 * 60_000, icon: null },

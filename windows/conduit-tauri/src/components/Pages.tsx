@@ -243,7 +243,7 @@ export function Settings({ snapshot, actions }: { snapshot: Snapshot; actions: P
       </div>}
       <div className="mt-4 flex flex-wrap gap-2">
         <Button size="sm" variant="outline" onClick={() => actions.run(snapshot.pairing.active ? "pair-cancel" : "pair-start")}><Smartphone size={14}/>{snapshot.pairing.active ? "Cancel pairing" : "Pair a phone"}</Button>
-        {snapshot.pairing.deviceId && <AlertDialog>
+        {snapshot.pairing.paired && <AlertDialog>
           <AlertDialogTrigger render={<Button size="sm" variant="destructive">Forget device</Button>}/>
           <AlertDialogContent>
             <AlertDialogHeader><AlertDialogTitle>Forget this phone?</AlertDialogTitle><AlertDialogDescription>Existing pairing is removed. Re-pairing will require a new code.</AlertDialogDescription></AlertDialogHeader>

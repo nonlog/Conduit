@@ -267,6 +267,11 @@ jobs:
         shell: pwsh
         run: ./scripts/test-stable-nova-package.ps1 -PackageZip ./artifacts/Conduit-windows-x64.zip
 
+      - name: Validate isolated native installation, MSIX share identity and uninstall
+        shell: pwsh
+        timeout-minutes: 10
+        run: ./scripts/test-stable-nova-install.ps1 -PackageZip ./artifacts/Conduit-windows-x64.zip
+
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v7
         with:

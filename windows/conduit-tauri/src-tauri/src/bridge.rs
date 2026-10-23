@@ -25,7 +25,7 @@ pub struct Connection {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Pairing {
-    pub device_id: String,
+    pub paired: bool,
     pub device_name: String,
     pub code: String,
     pub expires_ms: u64,
@@ -486,7 +486,7 @@ pub fn snapshot(app: &AppHandle) -> Snapshot {
     Snapshot {
         connection,
         pairing: Pairing {
-            device_id: paired_id,
+            paired: !paired_id.is_empty(),
             device_name: paired_name,
             code: if pairing_active { code } else { String::new() },
             expires_ms: expire,
@@ -748,6 +748,20 @@ pub fn open_legacy_ui() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn paired_state_never_serializes_the_private_peer_identifier() {
+        let view = Pairing {
+            paired: true,
+            device_name: "Phone".into(),
+            code: "".into(),
+            expires_ms: 0,
+            active: false,
+        };
+        let json = serde_json::to_value(view).unwrap();
+        assert_eq!(json["paired"], true);
+        assert!(json.get("deviceId").is_none());
+        assert!(json.get("device_id").is_none());
+    }
     #[test]
     fn parses_real_transfer_records() {
         let row = "aabbccdd\tinbound\t2097152\t2097152\tcompleted\tfile.mp3\t";
