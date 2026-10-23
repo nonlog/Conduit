@@ -6,6 +6,7 @@ import { chromium } from "playwright-core"
 
 const url = "http://127.0.0.1:1420/"
 const project = resolve(import.meta.dirname, "..")
+const viteBin = resolve(project, "node_modules", "vite", "bin", "vite.js")
 const shots = resolve(project, "artifacts", "browser-smoke")
 const browsers = [
   process.env.CONDUIT_TEST_BROWSER,
@@ -23,22 +24,37 @@ const ready = async () => {
   catch { return false }
 }
 let server
-if (!(await ready())) {
-  server = spawn(process.execPath, ["run", "dev", "--host", "127.0.0.1"], {
-    cwd: project, stdio: "ignore", windowsHide: true,
-  })
-  server.on("error", console.error)
-  server.unref()
-  for (let i = 0; i < 90; i++) {
-    if (await ready()) break
-    await new Promise((done) => setTimeout(done, 400))
-  }
-  if (!(await ready())) throw new Error("Vite preview did not become ready")
-}
-
+let serverOutput = ""
+let serverError
 const errors = []
 let browser
 try {
+  if (!(await ready())) {
+    // Launch Vite directly under Node rather than through a nested `bun run`
+    // process. On hosted Windows runners, the detached Bun child can vanish
+    // after appearing ready, leaving this smoke run with no serving process.
+    server = spawn(process.env.CONDUIT_TEST_NODE || "node", [viteBin, "--host", "127.0.0.1", "--port", "1420", "--strictPort"], {
+      cwd: project, stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
+    })
+    server.on("error", (error) => { serverError = error })
+    const capture = (chunk) => { serverOutput = (serverOutput + chunk.toString()).slice(-8192) }
+    server.stdout.on("data", capture)
+    server.stderr.on("data", capture)
+    let stable = false
+    for (let i = 0; i < 120; i++) {
+      if (serverError || server.exitCode !== null) break
+      if (await ready()) {
+        // Vite must still be alive after the first successful HTTP probe.
+        await new Promise((done) => setTimeout(done, 300))
+        if (await ready() && server.exitCode === null) { stable = true; break }
+      }
+      await new Promise((done) => setTimeout(done, 400))
+    }
+    if (!stable) {
+      throw new Error(`Vite preview did not become ready (exit=${server.exitCode ?? "running"}, spawn=${serverError ?? "ok"}).\n${serverOutput}`)
+    }
+  }
+
   browser = await chromium.launch({
     executablePath: executable,
     headless: true,
