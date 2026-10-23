@@ -57,6 +57,20 @@ export async function openFolder(kind: "data" | "received") {
   await invoke<void>("open_folder", { kind })
 }
 
+export async function watchShellErrors(onError: (message: string) => void): Promise<UnlistenFn> {
+  if (!isNative()) return () => {}
+  const drain = async () => {
+    const pending = await invoke<string[]>("take_launch_notices")
+    for (const message of pending) onError(message)
+  }
+  // Subscribe before draining cold-start messages. Forwarded launches queue
+  // their notice in the native process even if the WebView is still loading.
+  const unlisten = await listen("conduit:launch-notice", () => { void drain().catch(console.error) })
+  try { await drain() }
+  catch (error) { unlisten(); throw error }
+  return unlisten
+}
+
 export async function watchDaemon(onChanged: () => void, onDropped: (paths: string[]) => void): Promise<UnlistenFn> {
   if (!isNative()) return () => {}
   let throttle: ReturnType<typeof setTimeout> | undefined

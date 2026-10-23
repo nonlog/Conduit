@@ -29,8 +29,36 @@ pub fn resolve() -> Result<PathBuf> {
         return Ok(persisted);
     }
 
+    // The independent Tauri NSIS preview stages this executable under
+    // <install>/resources/. Its install directory may be protected and can be
+    // replaced during upgrades, so never keep identity, history or config
+    // beside that bundled binary. Match the Tauri bridge's non-Scoop fallback.
+    if tauri_preview_exe(parent).is_some() {
+        let local = std::env::var_os("LOCALAPPDATA")
+            .filter(|value| !value.is_empty())
+            .context("LOCALAPPDATA is required for a standalone Tauri desktop installation")?;
+        let persistent = PathBuf::from(local).join("Conduit");
+        // Salvage any data written by an older bundled preview into the
+        // resources directory. Existing AppData identity always wins.
+        migrate_portable_into_persist_if_needed(&portable, &persistent)?;
+        std::fs::create_dir_all(&persistent)
+            .with_context(|| format!("creating {}", persistent.display()))?;
+        return Ok(persistent);
+    }
+
     migrate_legacy_if_needed(&portable)?;
     Ok(portable)
+}
+
+/// The bundled daemon and the UI have separate binaries, but must share one
+/// persistent user data directory. Recognize only the explicitly packaged
+/// preview layout; leave ordinary portable and Scoop installations unchanged.
+pub(crate) fn tauri_preview_exe(daemon_dir: &Path) -> Option<PathBuf> {
+    if !component_eq(daemon_dir, "resources") {
+        return None;
+    }
+    let candidate = daemon_dir.parent()?.join("conduit-tauri-preview.exe");
+    candidate.is_file().then_some(candidate)
 }
 
 /// Recognise Scoop's `<root>\\apps\\conduit\\<version-or-current>` layout without depending on
@@ -164,5 +192,56 @@ mod tests {
             scoop_persist_from_install(Path::new(r"D:\Portable\Conduit")),
             None
         );
+    }
+
+    #[test]
+    fn bundled_tauri_layout_is_detected_without_touching_user_data() {
+        let dir = std::env::temp_dir().join(format!(
+            "conduit-tauri-layout-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let resources = dir.join("resources");
+        std::fs::create_dir_all(&resources).unwrap();
+        assert!(tauri_preview_exe(&resources).is_none());
+        std::fs::write(dir.join("conduit-tauri-preview.exe"), []).unwrap();
+        assert_eq!(
+            tauri_preview_exe(&resources),
+            Some(dir.join("conduit-tauri-preview.exe"))
+        );
+        assert!(tauri_preview_exe(&dir).is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn salvaging_old_preview_state_never_replaces_existing_identity() {
+        let root = std::env::temp_dir().join(format!(
+            "conduit-tauri-migrate-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let source = root.join("resources").join("data");
+        let persistent = root.join("appdata").join("Conduit");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&persistent).unwrap();
+        std::fs::write(source.join("identity.bin"), b"old preview identity").unwrap();
+        std::fs::write(source.join("transfers.tsv"), b"old preview history").unwrap();
+        std::fs::write(persistent.join("identity.bin"), b"existing identity").unwrap();
+        migrate_portable_into_persist_if_needed(&source, &persistent).unwrap();
+        assert_eq!(
+            std::fs::read(persistent.join("identity.bin")).unwrap(),
+            b"existing identity"
+        );
+        assert_eq!(
+            std::fs::read(persistent.join("transfers.tsv")).unwrap(),
+            b"old preview history"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

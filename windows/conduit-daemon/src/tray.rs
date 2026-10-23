@@ -125,6 +125,9 @@ fn tray_icon_path() -> Option<PathBuf> {
 fn control_path() -> Result<PathBuf> {
     let exe = std::env::current_exe().context("finding Conduit executable")?;
     let dir = exe.parent().context("Conduit executable has no parent")?;
+    if let Some(tauri) = crate::data_dir::tauri_preview_exe(dir) {
+        return Ok(tauri);
+    }
     let installed = dir.join("Conduit.exe");
     if installed.is_file() {
         return Ok(installed);
@@ -420,14 +423,23 @@ unsafe fn remember_control_process(handle: HANDLE) {
 }
 
 unsafe fn open_control() {
-    // Keep compatibility with the legacy control window, but prefer the real WinUI title for the
-    // current shell. A second tray activation should restore the existing UI immediately instead
-    // of launching another Uno/WinUI process.
-    let legacy_class = wide("ConduitControlWindow");
-    let mut existing = FindWindowW(legacy_class.as_ptr(), null());
-    if existing.is_null() {
-        let title = wide("Conduit");
-        existing = FindWindowW(null(), title.as_ptr());
+    // The daemon is shared, but only the packaged standalone preview should
+    // focus the Tauri title. Never steal an unrelated WinUI window and never
+    // change the released Scoop tray behavior.
+    let nova_preview = CONTROL_PATH
+        .get()
+        .and_then(|path| path.file_name())
+        .is_some_and(|name| {
+            name.to_string_lossy()
+                .eq_ignore_ascii_case("conduit-tauri-preview.exe")
+        });
+    let mut existing = if nova_preview {
+        FindWindowW(null(), wide("Conduit Preview").as_ptr())
+    } else {
+        FindWindowW(wide("ConduitControlWindow").as_ptr(), null())
+    };
+    if existing.is_null() && !nova_preview {
+        existing = FindWindowW(null(), wide("Conduit").as_ptr());
     }
     if !existing.is_null() {
         release_control_process_handle();

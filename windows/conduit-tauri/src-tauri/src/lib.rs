@@ -1,7 +1,23 @@
 mod bridge;
+mod launch;
 
 use notify::{RecursiveMode, Watcher};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, State};
+
+fn queue_launch_notice(app: &AppHandle, args: &[String]) {
+    let Some(message) = launch::send_error_from_args(args) else {
+        return;
+    };
+    if let Some(queue) = app.try_state::<launch::LaunchNotices>() {
+        queue.push(message);
+        let _ = app.emit("conduit:launch-notice", ());
+    }
+}
+
+#[tauri::command]
+fn take_launch_notices(state: State<'_, launch::LaunchNotices>) -> Vec<String> {
+    state.take()
+}
 
 #[tauri::command]
 fn conduit_snapshot(app: AppHandle) -> bridge::Snapshot {
@@ -139,7 +155,8 @@ pub fn run() {
     tauri::Builder::default()
         // Keep the preview isolated from the existing WinUI application, but
         // prevent duplicate Tauri windows racing to update the same daemon UI.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            queue_launch_notice(app, &args);
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
                 let _ = window.set_focus();
@@ -147,12 +164,18 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            app.manage(launch::LaunchNotices::default());
             let handle = app.handle().clone();
+            let args: Vec<String> = std::env::args_os()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect();
+            queue_launch_notice(&handle, &args);
             start_file_observer(handle);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             conduit_snapshot,
+            take_launch_notices,
             ensure_daemon,
             daemon_action,
             send_file,

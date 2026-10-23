@@ -98,8 +98,13 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $target = 'windows/conduit-tauri/src-tauri/resources/conduit-daemon.exe'
-          Copy-Item 'target/release/conduit-daemon.exe' $target
+          $resources = 'windows/conduit-tauri/src-tauri/resources'
+          foreach ($name in @('conduit-daemon.exe', 'conduit-send.exe')) {
+            Copy-Item -LiteralPath (Join-Path 'target/release' $name) -Destination (Join-Path $resources $name)
+          }
+          foreach ($name in @('conduit-explorer-light.ico', 'conduit-explorer-dark.ico', 'conduit-icon-light.ico', 'conduit-icon-dark.ico')) {
+            Copy-Item -LiteralPath (Join-Path 'windows/conduit-daemon/assets' $name) -Destination (Join-Path $resources $name)
+          }
           $manifest = Get-Content 'windows/conduit-tauri/src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json
           if ($manifest.identifier -eq 'com.conduit.desktop' -or $manifest.productName -notlike '*Preview*') {
             throw 'Preview must not replace the released Conduit Windows app'
@@ -123,6 +128,33 @@ jobs:
             throw 'Expected exactly one standalone Tauri preview installer'
           }
           $items | ForEach-Object { Get-FileHash $_.FullName -Algorithm SHA256 | Format-List }
+
+      - name: Smoke install and uninstall standalone preview
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = @(Get-ChildItem 'windows/conduit-tauri/src-tauri/target/release/bundle/nsis' -Filter '*.exe' -File)[0].FullName
+          $installed = Join-Path $env:RUNNER_TEMP 'conduit-tauri-preview-install-smoke'
+          if (Test-Path -LiteralPath $installed) { throw 'Refusing to overwrite an existing test install' }
+          $setup = Start-Process -FilePath $installer -ArgumentList @('/S', ('/D=' + $installed)) -PassThru -Wait
+          if ($setup.ExitCode -ne 0) { throw "Preview NSIS silent install failed: $($setup.ExitCode)" }
+          try {
+            foreach ($name in @('conduit-tauri-preview.exe', 'uninstall.exe', 'resources/conduit-daemon.exe', 'resources/conduit-send.exe', 'resources/conduit-explorer-light.ico', 'resources/conduit-explorer-dark.ico', 'resources/conduit-icon-light.ico', 'resources/conduit-icon-dark.ico')) {
+              if (-not (Test-Path -LiteralPath (Join-Path $installed $name) -PathType Leaf)) {
+                throw "Preview installer omitted $name"
+              }
+            }
+            if (Test-Path -LiteralPath (Join-Path $installed 'resources/data')) {
+              throw 'Installer must not package live identity/config/history beside the daemon'
+            }
+          } finally {
+            $uninstaller = Join-Path $installed 'uninstall.exe'
+            if (Test-Path -LiteralPath $uninstaller -PathType Leaf) {
+              $removed = Start-Process -FilePath $uninstaller -ArgumentList '/S' -PassThru -Wait
+              if ($removed.ExitCode -ne 0) { throw "Preview NSIS uninstall failed: $($removed.ExitCode)" }
+            }
+            if (Test-Path -LiteralPath $installed) { Remove-Item -LiteralPath $installed -Recurse -Force }
+          }
 
       - name: Upload isolated Tauri preview installer
         uses: actions/upload-artifact@v7

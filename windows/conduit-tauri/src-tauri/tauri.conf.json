@@ -31,7 +31,7 @@
     "active": true,
     "targets": ["nsis"],
     "shortDescription": "Conduit Tauri 2 React interface preview",
-    "resources": ["resources/conduit-daemon.exe"],
+    "resources": ["resources/conduit-daemon.exe", "resources/conduit-send.exe", "resources/conduit-explorer-light.ico", "resources/conduit-explorer-dark.ico", "resources/conduit-icon-light.ico", "resources/conduit-icon-dark.ico"],
     "icon": ["icons/icon.png", "icons/icon.ico"]
   }
 }

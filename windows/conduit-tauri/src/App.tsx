@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Sidebar, pageLabels } from "@/components/Sidebar"
 import { PageContents, type PageActions } from "@/components/Pages"
 import { activeTransfers, isNative } from "@/lib/model"
-import { fetchSnapshot, ensureDaemon, runAction, updateSettings, removeHistory, selectFileAndSend, sendDroppedFile, openLink, openFolder, watchDaemon } from "@/lib/bridge"
+import { fetchSnapshot, ensureDaemon, runAction, updateSettings, removeHistory, selectFileAndSend, sendDroppedFile, openLink, openFolder, watchDaemon, watchShellErrors } from "@/lib/bridge"
 import { useUi } from "@/store/ui"
 import "./App.css"
 
@@ -80,6 +80,20 @@ function Desktop() {
     matcher.addEventListener("change", update)
     return () => matcher.removeEventListener("change", update)
   }, [theme])
+
+  useEffect(() => {
+    let active = true
+    let unlisten: (() => void) | undefined
+    void watchShellErrors((message) => {
+      if (!active) return
+      // Present Explorer send errors in the same Transfers UI that owns the
+      // history. An already-running instance must not drop launch feedback.
+      useUi.getState().setPage("transfers")
+      setNotice(message, true)
+    }).then((off) => { if (active) unlisten = off; else off() })
+      .catch((error) => { if (active) setNotice(String(error), true) })
+    return () => { active = false; unlisten?.() }
+  }, [setNotice])
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {

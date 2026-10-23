@@ -145,9 +145,12 @@ fn send_error(file: &Path, reason: &str) -> String {
 }
 
 fn show_in_control_ui(message: &str) {
-    let Ok(ui) = std::env::current_exe().map(|path| path.with_file_name("Conduit.exe")) else {
+    let Ok(ui) = std::env::current_exe().map(|path| control_ui_path(&path)) else {
         return;
     };
+    if !ui.is_file() {
+        return;
+    }
     let _ = Command::new(ui)
         .arg("--send-error")
         .arg(message)
@@ -158,9 +161,61 @@ fn show_in_control_ui(message: &str) {
         .spawn();
 }
 
+fn control_ui_path(helper: &Path) -> PathBuf {
+    let legacy = helper.with_file_name("Conduit.exe");
+    if legacy.is_file() {
+        return legacy;
+    }
+    let Some(parent) = helper.parent() else {
+        return legacy;
+    };
+    if parent
+        .file_name()
+        .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("resources"))
+    {
+        if let Some(root) = parent.parent() {
+            let preview = root.join("conduit-tauri-preview.exe");
+            if preview.is_file() {
+                return preview;
+            }
+        }
+    }
+    legacy
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn errors_still_use_legacy_control_ui_outside_preview_package() {
+        let helper = Path::new(r"C:\Scoop\apps\conduit\current\conduit-send.exe");
+        assert_eq!(
+            control_ui_path(helper),
+            helper.with_file_name("Conduit.exe")
+        );
+    }
+
+    #[test]
+    fn standalone_preview_helper_opens_tauri_without_overriding_winui() {
+        let dir = std::env::temp_dir().join(format!(
+            "conduit-preview-send-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let resources = dir.join("resources");
+        std::fs::create_dir_all(&resources).unwrap();
+        let preview = dir.join("conduit-tauri-preview.exe");
+        std::fs::write(&preview, []).unwrap();
+        let helper = resources.join("conduit-send.exe");
+        assert_eq!(control_ui_path(&helper), preview);
+        std::fs::write(resources.join("Conduit.exe"), []).unwrap();
+        assert_eq!(control_ui_path(&helper), resources.join("Conduit.exe"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn extracts_the_real_daemon_error_instead_of_a_generic_link_hint() {

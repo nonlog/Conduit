@@ -30,7 +30,11 @@ A Tauri development window requires native Windows Rust/MSVC and WebView2 prereq
 - Native light/dark/system theme, navigation reorder, sidebar resize and responsive layout
 - Single-instance Windows preview: opening the app again focuses the existing window rather than starting competing UI instances
 - Settings writes preserve unrelated configuration lines and atomically replace config.txt before requesting daemon reload
+- Standalone NSIS installs bundle `conduit-daemon.exe`, the Explorer send helper and themed icons. Without Scoop, the daemon persists state in the user's existing `%LOCALAPPDATA%\\Conduit` directory, never under the replaceable installation resources directory; old bundled-preview state is salvaged without overwriting existing identity
+- The bundled daemon tray opens the Nova window; Explorer helper failures are delivered to the existing Nova instance's Transfers page, with bounded native-only IPC
 
 Not yet swapped into production: Windows share-target and context menu are still served by the existing native daemon/WinUI package. The new preview does not register itself as the Windows share target or replace the Scoop installation.
+
+The Windows Share Target is a **separate sparse MSIX activation contract** bound to `Conduit.exe` and currently implemented by the WinUI `ShareOperation` handler. NSIS and ordinary file drag-and-drop do not replace that contract. The production cutover must first ship and test a dedicated Share Target compatibility host (or a Tauri/WinRT implementation), re-register the sparse identity to it, and verify OS share-sheet success, errors, upgrades and rollback. Do not remove WinUI from the released package before those checks.
 
 Do not uninstall the released version or relocate/overwrite its persisted data to test the preview.
