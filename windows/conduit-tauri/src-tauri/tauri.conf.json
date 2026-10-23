@@ -1,0 +1,37 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Conduit Preview",
+  "version": "0.1.10",
+  "identifier": "com.nonlog.conduit.preview",
+  "build": {
+    "beforeDevCommand": "bun run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "bun run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Conduit Preview",
+        "width": 1160,
+        "height": 760,
+        "minWidth": 850,
+        "minHeight": 570,
+        "center": true,
+        "backgroundColor": "#fafafa",
+        "dragDropEnabled": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data: asset:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "shortDescription": "Conduit Tauri 2 React interface preview",
+    "resources": ["resources/conduit-daemon.exe"],
+    "icon": ["icons/icon.png", "icons/icon.ico"]
+  }
+}

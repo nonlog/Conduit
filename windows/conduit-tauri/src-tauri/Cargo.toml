@@ -1,0 +1,29 @@
+[package]
+name = "conduit-tauri-preview"
+version = "0.1.10"
+description = "Conduit desktop companion, Nova UI preview"
+edition = "2021"
+authors = ["Codex <codex@openai.com>"]
+build = "build.rs"
+
+[workspace]
+
+[lib]
+name = "conduit_tauri_preview_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+notify = "8"
+base64 = "0.22"
+winreg = "0.55"
+url = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
