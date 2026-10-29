@@ -481,8 +481,15 @@ class SyncService : Service() {
             Log.i(TAG, "physical LAN addressing ready: $net")
             if (shouldReconnectBoundLanAfterAddressChange(
                     previousAddresses, addresses, link.isBoundTo(net),
-                )) {
-                Log.i(TAG, "LAN address changed $previousAddresses -> $addresses; reconnecting")
+                ) || (previousAddresses != null && shouldReconnectRelayForPhysicalLanLoss(
+                    lostKnownLan = true,
+                    relaySocketActive = relayAttempt != null && link.hasOpenSocket && link.boundNetwork == null,
+                    relayNetworkClass = relayNetworkClass,
+                ))) {
+                // An existing Relay TCP flow also owns the previous Wi-Fi source
+                // address; DHCP replacing it without replacing Network invalidates
+                // the socket even when the VPN/default Network identity is unchanged.
+                Log.i(TAG, "LAN address changed $previousAddresses -> $addresses; reconnecting obsolete route")
                 link.disconnect()
             } else if (LinkStatus.state == LinkState.Connected && relayAttemptConnected) {
                 maybeRecheckLanAfterRelay(net)
