@@ -114,6 +114,43 @@ internal fun shouldRecheckLanAfterRelay(
 ): Boolean = connectedViaRelay && networkHasLan && !alreadyChecked
 
 /**
+ * A new system default can strand a socket on the old route, even before Noise
+ * completes (Relay park has no read deadline). Closing the old socket lets
+ * the existing Idle handler immediately rediscover LAN or dial Relay. A direct LAN
+ * socket is unaffected when a VPN becomes default above that same physical link.
+ */
+internal fun shouldReconnectForDefaultNetworkChange(
+    networkChanged: Boolean,
+    hasOpenSocket: Boolean,
+    usingPhysicalLan: Boolean,
+    boundToNewDefault: Boolean,
+    newDefaultIsVpn: Boolean,
+): Boolean = networkChanged && hasOpenSocket &&
+    (!usingPhysicalLan || (!boundToNewDefault && !newDefaultIsVpn))
+
+/** An established Relay socket using Wi-Fi/Ethernet can also be stranded when a
+ * VPN remains the default while its underlying physical network disappears. */
+internal fun shouldReconnectRelayForPhysicalLanLoss(
+    lostKnownLan: Boolean,
+    relaySocketActive: Boolean,
+    relayNetworkClass: String,
+): Boolean = lostKnownLan && relaySocketActive &&
+    relayNetworkClass in setOf("wifi", "ethernet", "vpn-wifi", "vpn-ethernet")
+
+/** Network handles may stay the same while DHCP assigns a new address. A socket
+ * bound to that interface must be recreated rather than waiting for read timeout. */
+internal fun shouldReconnectBoundLanAfterAddressChange(
+    previousAddresses: String?,
+    newAddresses: String,
+    boundToNetwork: Boolean,
+): Boolean = previousAddresses != null && previousAddresses != newAddresses && boundToNetwork
+
+/** The previous reader may post Idle just before a replacement LAN dial begins.
+ * Its delayed retry work must not affect the new socket. */
+internal fun isCurrentLinkGeneration(eventGeneration: Long, latestGeneration: Long): Boolean =
+    eventGeneration == latestGeneration
+
+/**
  * A real mDNS advertisement is only a LAN candidate, not proof that the direct TCP/Noise
  * handshake works. If it fails, choose Relay immediately rather than rediscovering the same
  * unreachable candidate indefinitely; no new background polling is introduced.
@@ -233,8 +270,6 @@ class SyncService : Service() {
 
     /** Guards duplicate callbacks while one bounded Relay-to-LAN discovery window is active/done. */
     @Volatile private var relayLanRecheckDone = false
-    /** Suppresses the Relay teardown's retry while an intentional LAN handoff is queued. */
-    @Volatile private var lanHandoffInProgress = false
 
     /** The desktop we are paired with, so the relay rendezvous survives a restart. */
     @Volatile private var knownPeer: String? = null
@@ -336,12 +371,28 @@ class SyncService : Service() {
         override fun onAvailable(net: Network) {
             main.post {
                 if (destroyed) return@post
+                val previousDefault = defaultNetwork
                 defaultNetwork = net
                 networkUp = true
                 cancelRetry()
-                if (LinkStatus.state == LinkState.Connected) {
-                    // A VPN/default-network update is not a reason to close an already
-                    // authenticated file stream or relabel its route as LAN.
+                // onAvailable can repeat the current default. Only a new default
+                // invalidates a Relay socket (including its indefinitely parked waiter).
+                // An independent LAN socket survives a VPN becoming default above it.
+                val lan = link.physicallyBoundNetwork
+                val caps = connectivity.getNetworkCapabilities(net)
+                if (Settings.linkWanted && shouldReconnectForDefaultNetworkChange(
+                        networkChanged = previousDefault != null && previousDefault != net,
+                        hasOpenSocket = link.hasOpenSocket,
+                        usingPhysicalLan = lan != null,
+                        boundToNewDefault = lan == net,
+                        newDefaultIsVpn = caps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true,
+                    )) {
+                    Log.i(TAG, "default network changed $previousDefault -> $net; reconnecting on the new route")
+                    relayLanRecheckDone = false
+                    deferredLanHandoff = null
+                    discovery.stop()
+                    link.disconnect()
+                } else if (LinkStatus.state == LinkState.Connected) {
                     maybeRecheckLanAfterRelay(net)
                 } else if (pairingActive()) retryPairing(net) else redial(net)
             }
@@ -352,15 +403,16 @@ class SyncService : Service() {
                 if (destroyed || defaultNetwork != net) return@post
                 defaultNetwork = connectivity.activeNetwork
                 networkUp = defaultNetwork != null || physicalLanNetwork() != null
-                // A direct socket is owned by its explicit physical Network, not by the
-                // changing system-default VPN. Its own onLost callback handles teardown.
-                if (link.boundNetwork?.let(::isPhysicalLanNetwork) == true) return@post
-                if (networkUp) return@post
-                Log.i(TAG, "no usable network remains; suspending session")
-                relayLanRecheckDone = false
-                lanHandoffInProgress = false
-                main.removeCallbacks(retry)
-                link.disconnect()
+                // The default can disappear before Android publishes its replacement.
+                // A Relay socket is bound to the vanished system route even if some
+                // alternate network is already up; otherwise it may look connected for
+                // ten minutes. Keep an independently bound physical LAN stream intact.
+                if (link.boundNetwork == null || link.isBoundTo(net) || !networkUp) {
+                    Log.i(TAG, "default network lost: $net; closing obsolete session")
+                    relayLanRecheckDone = false
+                    main.removeCallbacks(retry)
+                    link.disconnect()
+                }
             }
         }
     }
@@ -380,12 +432,19 @@ class SyncService : Service() {
         override fun onLost(net: Network) {
             main.post {
                 if (destroyed) return@post
-                readyLanAddresses.remove(net)
+                val wasKnownLan = readyLanAddresses.remove(net) != null
                 relayLanRecheckDone = false
                 if (deferredLanHandoff?.network == net) deferredLanHandoff = null
                 networkUp = connectivity.activeNetwork != null || physicalLanNetwork() != null
                 Log.i(TAG, "physical LAN lost: $net")
-                if (link.isBoundTo(net)) link.disconnect()
+                if (link.isBoundTo(net) || shouldReconnectRelayForPhysicalLanLoss(
+                        lostKnownLan = wasKnownLan,
+                        relaySocketActive = relayAttempt != null && link.hasOpenSocket && link.boundNetwork == null,
+                        relayNetworkClass = relayNetworkClass,
+                    )) {
+                    Log.i(TAG, "network $net owned the last active route; reconnecting")
+                    link.disconnect()
+                }
             }
         }
     }
@@ -398,12 +457,34 @@ class SyncService : Service() {
             val addresses = connectivity.getLinkProperties(net)?.linkAddresses.orEmpty()
                 .filter { it.address is java.net.Inet4Address && !it.address.isLoopbackAddress }
                 .map { "${it.address.hostAddress}/${it.prefixLength}" }.sorted().joinToString(",")
-            if (addresses.isEmpty() || readyLanAddresses[net] == addresses) return@post
+            val previousAddresses = readyLanAddresses[net]
+            if (addresses.isEmpty()) {
+                if (previousAddresses != null) {
+                    readyLanAddresses.remove(net)
+                    if (shouldReconnectBoundLanAfterAddressChange(
+                            previousAddresses, addresses, link.isBoundTo(net),
+                        ) || shouldReconnectRelayForPhysicalLanLoss(
+                            lostKnownLan = true,
+                            relaySocketActive = relayAttempt != null && link.hasOpenSocket && link.boundNetwork == null,
+                            relayNetworkClass = relayNetworkClass,
+                        )) {
+                        Log.i(TAG, "physical LAN lost its IPv4 address; reconnecting")
+                        link.disconnect()
+                    }
+                }
+                return@post
+            }
+            if (previousAddresses == addresses) return@post
             readyLanAddresses[net] = addresses
             networkUp = true
             relayLanRecheckDone = false
             Log.i(TAG, "physical LAN addressing ready: $net")
-            if (LinkStatus.state == LinkState.Connected && relayAttemptConnected) {
+            if (shouldReconnectBoundLanAfterAddressChange(
+                    previousAddresses, addresses, link.isBoundTo(net),
+                )) {
+                Log.i(TAG, "LAN address changed $previousAddresses -> $addresses; reconnecting")
+                link.disconnect()
+            } else if (LinkStatus.state == LinkState.Connected && relayAttemptConnected) {
                 maybeRecheckLanAfterRelay(net)
             } else if (LinkStatus.state != LinkState.Connected) {
                 if (pairingActive()) retryPairing(net) else redial(net)
@@ -449,6 +530,7 @@ class SyncService : Service() {
             localDeviceName,
             object : Link.Events {
                 override fun onState(state: LinkState, peer: String?) {
+                    val eventGeneration = link.sessionGeneration
                     val previousState = LinkStatus.state
                     LinkStatus.state = state
                     LinkStatus.peer = peer
@@ -501,9 +583,8 @@ class SyncService : Service() {
                                 0L
                             }
                             main.post {
-                                if (lanHandoffInProgress) {
-                                    lanHandoffInProgress = false
-                                    Log.i(TAG, "relay session closed for LAN handoff")
+                                if (!isCurrentLinkGeneration(eventGeneration, link.sessionGeneration)) {
+                                    Log.d(TAG, "ignoring delayed Idle from superseded session $eventGeneration")
                                     return@post
                                 }
                                 if (pairingActive()) {
@@ -1002,9 +1083,7 @@ class SyncService : Service() {
             return
         }
         deferredLanHandoff = null
-        lanHandoffInProgress = true
         if (!link.disconnectIfTransfersIdle()) {
-            lanHandoffInProgress = false
             deferredLanHandoff = target
             return
         }
@@ -1012,7 +1091,8 @@ class SyncService : Service() {
         discovery.stop()
         LinkStatus.path = "LAN"
         clearRelayPlan()
-        // The old socket is already closed; generation ownership isolates its final cleanup.
+        // The new dial owns a distinct generation; any delayed old Idle callback
+        // cannot schedule a second retry or suppress fallback if this LAN dial fails.
         link.connect(target.address, target.network)
     }
 

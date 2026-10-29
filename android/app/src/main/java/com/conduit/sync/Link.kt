@@ -188,6 +188,13 @@ class Link(
 
     private val opened = AtomicLong()
     private val closed = AtomicLong()
+    /** Generation of the most recently started socket, including a finished one.
+     * Delayed UI/retry work for an older session must not restart a newer dial. */
+    val sessionGeneration: Long get() = opened.get()
+
+    /** Includes a Relay waiter that has not completed Noise yet. Such sockets
+     * have no read deadline and still require teardown on a network handoff. */
+    val hasOpenSocket: Boolean get() = current?.socket?.isClosed == false
     private val connectionLock = Any()
     private fun cleanUploads() {
         uploads.values.filter { !usable(it.owner) }.forEach {
@@ -206,6 +213,7 @@ class Link(
     // Every callback/task captures its owner; stale work can only close its own socket.
     private class Connection(val generation: Long, val network: Network?, val socket: Socket = Socket()) {
         @Volatile var live: WireSession? = null
+        @Volatile var physicallyBound = false
         @Volatile var authenticated = false
         @Volatile var transferProtocol = false
         val receiveLock = Any()
@@ -244,6 +252,11 @@ class Link(
         current?.let { it.network == network && !it.socket.isClosed } == true
 
     val boundNetwork: Network? get() = current?.network
+
+    /** Only a successful physical bind survives a change of the system-default
+     * VPN. A socket that fell back to system routing must follow that default. */
+    val physicallyBoundNetwork: Network?
+        get() = current?.takeIf { it.physicallyBound && !it.socket.isClosed }?.network
 
     private fun usable(owner: Connection): Boolean =
         current === owner && !owner.socket.isClosed && owner.live != null
@@ -600,6 +613,7 @@ class Link(
                 if (rendezvous == null && network != null) {
                     try {
                         network.bindSocket(sock)
+                        owner.physicallyBound = true
                     } catch (denied: SocketException) {
                         if (!shouldRetryLanThroughSystemRoute(target, denied)) throw denied
                         // The VPN disallows bypassing it to choose the physical Wi-Fi. Keep this

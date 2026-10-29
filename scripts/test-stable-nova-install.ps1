@@ -52,7 +52,7 @@ try {
         throw "Stable shortcut did not select Nova: $($shortcut.TargetPath)"
     }
     $shareVersion = Get-ShareVersion
-    if ($shareVersion -ne '0.1.11.0') {
+    if ($shareVersion -ne '0.1.12.0') {
         throw "Share Target sparse MSIX registration not upgraded: $shareVersion"
     }
     Write-Output 'STABLE_INSTALL_SMOKE_PASSED: Nova shortcut, Share Target registration, identity preservation, daemon not started'

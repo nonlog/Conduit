@@ -55,7 +55,7 @@ published Scoop manifest rather than copying an old version number from this REA
 The release has working clipboard, notification, file-transfer, capture-toast, webpage-share,
 pairing and Relay paths. The remaining evidence gates are deliberately separate from packaging:
 
-Windows v0.1.11 packages the Nova Tauri GUI as its default desktop while retaining `Conduit.exe`
+Windows v0.1.12 packages the Nova Tauri GUI as its default desktop while retaining `Conduit.exe`
 for Windows Share Target activation and explicit `--legacy-ui` rollback. The native daemon,
 pairing identity, file history, Explorer helper and sparse MSIX identity remain compatible.
 

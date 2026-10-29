@@ -5,7 +5,7 @@ Lucide icons, Motion transitions, react-resizable-panels, dnd-kit sortable navig
 
 ## Stable Windows desktop
 
-The stable v0.1.11 Scoop build runs the Tauri Nova UI (`conduit-nova.exe`) by default. The existing `Conduit.exe` stays installed as the Windows Share Target compatibility host and a WinUI rollback option; its normal startup delegates to Nova, while `Conduit.exe --legacy-ui` explicitly opens the old control UI. The daemon, pairing, Noise encryption, LAN/Relay, clipboard, notifications and transfer queues are unchanged. Explorer sends continue to use the native `conduit-send.exe` helper.
+The stable v0.1.12 Scoop build runs the Tauri Nova UI (`conduit-nova.exe`) by default. The existing `Conduit.exe` stays installed as the Windows Share Target compatibility host and a WinUI rollback option; its normal startup delegates to Nova, while `Conduit.exe --legacy-ui` explicitly opens the old control UI. The daemon, pairing, Noise encryption, LAN/Relay, clipboard, notifications and transfer queues are unchanged. Explorer sends continue to use the native `conduit-send.exe` helper.
 
 Windows Share Target is a sparse MSIX identity registered against **`Conduit.exe`**. The legacy WinUI `ShareOperation` handler processes Windows share-sheet file requests in the stable package. Do not rename/remove that executable or the WinUI runtime dependencies simply because the default desktop is now Nova. The preserved host is an intentional compatibility boundary until a native WinRT alternative reaches functional parity.
 

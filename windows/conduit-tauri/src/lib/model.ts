@@ -73,7 +73,7 @@ export const isNative = () => typeof window !== "undefined" && "__TAURI_INTERNAL
 
 const now = Date.now();
 export const preview: Snapshot = {
-  version: "0.1.11-preview",
+  version: "0.1.12-preview",
   desktopChannel: "preview",
   dataDir: "Demo content — preview mode",
   daemonAvailable: false,
