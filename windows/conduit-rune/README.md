@@ -21,14 +21,17 @@ if a separate Scoop installation exists.
 
 ## Implemented native UI
 
-- Overview and live LAN/Relay connection state
+- Overview with bounded phone wallpaper and live LAN/Relay connection state
 - Pair, cancel pairing and confirm unpair
 - File transfer history, cancel active transfers, native file picker and
   Explorer drag-and-drop send
 - Notifications and shared links, with two-step history clearing
+- Searchable transfer history, notifications and shared links
 - Relay endpoints, proxy mode / SOCKS5, receive folder, tray configuration
+- Native receive-folder picker and independent persistent System/Light/Dark theme
 - Windows autostart and Explorer integration switches
-- Open received files, existing data folder, legacy WinUI rollback
+- About page, native app metadata, open received files and data directory,
+  direct Nova fallback and legacy WinUI rollback
 - Native system dark/light colors, responsive scrollable content, keyboard
   navigation and one native top-level Rune window
 - Event-driven watch of bounded daemon state files (no background UI polling)

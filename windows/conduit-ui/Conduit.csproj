@@ -5,8 +5,8 @@
     <UnoSingleProject>true</UnoSingleProject>
     <ApplicationTitle>Conduit</ApplicationTitle>
     <ApplicationId>com.conduit.desktop</ApplicationId>
-    <ApplicationDisplayVersion>0.1.12</ApplicationDisplayVersion>
-    <ApplicationVersion>12</ApplicationVersion>
+    <ApplicationDisplayVersion>0.1.13</ApplicationDisplayVersion>
+    <ApplicationVersion>13</ApplicationVersion>
     <ApplicationPublisher>Conduit</ApplicationPublisher>
     <ApplicationDefaultLanguage>en-US</ApplicationDefaultLanguage>
     <DefaultLanguage>en-US</DefaultLanguage>

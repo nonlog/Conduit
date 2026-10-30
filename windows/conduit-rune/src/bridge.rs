@@ -88,6 +88,15 @@ pub const OBSERVED_FILES: &[&str] = &[
     "transfers.tsv",
 ];
 
+pub fn wallpaper_bytes() -> Option<Vec<u8>> {
+    let path = data_dir().join("wallpaper.jpg");
+    let len = fs::metadata(&path).ok()?.len();
+    if len == 0 || len > 1024 * 1024 {
+        return None;
+    }
+    fs::read(path).ok()
+}
+
 fn bounded(path: &Path, max: u64) -> String {
     let Ok(file) = File::open(path) else {
         return String::new();
@@ -232,6 +241,24 @@ pub fn data_dir() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(env::temp_dir)
         .join("Conduit")
+}
+
+pub fn theme_preference() -> String {
+    let stored = bounded(&data_dir().join("rune-theme.txt"), 32);
+    match stored.trim() {
+        "light" => "light".into(),
+        "dark" => "dark".into(),
+        _ => "system".into(),
+    }
+}
+
+pub fn save_theme_preference(theme: &str) -> Result<(), String> {
+    if !["system", "light", "dark"].contains(&theme) {
+        return Err("Unknown appearance preference".into());
+    }
+    let dir = data_dir();
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    fs::write(dir.join("rune-theme.txt"), theme).map_err(|e| e.to_string())
 }
 
 pub fn daemon_path() -> Option<PathBuf> {

@@ -11,12 +11,21 @@ $cargo = Get-Content -LiteralPath (Join-Path $repoRoot 'Cargo.toml') -Raw
 $android = Get-Content -LiteralPath (Join-Path $repoRoot 'android\app\build.gradle.kts') -Raw
 $desktop = Get-Content -LiteralPath (Join-Path $repoRoot 'windows\conduit-ui\Conduit.csproj') -Raw
 $mainPage = Get-Content -LiteralPath (Join-Path $repoRoot 'windows\conduit-ui\MainPage.xaml') -Raw
+$runeCargo = Get-Content -LiteralPath (Join-Path $repoRoot 'windows\conduit-rune\Cargo.toml') -Raw
+$novaCargo = Get-Content -LiteralPath (Join-Path $repoRoot 'windows\conduit-tauri\src-tauri\Cargo.toml') -Raw
+$novaConfig = Get-Content -LiteralPath (Join-Path $repoRoot 'windows\conduit-tauri\src-tauri\tauri.conf.json') -Raw | ConvertFrom-Json
+$novaFrontend = Get-Content -LiteralPath (Join-Path $repoRoot 'windows\conduit-tauri\package.json') -Raw | ConvertFrom-Json
+$shareManifest = Get-Content -LiteralPath (Join-Path $repoRoot 'windows\conduit-ui\ShareTargetPackage\AppxManifest.xml') -Raw
 
 $cargoMatch = [regex]::Match($cargo, '(?m)^version\s*=\s*"([^"]+)"')
 $androidMatch = [regex]::Match($android, '(?m)^\s*versionName\s*=\s*"([^"]+)"')
 $desktopMatch = [regex]::Match($desktop, '<ApplicationDisplayVersion>([^<]+)</ApplicationDisplayVersion>')
+$runeMatch = [regex]::Match($runeCargo, '(?m)^version\s*=\s*"([^"]+)"')
+$novaMatch = [regex]::Match($novaCargo, '(?m)^version\s*=\s*"([^"]+)"')
+$shareMatch = [regex]::Match($shareManifest, '\bVersion="(\d+\.\d+\.\d+\.\d+)"')
 
-if (-not $cargoMatch.Success -or -not $androidMatch.Success -or -not $desktopMatch.Success) {
+if (-not $cargoMatch.Success -or -not $androidMatch.Success -or -not $desktopMatch.Success -or
+    -not $runeMatch.Success -or -not $novaMatch.Success -or -not $shareMatch.Success) {
     throw 'Could not read one or more project versions'
 }
 
@@ -24,6 +33,11 @@ $versions = [ordered]@{
     Cargo = $cargoMatch.Groups[1].Value
     Android = $androidMatch.Groups[1].Value
     Desktop = $desktopMatch.Groups[1].Value
+    Rune = $runeMatch.Groups[1].Value
+    Nova = $novaMatch.Groups[1].Value
+    NovaConfig = $novaConfig.version
+    NovaFrontend = ($novaFrontend.version -replace '-preview$', '')
+    ShareTarget = ($shareMatch.Groups[1].Value -replace '\.0$', '')
 }
 
 $bad = $versions.GetEnumerator() | Where-Object { $_.Value -ne $ExpectedVersion }
@@ -41,4 +55,7 @@ if ($mainPage -match 'Description="Version\s+\d+\.\d+\.\d+"') {
     Cargo = $versions.Cargo
     Android = $versions.Android
     Desktop = $versions.Desktop
+    Rune = $versions.Rune
+    Nova = $versions.Nova
+    ShareTarget = $versions.ShareTarget
 }
