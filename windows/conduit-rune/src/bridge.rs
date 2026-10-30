@@ -197,9 +197,29 @@ fn sibling_daemon() -> Option<PathBuf> {
     sibling.is_file().then_some(sibling)
 }
 
+fn portable_daemon_for(executable: &Path) -> Option<PathBuf> {
+    // A standalone ZIP must use its own daemon and pairing, even when a
+    // completely unrelated Scoop installation is discoverable through PATH.
+    if scoop_root_from_exe(executable).is_some() {
+        return None;
+    }
+    let daemon = executable.with_file_name("conduit-daemon.exe");
+    daemon.is_file().then_some(daemon)
+}
+
+fn portable_daemon() -> Option<PathBuf> {
+    env::current_exe()
+        .ok()
+        .as_deref()
+        .and_then(portable_daemon_for)
+}
+
 pub fn data_dir() -> PathBuf {
     if let Some(path) = env::var_os("CONDUIT_DATA_DIR").filter(|s| !s.is_empty()) {
         return PathBuf::from(path);
+    }
+    if let Some(daemon) = portable_daemon() {
+        return daemon.parent().unwrap().join("data");
     }
     if let Some(root) = scoop_root() {
         return root.join("persist/conduit/data");
@@ -219,6 +239,9 @@ pub fn daemon_path() -> Option<PathBuf> {
         if path.is_file() {
             return Some(path);
         }
+    }
+    if let Some(daemon) = portable_daemon() {
+        return Some(daemon);
     }
     if let Some(daemon) = sibling_daemon() {
         return Some(daemon);
@@ -676,9 +699,45 @@ pub fn open_legacy_ui() -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+pub fn open_nova_ui() -> Result<(), String> {
+    // The production package intentionally retains Nova as a runnable
+    // rollback, even if the Rune framework encounters a platform regression.
+    let path = env::current_exe()
+        .map_err(|e| e.to_string())?
+        .with_file_name("conduit-nova.exe");
+    if !path.is_file() {
+        return Err("Conduit Nova is not installed alongside Rune".into());
+    }
+    let mut command = Command::new(path);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    command.spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn portable_install_owns_its_daemon_and_never_infers_scoop_identity() {
+        let dir = std::env::temp_dir().join(format!(
+            "conduit-rune-portable-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let app = dir.join("conduit-rune.exe");
+        let daemon = dir.join("conduit-daemon.exe");
+        fs::write(&daemon, []).unwrap();
+        assert_eq!(portable_daemon_for(&app), Some(daemon));
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn config_keeps_unrelated_keys_and_comments() {

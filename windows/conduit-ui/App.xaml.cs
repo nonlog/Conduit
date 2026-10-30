@@ -33,12 +33,12 @@ public partial class App : Application
 
         // Keep this mature WinUI process as the sparse MSIX Share Target host
         // and an explicit emergency rollback UI. Ordinary Conduit.exe launches
-        // from old Scoop shims now open Nova, while --legacy-ui and actual
+        // from old Scoop shims now open Rune (or Nova when not yet installed), while --legacy-ui and actual
         // ShareTarget activations remain on WinUI. If Nova is missing or cannot
         // start, retain the working control surface rather than closing it.
         if (activation?.Kind != ActivationKind.ShareTarget &&
             !Environment.GetCommandLineArgs().Any(value => value == "--legacy-ui") &&
-            TryLaunchNova())
+            TryLaunchPrimaryDesktop())
         {
             Environment.Exit(0);
             return;
@@ -102,19 +102,27 @@ public partial class App : Application
         MainWindow.DispatcherQueue.TryEnqueue(() => ApplyWindowTheme(mainPage.ActualTheme));
     }
 
-    private static bool TryLaunchNova()
+    private static bool TryLaunchPrimaryDesktop()
     {
-        try
+        // Keep the Windows Share Target activation attached to this WinUI
+        // process. Ordinary launches prefer the native Rune desktop with a
+        // Nova fallback, without spawning cmd.exe or another console.
+        foreach (var name in new[] { "conduit-rune.exe", "conduit-nova.exe" })
         {
-            var installed = Path.Combine(AppContext.BaseDirectory, "conduit-nova.exe");
-            if (!File.Exists(installed)) return false;
-            return Process.Start(new ProcessStartInfo(installed)
+            try
             {
-                UseShellExecute = false,
-                WorkingDirectory = AppContext.BaseDirectory,
-            }) is not null;
+                var installed = Path.Combine(AppContext.BaseDirectory, name);
+                if (!File.Exists(installed)) continue;
+                if (Process.Start(new ProcessStartInfo(installed)
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WorkingDirectory = AppContext.BaseDirectory,
+                }) is not null) return true;
+            }
+            catch { /* Try the next installed desktop before using WinUI. */ }
         }
-        catch { return false; }
+        return false;
     }
 
     private bool TryOwnControlWindow()

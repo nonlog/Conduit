@@ -1,21 +1,23 @@
-# Conduit / Rune native desktop preview
+# Conduit / Rune native desktop
 
 This is an actual Rust-native desktop UI built on [anomalyco/rune](https://github.com/anomalyco/rune),
 not React in a WebView and not a screenshot or static mockup.
 
-## Status and safety boundary
+## Architecture and release safeguards
 
-**Independent preview; not the default Conduit desktop.** Rune currently has no
-stable release, so the dependency is pinned to a verified upstream Git commit.
-The existing Scoop installation, Tauri Nova interface, Windows Share Target
-host (`Conduit.exe`), original daemon, encryption and pairing stay intact.
-Do not replace `conduit-nova.exe` with the preview binary.
+Rune currently has no stable release, so the dependency is pinned to a tested
+upstream Git commit. The stable Windows artifact packages this native UI as
+`conduit-rune.exe`, selected by the installer, daemon tray and legacy shortcut
+delegation. The existing Tauri Nova desktop (`conduit-nova.exe`) remains an
+explicit rollback; the WinUI `Conduit.exe` keeps the Windows Share Target sparse
+MSIX identity and remains available through `--legacy-ui`.
 
-The preview works with an already installed Conduit daemon (including custom
+The UI works with an already installed Conduit daemon (including custom
 Scoop roots resolved through the `SCOOP` environment, `PATH`, startup registry
 entry or installed application location). It does not create an independent
-pairing identity, and **must not run a second resident daemon alongside
-the stable installation**. If there is no installed daemon, it reports an error.
+pairing identity; the daemon's existing LAN port is also its single-instance
+gate. Portable builds with a sibling daemon use their own `data/` directory even
+if a separate Scoop installation exists.
 
 ## Implemented native UI
 
@@ -30,18 +32,22 @@ the stable installation**. If there is no installed daemon, it reports an error.
 - Native system dark/light colors, responsive scrollable content, keyboard
   navigation and one native top-level Rune window
 - Event-driven watch of bounded daemon state files (no background UI polling)
+- Single-instance activation, Explorer send-error forwarding and a native
+  Windows GUI executable (never opens a command-line window)
 
 The native UI does not duplicate the daemon's Noise/LAN/Relay transport or
-touch `identity.bin`. Real-device validation, Windows notification icon parity,
-advanced transfer presentation and a stable packaging/integration plan remain
-gates before it can replace Nova.
+touch `identity.bin`. Nova remains installed as a fallback because Rune is
+pre-release. The daemon protocol, persisted pairing, transfer history and
+Share Target remain unchanged. Notification app-icon parity, advanced transfer
+presentation and real-device long-run checks remain quality improvements.
 
 ## Testing
 
-Run the **Rune desktop preview** GitHub Actions workflow on its PR; the Windows
-artifact is a ZIP with `conduit-rune-preview.exe`. Launch the preview while your
-existing Conduit Scoop daemon is running. The formal Rust tests, compilation and
-Windows PE GUI subsystem check run **only in GitHub Actions**.
+The **Rune desktop preview** workflow produces an isolated ZIP with
+`conduit-rune-preview.exe`. The main **Build** workflow also compiles Rune and
+bundles it as the primary `conduit-rune.exe` alongside Nova, WinUI, daemon and
+Explorer helper. GUI-subsystem, Rust native tests, packaging, Share Target and
+installer rollback checks run in GitHub Actions.
 
 For local lightweight formatting only:
 
@@ -49,8 +55,9 @@ For local lightweight formatting only:
 cargo fmt --manifest-path windows/conduit-rune/Cargo.toml --all -- --check
 ```
 
-The original shipped desktop executable remains the production rollback until
-native UI functional parity and a successful long-run test are established.
+To restore the previous desktop without downgrading or touching pairing data,
+launch `conduit-nova.exe` directly from the installed Conduit directory.
+`Conduit.exe --legacy-ui` opens the original Windows Share Target host as a UI.
 
-The flashing command window on stable Nova startup is fixed independently:
-its daemon liveness check no longer shells out to Windows `tasklist.exe`.
+The original command window flash is also fixed in Nova's retained daemon
+liveness check: it no longer shells out to Windows `tasklist.exe`.

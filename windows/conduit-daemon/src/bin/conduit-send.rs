@@ -163,8 +163,12 @@ fn show_in_control_ui(message: &str) {
 
 fn control_ui_path(helper: &Path) -> PathBuf {
     let legacy = helper.with_file_name("Conduit.exe");
-    // Explorer errors belong in the primary Nova control window, not in the
-    // WinUI executable retained for packaged Share Target activation.
+    // Explorer errors belong in the active primary GUI, not the WinUI
+    // Share Target compatibility host.
+    let rune = helper.with_file_name("conduit-rune.exe");
+    if rune.is_file() {
+        return rune;
+    }
     let nova = helper.with_file_name("conduit-nova.exe");
     if nova.is_file() {
         return nova;
@@ -234,6 +238,27 @@ mod tests {
         assert_eq!(control_ui_path(&helper), legacy);
         std::fs::write(&nova, []).unwrap();
         assert_eq!(control_ui_path(&helper), nova);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn stable_rune_takes_priority_over_nova_for_shell_send_errors() {
+        let dir = std::env::temp_dir().join(format!(
+            "conduit-rune-shell-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let helper = dir.join("conduit-send.exe");
+        let nova = dir.join("conduit-nova.exe");
+        let rune = dir.join("conduit-rune.exe");
+        std::fs::write(&nova, []).unwrap();
+        assert_eq!(control_ui_path(&helper), nova);
+        std::fs::write(&rune, []).unwrap();
+        assert_eq!(control_ui_path(&helper), rune);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

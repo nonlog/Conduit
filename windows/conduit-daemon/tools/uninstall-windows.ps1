@@ -60,6 +60,7 @@ $explorerKey = 'HKCU:\Software\Classes\*\shell\Conduit.SendToPhone'
 Get-Process conduit-daemon -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Get-Process Conduit -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Get-Process conduit-nova -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process conduit-rune -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Remove-ConduitShareTargetPackage $installDir
 Remove-Item $shortcut -Force -ErrorAction SilentlyContinue
 Remove-ItemProperty -Path $runKey -Name Conduit -ErrorAction SilentlyContinue

@@ -176,6 +176,27 @@ jobs:
         shell: pwsh
         run: cargo build --release -p conduit-daemon --bins
 
+      - name: Verify and build stable Rune-native desktop
+        working-directory: windows/conduit-rune
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo fmt --all -- --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo build --release --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $binary = 'target/release/conduit-rune-preview.exe'
+          if (-not (Test-Path -LiteralPath $binary -PathType Leaf) -or (Get-Item $binary).Length -lt 1MB) {
+            throw 'Conduit Rune native executable was not built'
+          }
+          $bytes = [IO.File]::ReadAllBytes((Resolve-Path $binary))
+          $pe = [BitConverter]::ToInt32($bytes, 0x3c)
+          if ([BitConverter]::ToUInt16($bytes, $pe + 92) -ne 2) {
+            throw 'Conduit Rune must be a Windows GUI process (no console window)'
+          }
+
       - name: Set up Bun for stable Nova desktop
         uses: oven-sh/setup-bun@v2
 
@@ -261,16 +282,17 @@ jobs:
           -ShareTargetPackage ./artifacts/Conduit.ShareTarget.msix
           -ShareTargetCertificate ./artifacts/Conduit.ShareTarget.cer
           -NovaExecutable ./windows/conduit-tauri/src-tauri/target/release/conduit-tauri-preview.exe
+          -RuneExecutable ./windows/conduit-rune/target/release/conduit-rune-preview.exe
           -OutputZip ./artifacts/Conduit-windows-x64.zip
 
-      - name: Verify stable Scoop payload and Share Target fallback
+      - name: Verify Rune default desktop, Nova fallback and Share Target
         shell: pwsh
-        run: ./scripts/test-stable-nova-package.ps1 -PackageZip ./artifacts/Conduit-windows-x64.zip
+        run: ./scripts/test-stable-desktop-package.ps1 -PackageZip ./artifacts/Conduit-windows-x64.zip
 
       - name: Validate isolated native installation, MSIX share identity and uninstall
         shell: pwsh
         timeout-minutes: 10
-        run: ./scripts/test-stable-nova-install.ps1 -PackageZip ./artifacts/Conduit-windows-x64.zip
+        run: ./scripts/test-stable-desktop-install.ps1 -PackageZip ./artifacts/Conduit-windows-x64.zip
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v7

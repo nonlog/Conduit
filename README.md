@@ -55,9 +55,13 @@ published Scoop manifest rather than copying an old version number from this REA
 The release has working clipboard, notification, file-transfer, capture-toast, webpage-share,
 pairing and Relay paths. The remaining evidence gates are deliberately separate from packaging:
 
-Windows v0.1.12 packages the Nova Tauri GUI as its default desktop while retaining `Conduit.exe`
-for Windows Share Target activation and explicit `--legacy-ui` rollback. The native daemon,
-pairing identity, file history, Explorer helper and sparse MSIX identity remain compatible.
+The next Windows desktop package selects the native Rune UI (`conduit-rune.exe`)
+for tray and Start-menu launches. The previous Nova UI (`conduit-nova.exe`)
+remains as a direct rollback, and `Conduit.exe` continues to own Windows Share
+Target activation and explicit `--legacy-ui` rollback. The original daemon,
+pairing identity, file history, Explorer helper and sparse MSIX identity remain
+compatible. Rune is pinned to a tested source revision rather than an
+unreleased floating dependency.
 
 - M0 still needs a true same-LAN 48-hour endurance run with balanced lifecycle/resource counts.
 - M2 still needs a longer Wi-Fi/cellular/hotspot and Relay re-parking campaign.

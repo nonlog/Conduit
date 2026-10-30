@@ -11,8 +11,112 @@ use rune::{
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-const WINDOW_TITLE: &str = "Conduit Rune Preview";
+const PREVIEW_TITLE: &str = "Conduit Rune Preview";
+const STABLE_TITLE: &str = "Conduit — Rune";
+const LAUNCH_NOTICE_PREFIX: &str = "rune-launch-error-";
 static HANDLE: OnceLock<AppHandle<Ui>> = OnceLock::new();
+
+fn stable_executable() -> bool {
+    std::env::current_exe()
+        .ok()
+        .as_deref()
+        .and_then(|path| path.file_name())
+        .is_some_and(|name| {
+            name.to_string_lossy()
+                .eq_ignore_ascii_case("conduit-rune.exe")
+        })
+}
+
+fn window_title() -> &'static str {
+    if stable_executable() {
+        STABLE_TITLE
+    } else {
+        PREVIEW_TITLE
+    }
+}
+
+fn send_error_from_args(args: &[String]) -> Option<String> {
+    if args.len() != 3 || args[1] != "--send-error" {
+        return None;
+    }
+    let message: String = args[2]
+        .chars()
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+        .take(1024)
+        .collect();
+    let message = message.trim();
+    (!message.is_empty()).then(|| message.to_owned())
+}
+
+fn launch_error() -> Option<String> {
+    let args = std::env::args_os()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    send_error_from_args(&args)
+}
+
+fn write_launch_notice(message: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let dir = bridge::data_dir();
+    std::fs::create_dir_all(&dir)?;
+    let unique = format!(
+        "{}{}-{}",
+        LAUNCH_NOTICE_PREFIX,
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    let part = dir.join(format!("{unique}.part"));
+    let destination = dir.join(format!("{unique}.txt"));
+    let result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&part)?;
+        file.write_all(message.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&part, &destination)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(part);
+    }
+    result
+}
+
+fn take_launch_notices() -> Vec<String> {
+    let mut notices = Vec::new();
+    let Ok(files) = std::fs::read_dir(bridge::data_dir()) else {
+        return notices;
+    };
+    for entry in files.flatten().take(64) {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.starts_with(LAUNCH_NOTICE_PREFIX) || !name.ends_with(".txt") {
+            continue;
+        }
+        if entry
+            .metadata()
+            .is_ok_and(|metadata| metadata.len() <= 4096)
+        {
+            if let Ok(message) = std::fs::read_to_string(entry.path()) {
+                if let Some(safe) =
+                    send_error_from_args(&["Conduit".into(), "--send-error".into(), message])
+                {
+                    notices.push(safe);
+                }
+            }
+        }
+        let _ = std::fs::remove_file(entry.path());
+        if notices.len() >= 8 {
+            break;
+        }
+    }
+    notices
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Page {
@@ -64,8 +168,13 @@ struct Ui {
 impl Ui {
     fn init() -> Self {
         let snap = bridge::snapshot();
+        let notice = launch_error().or_else(|| take_launch_notices().pop());
         Ui {
-            page: Page::Overview,
+            page: if notice.is_some() {
+                Page::Transfers
+            } else {
+                Page::Overview
+            },
             relays: TextEdit::new(snap.settings.relays.join("\n")),
             manual_proxy: TextEdit::new(snap.settings.manual_proxy.clone()),
             receive_dir: TextEdit::new(snap.settings.receive_dir.clone()),
@@ -74,7 +183,7 @@ impl Ui {
             snap,
             settings_dirty: false,
             confirm: None,
-            notice: None,
+            notice,
             busy: false,
             drop_over: false,
         }
@@ -331,7 +440,15 @@ fn sidebar(ui: &Ui, paint: Paint) -> El {
         .child(
             col()
                 .gap(5.0)
-                .child(tag("Rune native preview", paint, false))
+                .child(tag(
+                    if stable_executable() {
+                        "Rune native"
+                    } else {
+                        "Rune preview"
+                    },
+                    paint,
+                    false,
+                ))
                 .child(
                     text("Connection engine unchanged")
                         .font(type_::LABEL)
@@ -894,13 +1011,12 @@ fn windows_integration(ui: &Ui, paint: Paint) -> El {
                         false,
                         |ui| ui.operation("Opening data folder", || bridge::open_folder("data")),
                     ))
-                    .child(button(
-                        "legacy-window",
-                        "Open legacy UI",
-                        paint,
-                        false,
-                        |ui| ui.operation("Opening legacy UI", bridge::open_legacy_ui),
-                    )),
+                    .child(button("nova-window", "Open Nova", paint, false, |ui| {
+                        ui.operation("Opening Nova", bridge::open_nova_ui)
+                    }))
+                    .child(button("legacy-window", "Open WinUI", paint, false, |ui| {
+                        ui.operation("Opening WinUI", bridge::open_legacy_ui)
+                    })),
             ),
     )
 }
@@ -1059,8 +1175,28 @@ fn setup_watcher(handle: AppHandle<Ui>) {
         if watcher.watch(&dir, RecursiveMode::NonRecursive).is_err() {
             return;
         }
+        for message in take_launch_notices() {
+            handle.update(move |ui, _| {
+                ui.page = Page::Transfers;
+                ui.notice = Some(message);
+            });
+        }
         while let Ok(event) = rx.recv() {
             let Ok(event) = event else { continue };
+            if event.paths.iter().any(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with(LAUNCH_NOTICE_PREFIX) && name.ends_with(".txt")
+                    })
+            }) {
+                for message in take_launch_notices() {
+                    handle.update(move |ui, _| {
+                        ui.page = Page::Transfers;
+                        ui.notice = Some(message);
+                    });
+                }
+            }
             if !event.paths.iter().any(|path| {
                 path.file_name()
                     .and_then(|name| name.to_str())
@@ -1091,15 +1227,21 @@ fn acquire_instance() -> Option<windows_sys::Win32::Foundation::HANDLE> {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         FindWindowW, SW_RESTORE, SetForegroundWindow, ShowWindow,
     };
-    let key: Vec<u16> = "Local\\Conduit.Rune.Preview.2026\0"
-        .encode_utf16()
-        .collect();
+    let name = if stable_executable() {
+        "Local\\Conduit.Rune.Stable.2026\0"
+    } else {
+        "Local\\Conduit.Rune.Preview.2026\0"
+    };
+    let key: Vec<u16> = name.encode_utf16().collect();
     let handle = unsafe { CreateMutexW(std::ptr::null(), 0, key.as_ptr()) };
     if handle.is_null() {
         return None;
     }
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
-        let title: Vec<u16> = format!("{WINDOW_TITLE}\0").encode_utf16().collect();
+        if let Some(message) = launch_error() {
+            let _ = write_launch_notice(&message);
+        }
+        let title: Vec<u16> = format!("{}\0", window_title()).encode_utf16().collect();
         let window = unsafe { FindWindowW(std::ptr::null(), title.as_ptr()) };
         if !window.is_null() {
             unsafe {
@@ -1114,32 +1256,37 @@ fn acquire_instance() -> Option<windows_sys::Win32::Foundation::HANDLE> {
 }
 
 fn main() {
-    #[cfg(windows)]
-    let Some(_instance_guard) = acquire_instance() else {
-        return;
-    };
-
-    let app = App::new(AppSpec {
-        scenes: &[("connected", connected_scene)],
-        on_key: Some(on_key),
-        min_size: Some((760.0, 510.0)),
-        ..AppSpec::new(WINDOW_TITLE, (1060.0, 750.0), Ui::init, view)
-    })
-    .tab_visits_controls(true)
-    // Rune's first Windows frame can be initialized before the final DPI-sized
-    // client area settles. Nudge its native size once to trigger a real resize
-    // event and synchronize the surface + logical viewport without polling.
-    .on_window(|window| window.resize_instant((1060.0, 749.0)));
-    let handle = app.handle();
-    let _ = HANDLE.set(handle.clone());
-    // Only a user-launched desktop starts or watches the installed daemon. Headless
-    // storybook/screenshot tests must not touch an identity or launch a background process.
     let is_headless = std::env::args_os().any(|a| {
         matches!(
             a.to_string_lossy().as_ref(),
             "--snap" | "--tree" | "--script"
         )
     });
+    #[cfg(windows)]
+    let _instance_guard = if is_headless {
+        None
+    } else {
+        let Some(handle) = acquire_instance() else {
+            return;
+        };
+        Some(handle)
+    };
+
+    let app = App::new(AppSpec {
+        scenes: &[("connected", connected_scene)],
+        on_key: Some(on_key),
+        min_size: Some((760.0, 510.0)),
+        ..AppSpec::new(window_title(), (1020.0, 605.0), Ui::init, view)
+    })
+    .tab_visits_controls(true)
+    // Rune's first Windows frame can be initialized before the final DPI-sized
+    // client area settles. Nudge its native size once to trigger a real resize
+    // event and synchronize the surface + logical viewport without polling.
+    .on_window(|window| window.resize_instant((1020.0, 604.0)));
+    let handle = app.handle();
+    let _ = HANDLE.set(handle.clone());
+    // Only a user-launched desktop starts or watches the installed daemon. Headless
+    // storybook/screenshot tests must not touch an identity or launch a background process.
     if !is_headless {
         setup_watcher(handle.clone());
         std::thread::spawn(move || {
@@ -1187,5 +1334,24 @@ mod tests {
         });
         ui.sync(next);
         assert_eq!(ui.manual_proxy.text, "socks5://manual:1080");
+    }
+
+    #[test]
+    fn shell_send_errors_are_allowlisted_and_bounded() {
+        let base = vec![
+            "conduit-rune.exe".into(),
+            "--send-error".into(),
+            "Bad\0file".into(),
+        ];
+        assert_eq!(send_error_from_args(&base).as_deref(), Some("Badfile"));
+        assert!(
+            send_error_from_args(&["app.exe".into(), "--unknown".into(), "x".into()]).is_none()
+        );
+        assert_eq!(
+            send_error_from_args(&["app.exe".into(), "--send-error".into(), "x".repeat(5000)])
+                .unwrap()
+                .len(),
+            1024
+        );
     }
 }

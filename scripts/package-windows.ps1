@@ -13,7 +13,9 @@ param(
 
     [string]$ShareTargetCertificate,
 
-    [string]$NovaExecutable
+    [string]$NovaExecutable,
+
+    [string]$RuneExecutable
 )
 
 $ErrorActionPreference = 'Stop'
@@ -74,6 +76,19 @@ if (-not [string]::IsNullOrWhiteSpace($NovaExecutable)) {
     # sparse MSIX Share Target host and a reliable explicit WinUI fallback.
 }
 
+if (-not [string]::IsNullOrWhiteSpace($RuneExecutable)) {
+    $rune = (Resolve-Path -LiteralPath $RuneExecutable -ErrorAction Stop).Path
+    if ((Get-Item -LiteralPath $rune).Length -lt 1MB) {
+        throw 'Conduit Rune executable is unexpectedly small'
+    }
+    $stableRune = Join-Path $stage 'conduit-rune.exe'
+    Copy-Item -LiteralPath $rune -Destination $stableRune -Force
+    if ((Get-FileHash -LiteralPath $rune -Algorithm SHA256).Hash -ne
+        (Get-FileHash -LiteralPath $stableRune -Algorithm SHA256).Hash) {
+        throw 'Rune executable changed while packaging'
+    }
+}
+
 $toolsDir = Join-Path $stage 'tools'
 $assetsDir = Join-Path $stage 'assets'
 New-Item -ItemType Directory -Force -Path $toolsDir, $assetsDir | Out-Null
@@ -98,6 +113,11 @@ if (-not [string]::IsNullOrWhiteSpace($NovaExecutable)) {
         if (-not (Test-Path -LiteralPath (Join-Path $stage $name) -PathType Leaf)) {
             throw "Incomplete stable Windows package: missing $name"
         }
+    }
+}
+if (-not [string]::IsNullOrWhiteSpace($RuneExecutable)) {
+    if (-not (Test-Path -LiteralPath (Join-Path $stage 'conduit-rune.exe') -PathType Leaf)) {
+        throw 'Stable Rune desktop was not included in the package'
     }
 }
 

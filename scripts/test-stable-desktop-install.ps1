@@ -37,9 +37,9 @@ try {
     $results = @(& (Join-Path $install 'tools/install-windows.ps1') -SourceDir $install -InstallDir $install -NoStart)
     $result = $results | Where-Object { $_ -is [pscustomobject] } | Select-Object -Last 1
     $installed = $true
-    if (-not $result -or $result.DefaultDesktop -ne 'Nova' -or
+    if (-not $result -or $result.DefaultDesktop -ne 'Rune' -or
         -not $result.ShareTargetRegistered -or $result.DaemonStarted) {
-        throw "Stable install result did not select Nova while retaining Share Target: $($result | Out-String)"
+        throw "Stable install result did not select Rune while retaining Share Target: $($result | Out-String)"
     }
     if ((Get-FileHash -LiteralPath $identity -Algorithm SHA256).Hash -ne $before) {
         throw 'Stable installer modified persisted pairing identity'
@@ -48,14 +48,14 @@ try {
     $shortcutPath = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Microsoft\Windows\Start Menu\Programs\Conduit.lnk'
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut($shortcutPath)
-    if (-not $shortcut.TargetPath.EndsWith('conduit-nova.exe', [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Stable shortcut did not select Nova: $($shortcut.TargetPath)"
+    if (-not $shortcut.TargetPath.EndsWith('conduit-rune.exe', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Stable shortcut did not select Rune: $($shortcut.TargetPath)"
     }
     $shareVersion = Get-ShareVersion
     if ($shareVersion -ne '0.1.12.0') {
         throw "Share Target sparse MSIX registration not upgraded: $shareVersion"
     }
-    Write-Output 'STABLE_INSTALL_SMOKE_PASSED: Nova shortcut, Share Target registration, identity preservation, daemon not started'
+    Write-Output 'STABLE_INSTALL_SMOKE_PASSED: Rune shortcut, Nova fallback, Share Target registration, identity preservation, daemon not started'
 }
 finally {
     try {

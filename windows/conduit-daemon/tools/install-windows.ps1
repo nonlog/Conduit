@@ -85,7 +85,7 @@ foreach ($name in $requiredIconAssets) {
 $hadAutostart = $null -ne (Get-ItemProperty -Path $runKey -Name Conduit -ErrorAction SilentlyContinue).Conduit
 $hadExplorerIntegration = Test-Path -LiteralPath $explorerVerbKey
 
-$running = @(Get-Process conduit-daemon, Conduit, conduit-nova -ErrorAction SilentlyContinue)
+$running = @(Get-Process conduit-daemon, Conduit, conduit-nova, conduit-rune -ErrorAction SilentlyContinue)
 if ($running.Count -gt 0) {
     $running | Stop-Process -Force -ErrorAction SilentlyContinue
     # Stop-Process requests termination but the executable image can stay mapped for a short
@@ -335,6 +335,7 @@ if (-not ('ConduitShortcut' -as [type])) {
 
 $controlExe = Join-Path $installDir 'Conduit.exe'
 $novaExe = Join-Path $installDir 'conduit-nova.exe'
+$runeExe = Join-Path $installDir 'conduit-rune.exe'
 if (Test-Path -LiteralPath $novaExe -PathType Leaf) {
     # WinUI remains installed for Windows Share Target and rollback, but is no
     # longer the default Start menu or tray control UI.
@@ -343,6 +344,17 @@ if (Test-Path -LiteralPath $novaExe -PathType Leaf) {
         if ((Get-FileHash -LiteralPath (Join-Path $source 'conduit-nova.exe') -Algorithm SHA256).Hash -ne
             (Get-FileHash -LiteralPath $novaExe -Algorithm SHA256).Hash) {
             throw 'Nova desktop payload hash mismatch after installation'
+        }
+    }
+}
+if (Test-Path -LiteralPath $runeExe -PathType Leaf) {
+    # The primary control UI is Rune. Nova remains available for a manual
+    # rollback and WinUI retains the Windows Share Target MSIX identity.
+    $controlExe = $runeExe
+    if ($hasPublishedUi -and (Test-Path -LiteralPath (Join-Path $source 'conduit-rune.exe') -PathType Leaf)) {
+        if ((Get-FileHash -LiteralPath (Join-Path $source 'conduit-rune.exe') -Algorithm SHA256).Hash -ne
+            (Get-FileHash -LiteralPath $runeExe -Algorithm SHA256).Hash) {
+            throw 'Rune desktop payload hash mismatch after installation'
         }
     }
 }
@@ -416,7 +428,7 @@ if (-not $NoStart) {
     InstallDir = $installDir
     Shortcut = $shortcut
     AppUserModelId = 'Conduit.Desktop'
-    DefaultDesktop = $(if ($controlExe -eq $novaExe) { 'Nova' } else { 'WinUI' })
+    DefaultDesktop = $(if ($controlExe -eq $runeExe) { 'Rune' } elseif ($controlExe -eq $novaExe) { 'Nova' } else { 'WinUI' })
     ShareTargetRegistered = $shareTargetRegistered
     LanFirewallConfigured = $lanFirewallConfigured
     AutostartPreserved = $hadAutostart

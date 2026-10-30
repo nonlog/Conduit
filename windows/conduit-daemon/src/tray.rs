@@ -128,8 +128,12 @@ fn control_path() -> Result<PathBuf> {
     if let Some(tauri) = crate::data_dir::tauri_preview_exe(dir) {
         return Ok(tauri);
     }
-    // Scoop continues to ship WinUI as a Windows Share Target compatibility
-    // host and rollback, but Nova becomes the default desktop when present.
+    // Rune is the native default when bundled. Nova remains installed as a
+    // tested rollback and WinUI continues to host Windows Share Target.
+    let rune = dir.join("conduit-rune.exe");
+    if rune.is_file() {
+        return Ok(rune);
+    }
     let nova = dir.join("conduit-nova.exe");
     if nova.is_file() {
         return Ok(nova);
@@ -446,6 +450,34 @@ unsafe fn open_control() {
             name.to_string_lossy()
                 .eq_ignore_ascii_case("conduit-nova.exe")
         });
+    let rune_stable = CONTROL_PATH
+        .get()
+        .and_then(|path| path.file_name())
+        .is_some_and(|name| {
+            name.to_string_lossy()
+                .eq_ignore_ascii_case("conduit-rune.exe")
+        });
+    if rune_stable {
+        // A distinct title avoids accidentally focusing WinUI's Share Target,
+        // which is still titled "Conduit" for MSIX compatibility.
+        let existing = FindWindowW(null(), wide("Conduit — Rune").as_ptr());
+        if !existing.is_null() {
+            release_control_process_handle();
+            ShowWindow(existing, SW_RESTORE);
+            let _ = SetForegroundWindow(existing);
+            return;
+        }
+        if control_launch_in_progress() {
+            return;
+        }
+        if let Some(path) = CONTROL_PATH.get() {
+            match launch_control(path) {
+                Ok(process) => remember_control_process(process),
+                Err(e) => tracing::warn!(error = %e, "could not launch Conduit Rune from tray"),
+            }
+        }
+        return;
+    }
     if nova_stable {
         // WinUI's Share Target has the same title "Conduit". Launch an
         // activation and rely on Tauri's single-instance plugin to restore
