@@ -549,7 +549,15 @@ fn card(key: impl Into<String>, paint: Paint, child: El) -> El {
 }
 
 fn heading(label: &str, paint: Paint) -> El {
-    text(label).font(type_::TITLE).color(paint.t.text)
+    text(label)
+        .font(rune::TextStyle::new(14.0, 650.0))
+        .color(paint.t.text)
+}
+
+fn page_title(label: &str, paint: Paint) -> El {
+    text(label)
+        .font(rune::TextStyle::new(22.0, 700.0))
+        .color(paint.t.text)
 }
 
 fn muted(label: impl Into<String>, paint: Paint) -> El {
@@ -629,6 +637,7 @@ fn sidebar(ui: &Ui, paint: Paint) -> El {
         el().key("conduit-brand-icon")
             .size(42.0, 42.0)
             .radius(12.0)
+            .gradient(paint.accent, paint.accent.mix(paint.purple, 0.28))
             .pixels_fit(image.pixels(), SurfaceFit::Fit)
     } else {
         el().key("conduit-brand-icon")
@@ -653,7 +662,11 @@ fn sidebar(ui: &Ui, paint: Paint) -> El {
                 .gap(12.0)
                 .center_y()
                 .child(logo)
-                .child(text("Conduit").font(type_::TITLE).color(paint.t.text)),
+                .child(
+                    text("Conduit")
+                        .font(rune::TextStyle::new(18.0, 700.0))
+                        .color(paint.t.text),
+                ),
         )
         .child(menu)
         .child(el().grow(1.0))
@@ -976,7 +989,7 @@ fn stat(label: &str, count: usize, paint: Paint) -> El {
                 .gap(4.0)
                 .child(
                     text(count.to_string())
-                        .font(type_::TITLE)
+                        .font(rune::TextStyle::new(18.0, 700.0))
                         .color(paint.t.text),
                 )
                 .child(muted(label, paint)),
@@ -1553,7 +1566,7 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
                 .child(
                     col()
                         .gap(6.0)
-                        .child(heading(ui.page.name(), paint))
+                        .child(page_title(ui.page.name(), paint))
                         .child(muted(ui.page.subtitle(), paint)),
                 )
                 .child(right),
@@ -1723,8 +1736,9 @@ fn initialize_images(ui: &mut Ui, wake: Waker) {
     let cache = ImageCache::new(wake);
     // Render the actual Conduit app mark, not a placeholder character or an
     // icon-font codepoint. The PNG ships in the repository and needs no I/O.
-    ui.brand_image =
-        Some(cache.load(include_bytes!("../../conduit-daemon/assets/conduit-icon.png").to_vec()));
+    ui.brand_image = Some(
+        cache.load(include_bytes!("../../conduit-daemon/assets/conduit-icon-dark.png").to_vec()),
+    );
     ui.image_cache = Some(cache);
     ui.refresh_wallpaper();
 }

@@ -15,11 +15,28 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     DestroyIcon, ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_LOADFROMFILE, LoadImageW, SendMessageW,
     WM_SETICON,
 };
+use winreg::{RegKey, enums::HKEY_CURRENT_USER};
 
 static ICONS: OnceLock<Mutex<HashMap<isize, [isize; 2]>>> = OnceLock::new();
 
 fn loaded_icons() -> &'static Mutex<HashMap<isize, [isize; 2]>> {
     ICONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn icon_name_for_windows_theme() -> &'static str {
+    // The title bar follows Windows' theme, which can differ from the
+    // app's theme override. Use a white mark on a dark caption background.
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let prefers_light = hkcu
+        .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+        .and_then(|key| key.get_value::<u32, _>("AppsUseLightTheme"))
+        .map(|value| value != 0)
+        .unwrap_or(false);
+    if prefers_light {
+        "conduit-icon-light.ico"
+    } else {
+        "conduit-icon-dark.ico"
+    }
 }
 
 /// Called on the Rune UI thread after each native HWND is created. A repeated
@@ -36,11 +53,12 @@ pub fn install(window: &rune::WindowHandle) -> Result<(), String> {
             return Ok(());
         }
 
-        // Use the multi-resolution ICO shipped next to conduit-rune.exe, which
-        // has native 16–64px frames for high-DPI Windows title bars.
+        // Use the theme-correct multi-resolution ICO shipped next to Rune.
+        // The old default conduit-icon.ico contained a black mark and was
+        // almost invisible against the dark Windows caption background.
         let path = std::env::current_exe()
             .map_err(|err| err.to_string())?
-            .with_file_name("conduit-icon.ico");
+            .with_file_name(icon_name_for_windows_theme());
         let wide_path = path
             .as_os_str()
             .encode_wide()

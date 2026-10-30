@@ -69,6 +69,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path artifacts/rune-preview | Out-Null
           Copy-Item windows/conduit-rune/target/release/conduit-rune-preview.exe artifacts/rune-preview/
           Copy-Item windows/conduit-rune/README.md artifacts/rune-preview/README.md
+          Copy-Item windows/conduit-daemon/assets/conduit-icon-dark.ico artifacts/rune-preview/
+          Copy-Item windows/conduit-daemon/assets/conduit-icon-light.ico artifacts/rune-preview/
           Compress-Archive -Path artifacts/rune-preview/* -DestinationPath artifacts/Conduit-Rune-Preview-windows-x64.zip -Force
 
       - name: Upload Rune preview

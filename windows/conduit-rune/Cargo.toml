@@ -1,6 +1,6 @@
 [package]
 name = "conduit-rune-preview"
-version = "0.1.13"
+version = "0.1.14"
 edition = "2024"
 publish = false
 description = "Experimental native Rune desktop for the Conduit companion"
