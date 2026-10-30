@@ -322,7 +322,7 @@ fn sidebar(ui: &Ui, paint: Paint) -> El {
                         .radius(9.0)
                         .fill(paint.accent)
                         .center()
-                        .child(text("C").font(type_::TITLE).color(rune::Color::WHITE)),
+                        .child(text("⇄").font(type_::TITLE).color(rune::Color::WHITE)),
                 )
                 .child(text("Conduit").font(type_::TITLE).color(paint.t.text)),
         )
@@ -729,6 +729,40 @@ fn field(label: &str, edit: &TextEdit, paint: Paint, editable: fn(&mut Ui) -> &m
         )
 }
 
+fn relays_field(ui: &Ui, paint: Paint) -> El {
+    col()
+        .gap(7.0)
+        .w_full()
+        .child(
+            text("Relay nodes (one host:port per line)")
+                .font(type_::LABEL)
+                .color(paint.t.text_secondary),
+        )
+        .child(
+            col()
+                .w_full()
+                .min_h(98.0)
+                .padding(10.0)
+                .fill(paint.t.bg)
+                .radius(8.0)
+                .border(1.0, paint.t.card_border)
+                .child(
+                    text_input(&ui.relays, type_::BODY)
+                        .w_full()
+                        .min_h(74.0)
+                        .color(paint.t.text)
+                        .on_edit(|s: &mut Ui| {
+                            s.settings_dirty = true;
+                            &mut s.relays
+                        })
+                        .on_submit(|s: &mut Ui, _| {
+                            s.relays.insert("\n");
+                            s.settings_dirty = true;
+                        }),
+                ),
+        )
+}
+
 fn settings(ui: &Ui, paint: Paint) -> El {
     let mut proxy_modes = row().gap(8.0);
     for (mode, label) in [
@@ -751,12 +785,7 @@ fn settings(ui: &Ui, paint: Paint) -> El {
     let mut content = col()
         .gap(16.0)
         .child(heading("Connection settings", paint))
-        .child(field(
-            "Relay nodes (one host:port per line)",
-            &ui.relays,
-            paint,
-            |s| &mut s.relays,
-        ))
+        .child(relays_field(ui, paint))
         .child(muted("Proxy route", paint))
         .child(proxy_modes);
     if ui.proxy_mode == "manual" {
@@ -768,7 +797,7 @@ fn settings(ui: &Ui, paint: Paint) -> El {
         .child(field("Receive folder", &ui.receive_dir, paint, |s| {
             &mut s.receive_dir
         }))
-        .child(button(
+        .child(row().child(button(
             "toggle-tray",
             if ui.tray_icon {
                 "Tray icon: On"
@@ -781,7 +810,7 @@ fn settings(ui: &Ui, paint: Paint) -> El {
                 s.tray_icon = !s.tray_icon;
                 s.settings_dirty = true;
             },
-        ))
+        )))
         .child(
             row()
                 .gap(9.0)
@@ -1096,7 +1125,11 @@ fn main() {
         min_size: Some((760.0, 510.0)),
         ..AppSpec::new(WINDOW_TITLE, (1060.0, 750.0), Ui::init, view)
     })
-    .tab_visits_controls(true);
+    .tab_visits_controls(true)
+    // Rune's first Windows frame can be initialized before the final DPI-sized
+    // client area settles. Nudge its native size once to trigger a real resize
+    // event and synchronize the surface + logical viewport without polling.
+    .on_window(|window| window.resize_instant((1060.0, 749.0)));
     let handle = app.handle();
     let _ = HANDLE.set(handle.clone());
     // Only a user-launched desktop starts or watches the installed daemon. Headless

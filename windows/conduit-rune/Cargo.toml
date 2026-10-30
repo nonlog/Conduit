@@ -9,6 +9,9 @@ authors = ["Codex <codex@openai.com>"]
 [workspace]
 resolver = "3"
 
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1.12"
+
 [dependencies]
 rune = { git = "https://github.com/anomalyco/rune", rev = "506f5421220de1ed5f5a9c69b608278d160fe711", default-features = false, features = ["embedded-fonts"] }
 notify = "8"
