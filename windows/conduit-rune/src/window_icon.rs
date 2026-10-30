@@ -10,9 +10,10 @@ use std::os::windows::ffi::OsStrExt;
 use std::ptr::{null, null_mut};
 use std::sync::{Mutex, OnceLock};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DestroyIcon, GetDpiForWindow, ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_LOADFROMFILE, LoadImageW,
-    SendMessageW, WM_SETICON,
+    DestroyIcon, ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_LOADFROMFILE, LoadImageW, SendMessageW,
+    WM_SETICON,
 };
 
 static ICONS: OnceLock<Mutex<HashMap<isize, [isize; 2]>>> = OnceLock::new();
@@ -23,7 +24,7 @@ fn loaded_icons() -> &'static Mutex<HashMap<isize, [isize; 2]>> {
 
 /// Called on the Rune UI thread after each native HWND is created. A repeated
 /// on-ready callback must not allocate another pair of HICON handles.
-pub fn install(window: &rune::window::WindowHandle) -> Result<(), String> {
+pub fn install(window: &rune::WindowHandle) -> Result<(), String> {
     window.with_raw_handle(|handle| {
         let RawWindowHandle::Win32(handle) = handle.as_raw() else {
             return Err("Conduit window is not a Win32 HWND".into());
