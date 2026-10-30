@@ -1642,4 +1642,23 @@ mod tests {
         assert!(about_rt.find("about").is_some());
         assert!(about_rt.find("about-nova").is_some());
     }
+
+    #[test]
+    fn native_search_accepts_click_focus_and_keyboard_input() {
+        let mut ui = Ui::init();
+        connected_scene(&mut ui);
+        ui.navigate(Page::Transfers);
+        let mut rt = Runtime::new(ui, view, (1020.0, 605.0), Env::new(true, 1.0));
+        rt.frame(0.0);
+        let (x, y) = rt.find("search-input").expect("search field present");
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.key(KeyEvent {
+            key: Key::Text("rune".into()),
+            mods: rune::Mods::default(),
+        });
+        rt.frame(1.0 / 60.0);
+        assert_eq!(rt.state.search.text, "rune");
+        assert!(rt.find("transfer-aabbccddee").is_none());
+    }
 }
