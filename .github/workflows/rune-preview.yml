@@ -1,0 +1,80 @@
+name: Rune desktop preview
+
+on:
+  pull_request:
+    paths:
+      - "windows/conduit-rune/**"
+      - ".github/workflows/rune-preview.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: conduit-rune-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rune-windows:
+    name: Rune native UI / Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal --component rustfmt
+          rustup default 1.98.0
+          rustc --version
+
+      - name: Cache Rust git dependencies and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: windows/conduit-rune
+          key: conduit-rune-preview
+
+      - name: Check formatting
+        shell: pwsh
+        run: cargo fmt --manifest-path windows/conduit-rune/Cargo.toml --all -- --check
+
+      - name: Test Rust-native interface, model and input
+        shell: pwsh
+        run: cargo test --manifest-path windows/conduit-rune/Cargo.toml --locked
+
+      - name: Build native Rune desktop
+        shell: pwsh
+        run: cargo build --release --manifest-path windows/conduit-rune/Cargo.toml --locked
+
+      - name: Check PE GUI subsystem (no command-line flash)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $binary = 'windows/conduit-rune/target/release/conduit-rune-preview.exe'
+          if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) {
+            throw 'Native Rune executable missing'
+          }
+          $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $binary))
+          $pe = [BitConverter]::ToInt32($bytes, 0x3c)
+          $subsystem = [BitConverter]::ToUInt16($bytes, $pe + 24 + 68)
+          if ($subsystem -ne 2) {
+            throw "Windows GUI subsystem must be 2, got $subsystem"
+          }
+          Write-Output 'Rune executable is a native GUI process (PE subsystem 2).'
+
+      - name: Package independent Rune preview
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path artifacts/rune-preview | Out-Null
+          Copy-Item windows/conduit-rune/target/release/conduit-rune-preview.exe artifacts/rune-preview/
+          Copy-Item windows/conduit-rune/README.md artifacts/rune-preview/README.md
+          Compress-Archive -Path artifacts/rune-preview/* -DestinationPath artifacts/Conduit-Rune-Preview-windows-x64.zip -Force
+
+      - name: Upload Rune preview
+        uses: actions/upload-artifact@v7
+        with:
+          name: conduit-rune-windows-x64
+          path: artifacts/Conduit-Rune-Preview-windows-x64.zip
+          retention-days: 7
+          if-no-files-found: error

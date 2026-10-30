@@ -698,14 +698,7 @@ pub fn send_file(app: &AppHandle, path: &str) -> Result<(), String> {
 }
 
 pub fn launch_daemon_if_missing(app: &AppHandle) -> Result<(), String> {
-    let running = Command::new("tasklist")
-        .args(["/FI", "IMAGENAME eq conduit-daemon.exe", "/NH"])
-        .output()
-        .map_err(|e| format!("Checking daemon: {e}"))?;
-    if String::from_utf8_lossy(&running.stdout)
-        .to_lowercase()
-        .contains("conduit-daemon.exe")
-    {
+    if daemon_process_exists()? {
         return Ok(());
     }
     command(app)?
@@ -714,6 +707,56 @@ pub fn launch_daemon_if_missing(app: &AppHandle) -> Result<(), String> {
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("Starting Conduit: {e}"))
+}
+
+/// Enumerate native Windows processes without spawning tasklist.exe. Calling tasklist
+/// from a GUI subsystem process created a transient console window each time the
+/// user opened the desktop from the tray.
+#[cfg(windows)]
+fn daemon_process_exists() -> Result<bool, String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(format!(
+            "Checking daemon: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let mut entry = unsafe { std::mem::zeroed::<PROCESSENTRY32W>() };
+    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+    let mut found = false;
+    unsafe {
+        if Process32FirstW(snapshot, &mut entry) != 0 {
+            loop {
+                let length = entry
+                    .szExeFile
+                    .iter()
+                    .position(|character| *character == 0)
+                    .unwrap_or(entry.szExeFile.len());
+                if String::from_utf16_lossy(&entry.szExeFile[..length])
+                    .eq_ignore_ascii_case("conduit-daemon.exe")
+                {
+                    found = true;
+                    break;
+                }
+                if Process32NextW(snapshot, &mut entry) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snapshot);
+    }
+    Ok(found)
+}
+
+#[cfg(not(windows))]
+fn daemon_process_exists() -> Result<bool, String> {
+    Ok(false)
 }
 
 pub fn clear_history(kind: &str) -> Result<(), String> {

@@ -1,0 +1,23 @@
+[package]
+name = "conduit-rune-preview"
+version = "0.1.13"
+edition = "2024"
+publish = false
+description = "Experimental native Rune desktop for the Conduit companion"
+authors = ["Codex <codex@openai.com>"]
+
+[workspace]
+resolver = "3"
+
+[dependencies]
+rune = { git = "https://github.com/anomalyco/rune", rev = "506f5421220de1ed5f5a9c69b608278d160fe711", default-features = false, features = ["embedded-fonts"] }
+notify = "8"
+url = "2"
+winreg = "0.55"
+rfd = "0.17"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+strip = true
