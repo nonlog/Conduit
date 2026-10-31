@@ -404,6 +404,7 @@ impl Ui {
 struct Paint {
     t: Theme,
     accent: Color,
+    primary_fill: Color,
     surface: Color,
     sidebar: Color,
     card: Color,
@@ -423,6 +424,7 @@ impl Paint {
             Paint {
                 t: tok::theme(true),
                 accent: color("#6b9eff"),
+                primary_fill: color("#2d68d7"),
                 surface: color("#10151d"),
                 sidebar: color("#10151d"),
                 card: color("#19212b"),
@@ -438,6 +440,7 @@ impl Paint {
             Paint {
                 t: tok::theme(false),
                 accent: color("#266de4"),
+                primary_fill: color("#266de4"),
                 surface: color("#f5f7fa"),
                 sidebar: color("#ffffff"),
                 card: color("#ffffff"),
@@ -482,10 +485,14 @@ fn action_button(
         .center()
         .radius(9.0)
         .continuous_corners()
-        .fill(if primary { paint.accent } else { paint.card })
+        .fill(if primary {
+            paint.primary_fill
+        } else {
+            paint.card
+        })
         .border(if primary { 0.0 } else { 1.0 }, paint.line)
         .hover(if primary {
-            paint.accent.mix(Color::WHITE, 0.12)
+            paint.primary_fill.mix(Color::WHITE, 0.09)
         } else {
             paint.t.hover
         })
