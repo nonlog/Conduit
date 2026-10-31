@@ -1,6 +1,6 @@
 [package]
 name = "conduit-tauri-preview"
-version = "0.1.14"
+version = "0.1.15"
 description = "Conduit desktop companion, Nova UI preview"
 edition = "2021"
 authors = ["Codex <codex@openai.com>"]

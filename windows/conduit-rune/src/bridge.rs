@@ -245,10 +245,17 @@ pub fn data_dir() -> PathBuf {
 
 pub fn theme_preference() -> String {
     let stored = bounded(&data_dir().join("rune-theme.txt"), 32);
+    normalized_theme(&stored).into()
+}
+
+fn normalized_theme(stored: &str) -> &'static str {
     match stored.trim() {
-        "light" => "light".into(),
-        "dark" => "dark".into(),
-        _ => "system".into(),
+        "system" => "system",
+        "light" => "light",
+        "dark" => "dark",
+        // Conduit is a persistent connection utility. Its restrained dark
+        // workbench is the default; explicit System/Light selections persist.
+        _ => "dark",
     }
 }
 
@@ -747,6 +754,15 @@ pub fn open_nova_ui() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn theme_default_is_dark_without_overriding_user_choice() {
+        assert_eq!(normalized_theme(""), "dark");
+        assert_eq!(normalized_theme("invalid"), "dark");
+        assert_eq!(normalized_theme("system\n"), "system");
+        assert_eq!(normalized_theme("light"), "light");
+        assert_eq!(normalized_theme("dark"), "dark");
+    }
 
     #[test]
     fn portable_install_owns_its_daemon_and_never_infers_scoop_identity() {
