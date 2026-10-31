@@ -1714,7 +1714,13 @@ fn settings(ui: &Ui, paint: Paint) -> El {
             ui.appearance == mode,
             paint,
             move |ui| match bridge::save_theme_preference(mode) {
-                Ok(()) => ui.appearance = mode.into(),
+                Ok(()) => {
+                    ui.appearance = mode.into();
+                    #[cfg(windows)]
+                    if let Err(error) = window_icon::update_appearance(mode) {
+                        ui.notice = Some(format!("Could not update window appearance: {error}"));
+                    }
+                }
                 Err(error) => ui.notice = Some(error),
             },
         ));
