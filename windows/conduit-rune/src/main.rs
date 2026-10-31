@@ -542,6 +542,49 @@ fn segment(
         )
 }
 
+fn preference_toggle(
+    key: impl Into<String>,
+    label: &'static str,
+    enabled: bool,
+    paint: Paint,
+    action: impl Fn(&mut Ui) + 'static,
+) -> El {
+    row()
+        .key(key.into())
+        .role("button")
+        .label(label)
+        .h(38.0)
+        .px(13.0)
+        .gap(8.0)
+        .center_y()
+        .radius(8.0)
+        .fill(if enabled {
+            paint.green.alpha(0.11)
+        } else {
+            paint.inset
+        })
+        .border(
+            1.0,
+            if enabled {
+                paint.green.alpha(0.22)
+            } else {
+                paint.line
+            },
+        )
+        .hover(paint.selected)
+        .on_press(action)
+        .child(el().size(7.0, 7.0).radius(4.0).fill(if enabled {
+            paint.green
+        } else {
+            paint.faint
+        }))
+        .child(
+            text(if enabled { "On" } else { "Off" })
+                .font(rune::TextStyle::new(12.0, 630.0))
+                .color(if enabled { paint.green } else { paint.subdued }),
+        )
+}
+
 fn tag(label: impl Into<String>, paint: Paint, good: bool) -> El {
     row()
         .radius(9.0)
@@ -669,7 +712,7 @@ fn nav(page: Page, selected: bool, paint: Paint) -> El {
         )
 }
 
-fn sidebar(ui: &Ui, paint: Paint) -> El {
+fn sidebar(ui: &Ui, paint: Paint, compact: bool) -> El {
     let mut menu = col()
         .key("side-navigation")
         .w_full()
@@ -705,9 +748,9 @@ fn sidebar(ui: &Ui, paint: Paint) -> El {
     };
     col()
         .key("sidebar")
-        .w(214.0)
+        .w(if compact { 192.0 } else { 214.0 })
         .h_full()
-        .padding(16.0)
+        .padding(if compact { 13.0 } else { 16.0 })
         .gap(20.0)
         .fill(paint.sidebar)
         .border(1.0, paint.line.alpha(0.65))
@@ -774,7 +817,7 @@ fn sidebar(ui: &Ui, paint: Paint) -> El {
         )
 }
 
-fn summary_connection(ui: &Ui, paint: Paint) -> El {
+fn summary_connection(ui: &Ui, paint: Paint, compact: bool) -> El {
     let conn = &ui.snap.connection;
     let transport = if !conn.linked {
         "Waiting for a connection"
@@ -794,12 +837,18 @@ fn summary_connection(ui: &Ui, paint: Paint) -> El {
     };
     let phone = if let Some(image) = &ui.wallpaper {
         el().key("phone-wallpaper")
-            .size(84.0, 104.0)
+            .size(
+                if compact { 70.0 } else { 84.0 },
+                if compact { 90.0 } else { 104.0 },
+            )
             .radius(13.0)
             .pixels_fit(image.pixels(), SurfaceFit::Fill)
     } else {
         el().key("phone-placeholder")
-            .size(84.0, 104.0)
+            .size(
+                if compact { 70.0 } else { 84.0 },
+                if compact { 90.0 } else { 104.0 },
+            )
             .radius(13.0)
             .fill(paint.inset)
             .center()
@@ -835,7 +884,10 @@ fn summary_connection(ui: &Ui, paint: Paint) -> El {
                                 } else {
                                     conn.device.as_str()
                                 })
-                                .font(rune::TextStyle::new(24.0, 680.0))
+                                .font(rune::TextStyle::new(
+                                    if compact { 20.0 } else { 24.0 },
+                                    680.0,
+                                ))
                                 .color(paint.t.text),
                             )
                             .child(
@@ -851,11 +903,19 @@ fn summary_connection(ui: &Ui, paint: Paint) -> El {
                                 row()
                                     .center_y()
                                     .gap(7.0)
-                                    .child(icon(&icons::SHIELD_CHECK, 15.0).color(paint.green))
+                                    .child(icon(&icons::SHIELD_CHECK, 15.0).color(if conn.linked {
+                                        paint.green
+                                    } else {
+                                        paint.faint
+                                    }))
                                     .child(
-                                        text("End-to-end encrypted with Noise")
-                                            .font(rune::TextStyle::new(12.0, 500.0))
-                                            .color(paint.subdued),
+                                        text(if conn.linked {
+                                            "End-to-end encrypted with Noise"
+                                        } else {
+                                            "Encryption starts after pairing"
+                                        })
+                                        .font(rune::TextStyle::new(12.0, 500.0))
+                                        .color(paint.subdued),
                                     ),
                             ),
                     )
@@ -1001,12 +1061,21 @@ fn transfer_row(transfer: &bridge::Transfer, paint: Paint) -> El {
     body
 }
 
-fn empty(message: &str, paint: Paint) -> El {
+fn empty_state(title: &str, detail: &str, glyph: &'static Icon, paint: Paint) -> El {
     col()
         .w_full()
-        .h(135.0)
+        .h(160.0)
+        .gap(10.0)
         .center()
-        .child(muted(message, paint))
+        .child(
+            el().size(38.0, 38.0)
+                .radius(10.0)
+                .fill(paint.inset)
+                .center()
+                .child(icon(glyph, 19.0).color(paint.subdued)),
+        )
+        .child(heading(title, paint))
+        .child(muted(detail, paint))
 }
 
 fn transfer_list(ui: &Ui, paint: Paint, limit: usize) -> El {
@@ -1030,12 +1099,18 @@ fn transfer_list(ui: &Ui, paint: Paint, limit: usize) -> El {
         .take(limit)
         .collect::<Vec<_>>();
     if records.is_empty() {
-        list = list.child(empty(
+        list = list.child(empty_state(
             if query.is_empty() {
                 "No transfers yet"
             } else {
                 "No matching transfers"
             },
+            if query.is_empty() {
+                "Send a file or drag it into Conduit."
+            } else {
+                "Try another filename or status."
+            },
+            &icons::TRANSFER,
             paint,
         ));
     } else {
@@ -1084,10 +1159,10 @@ fn overview(ui: &Ui, paint: Paint) -> El {
 }
 
 fn stat(label: &str, count: usize, paint: Paint) -> El {
-    let (glyph, page): (&'static Icon, Page) = match label {
-        "Notifications" => (&icons::BELL, Page::Notifications),
-        "Shared links" => (&icons::LINK, Page::Links),
-        _ => (&icons::TRANSFER, Page::Transfers),
+    let (glyph, page, short_label): (&'static Icon, Page, &'static str) = match label {
+        "Notifications" => (&icons::BELL, Page::Notifications, "Alerts"),
+        "Shared links" => (&icons::LINK, Page::Links, "Links"),
+        _ => (&icons::TRANSFER, Page::Transfers, "Files"),
     };
     row()
         .key(format!("metric-{}", label))
@@ -1096,14 +1171,14 @@ fn stat(label: &str, count: usize, paint: Paint) -> El {
         .center_y()
         .gap(8.0)
         .px(11.0)
-        .h(34.0)
+        .h(38.0)
         .radius(7.0)
         .fill(paint.inset)
         .hover(paint.selected)
         .on_press(move |ui: &mut Ui| ui.navigate(page))
         .child(icon(glyph, 15.0).color(paint.subdued))
         .child(
-            text(format!("{count}  {label}"))
+            text(format!("{count}  {short_label}"))
                 .font(rune::TextStyle::new(11.0, 580.0))
                 .color(paint.subdued),
         )
@@ -1165,12 +1240,18 @@ fn notifications(ui: &Ui, paint: Paint) -> El {
         })
         .collect::<Vec<_>>();
     if records.is_empty() {
-        list = list.child(empty(
+        list = list.child(empty_state(
             if query.is_empty() {
                 "No notifications"
             } else {
                 "No matching notifications"
             },
+            if query.is_empty() {
+                "Notifications forwarded from Android appear here."
+            } else {
+                "Try another app or keyword."
+            },
+            &icons::BELL,
             paint,
         ));
     } else {
@@ -1289,12 +1370,18 @@ fn links(ui: &Ui, paint: Paint) -> El {
         })
         .collect::<Vec<_>>();
     if records.is_empty() {
-        list = list.child(empty(
+        list = list.child(empty_state(
             if query.is_empty() {
-                "No links shared from the phone"
+                "No shared links yet"
             } else {
                 "No matching links"
             },
+            if query.is_empty() {
+                "Links sent from your phone appear here."
+            } else {
+                "Try a different title or address."
+            },
+            &icons::LINK,
             paint,
         ));
     } else {
@@ -1663,11 +1750,11 @@ fn settings(ui: &Ui, paint: Paint) -> El {
                             .child(heading("System tray icon", paint))
                             .child(muted("Keep Conduit available in the background", paint)),
                     )
-                    .child(button(
+                    .child(preference_toggle(
                         "toggle-tray",
-                        if ui.tray_icon { "Enabled" } else { "Disabled" },
-                        paint,
+                        "Toggle system tray icon",
                         ui.tray_icon,
+                        paint,
                         |s| {
                             s.tray_icon = !s.tray_icon;
                             s.settings_dirty = true;
@@ -1727,15 +1814,11 @@ fn windows_integration(ui: &Ui, paint: Paint) -> El {
                                 paint,
                             )),
                     )
-                    .child(button(
+                    .child(preference_toggle(
                         "autostart",
-                        if ui.snap.settings.autostart {
-                            "Enabled"
-                        } else {
-                            "Disabled"
-                        },
-                        paint,
+                        "Toggle Windows autostart",
                         ui.snap.settings.autostart,
+                        paint,
                         |ui| {
                             let cmd = if ui.snap.settings.autostart {
                                 "remove"
@@ -1760,15 +1843,11 @@ fn windows_integration(ui: &Ui, paint: Paint) -> El {
                             .child(heading("Explorer Send to phone", paint))
                             .child(muted("Add Conduit to the Windows context menu", paint)),
                     )
-                    .child(button(
+                    .child(preference_toggle(
                         "explorer",
-                        if ui.snap.settings.explorer {
-                            "Enabled"
-                        } else {
-                            "Disabled"
-                        },
-                        paint,
+                        "Toggle Explorer Send to phone",
                         ui.snap.settings.explorer,
+                        paint,
                         |ui| {
                             let cmd = if ui.snap.settings.explorer {
                                 "remove"
@@ -1881,11 +1960,11 @@ fn about(ui: &Ui, paint: Paint) -> El {
     )
 }
 
-fn content(ui: &Ui, paint: Paint) -> El {
+fn content(ui: &Ui, paint: Paint, compact: bool) -> El {
     let mut body = col().key("page-content").gap(16.0);
     if ui.page == Page::Overview {
         body = body
-            .child(summary_connection(ui, paint))
+            .child(summary_connection(ui, paint, compact))
             .child(overview(ui, paint));
     } else {
         body = body.child(match ui.page {
@@ -1926,6 +2005,9 @@ fn search_field(ui: &Ui, paint: Paint) -> El {
 }
 
 fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
+    // Rune's layout read converges after the first measurement, keeping the
+    // search field out of the title row at narrow desktop window sizes.
+    let compact = cx.layout_size("window").is_some_and(|size| size[0] < 930.0);
     let dark = match ui.appearance.as_str() {
         "light" => false,
         "dark" => true,
@@ -1938,7 +2020,8 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
         "Offline"
     };
     let mut right = row().gap(12.0).center_y();
-    if matches!(ui.page, Page::Transfers | Page::Notifications | Page::Links) {
+    let searchable = matches!(ui.page, Page::Transfers | Page::Notifications | Page::Links);
+    if searchable && !compact {
         right = right.child(search_field(ui, paint));
     }
     if ui.page == Page::Overview {
@@ -1988,6 +2071,9 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
                 )
                 .child(right),
         );
+    if searchable && compact {
+        body = body.child(row().child(search_field(ui, paint)));
+    }
     if let Some(notice) = &ui.notice {
         body = body.child(
             row()
@@ -2000,7 +2086,7 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
         );
     }
     body = body.child(
-        content(ui, paint)
+        content(ui, paint, compact)
             .scroll(ScrollSpec {
                 stick_bottom: false,
             })
@@ -2013,7 +2099,7 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
         .w_full()
         .h_full()
         .fill(paint.surface)
-        .child(sidebar(ui, paint))
+        .child(sidebar(ui, paint, compact))
         .child(body);
     if ui.drop_over {
         root = root.outline(2.0, 0.0, paint.accent);

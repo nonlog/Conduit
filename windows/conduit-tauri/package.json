@@ -1,7 +1,7 @@
 {
   "name": "conduit-tauri",
   "private": true,
-  "version": "0.1.14-preview",
+  "version": "0.1.15-preview",
   "type": "module",
   "scripts": {
     "dev": "vite",
