@@ -53,7 +53,7 @@ fn set_dark_caption(hwnd: *mut core::ffi::c_void, dark: bool) -> bool {
     let hr = unsafe {
         DwmSetWindowAttribute(
             hwnd,
-            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
             &dark as *const i32 as *const core::ffi::c_void,
             std::mem::size_of::<i32>() as u32,
         )
