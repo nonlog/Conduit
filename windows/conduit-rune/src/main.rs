@@ -895,7 +895,8 @@ fn summary_connection(ui: &Ui, paint: Paint, compact: bool) -> El {
                                     if compact { 20.0 } else { 24.0 },
                                     680.0,
                                 ))
-                                .color(paint.t.text),
+                                .color(paint.t.text)
+                                .truncate(),
                             )
                             .child(
                                 text(if conn.linked {
@@ -922,7 +923,8 @@ fn summary_connection(ui: &Ui, paint: Paint, compact: bool) -> El {
                                             "Encryption starts after pairing"
                                         })
                                         .font(rune::TextStyle::new(12.0, 500.0))
-                                        .color(paint.subdued),
+                                        .color(paint.subdued)
+                                        .truncate(),
                                     ),
                             ),
                     )
@@ -967,7 +969,8 @@ fn summary_connection(ui: &Ui, paint: Paint, compact: bool) -> El {
                     .child(
                         text(endpoint)
                             .font(rune::TextStyle::new(11.0, 450.0))
-                            .color(paint.faint),
+                            .color(paint.faint)
+                            .truncate_middle(),
                     ),
             ),
     )
@@ -994,7 +997,8 @@ fn transfer_row(transfer: &bridge::Transfer, paint: Paint) -> El {
         .child(
             text(name)
                 .font(rune::TextStyle::new(13.0, 570.0))
-                .color(paint.t.text),
+                .color(paint.t.text)
+                .truncate_middle(),
         )
         .child(
             text(format!("{}  ·  {}%", tr.direction, progress))
@@ -1307,18 +1311,21 @@ fn notifications(ui: &Ui, paint: Paint) -> El {
                                     .child(
                                         text(title)
                                             .font(rune::TextStyle::new(13.0, 590.0))
-                                            .color(paint.t.text),
+                                            .color(paint.t.text)
+                                            .truncate(),
                                     )
                                     .child(
                                         text(notification.app.as_str())
                                             .font(rune::TextStyle::new(11.0, 450.0))
-                                            .color(paint.accent),
+                                            .color(paint.accent)
+                                            .truncate(),
                                     ),
                             )
                             .child(
                                 text(body)
                                     .font(rune::TextStyle::new(12.0, 440.0))
-                                    .color(paint.subdued),
+                                    .color(paint.subdued)
+                                    .max_lines(2),
                             ),
                     ),
             );
@@ -1428,9 +1435,13 @@ fn links(ui: &Ui, paint: Paint) -> El {
                             .child(
                                 text(title)
                                     .font(rune::TextStyle::new(13.0, 590.0))
-                                    .color(paint.t.text),
+                                    .color(paint.t.text)
+                                    .truncate(),
                             )
-                            .child(muted(format!("{} · {}", item.source, preview), paint)),
+                            .child(
+                                muted(format!("{} · {}", item.source, preview), paint)
+                                    .truncate_middle(),
+                            ),
                     )
                     .child(action_button(
                         format!("open-{}", item.id),
@@ -1523,7 +1534,8 @@ fn pairing(ui: &Ui, paint: Paint) -> El {
                             .child(
                                 text(&p.device)
                                     .font(rune::TextStyle::new(17.0, 650.0))
-                                    .color(paint.t.text),
+                                    .color(paint.t.text)
+                                    .truncate(),
                             )
                             .child(muted("Trusted phone · Noise pairing identity", paint)),
                     ),
@@ -1924,10 +1936,13 @@ fn about(ui: &Ui, paint: Paint) -> El {
                     ),
             )
             .child(el().w_full().h(1.0).fill(paint.line))
-            .child(muted(
-                "Securely transfer files, notifications and links between Windows and Android.",
-                paint,
-            ))
+            .child(
+                muted(
+                    "Securely transfer files, notifications and links between Windows and Android.",
+                    paint,
+                )
+                .max_lines(2),
+            )
             .child(tag(
                 if ui.snap.daemon_available {
                     "Background service available"
@@ -1937,10 +1952,13 @@ fn about(ui: &Ui, paint: Paint) -> El {
                 paint,
                 ui.snap.daemon_available,
             ))
-            .child(muted(
-                format!("Data directory: {}", bridge::data_dir().display()),
-                paint,
-            ))
+            .child(
+                muted(
+                    format!("Data directory: {}", bridge::data_dir().display()),
+                    paint,
+                )
+                .truncate_middle(),
+            )
             .child(eyebrow("PROJECT & ALTERNATIVE DESKTOPS", paint))
             .child(
                 row()
