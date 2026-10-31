@@ -679,7 +679,7 @@ fn nav(page: Page, selected: bool, paint: Paint) -> El {
         .role("button")
         .label(label)
         .w_full()
-        .h(40.0)
+        .h(38.0)
         .px(11.0)
         .gap(11.0)
         .center_y()
@@ -758,7 +758,7 @@ fn sidebar(ui: &Ui, paint: Paint, compact: bool) -> El {
         .w(if compact { 192.0 } else { 214.0 })
         .h_full()
         .padding(if compact { 13.0 } else { 16.0 })
-        .gap(20.0)
+        .gap(if compact { 14.0 } else { 20.0 })
         .fill(paint.sidebar)
         .border(1.0, paint.line.alpha(0.65))
         .child(
@@ -776,7 +776,27 @@ fn sidebar(ui: &Ui, paint: Paint, compact: bool) -> El {
         )
         .child(menu)
         .child(el().grow(1.0))
-        .child(
+        .child(if compact {
+            row()
+                .key("sidebar-device")
+                .role("button")
+                .label("Manage connected device")
+                .w_full()
+                .h(28.0)
+                .center_y()
+                .gap(8.0)
+                .on_press(|ui: &mut Ui| ui.navigate(Page::Pairing))
+                .child(icon(&icons::SMARTPHONE, 15.0).color(paint.accent))
+                .child(
+                    text(if ui.snap.connection.linked {
+                        "Phone connected"
+                    } else {
+                        "Connect a phone"
+                    })
+                    .font(rune::TextStyle::new(11.0, 550.0))
+                    .color(paint.subdued),
+                )
+        } else {
             col()
                 .gap(8.0)
                 .child(el().w_full().h(1.0).fill(paint.line))
@@ -820,8 +840,8 @@ fn sidebar(ui: &Ui, paint: Paint, compact: bool) -> El {
                                     .color(paint.faint),
                                 ),
                         ),
-                ),
-        )
+                )
+        })
 }
 
 fn summary_connection(ui: &Ui, paint: Paint, compact: bool) -> El {
