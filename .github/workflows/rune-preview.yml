@@ -9,6 +9,15 @@ on:
       - ".github/workflows/rune-preview.yml"
       - "scripts/snapshot-rune-desktop.ps1"
   workflow_dispatch:
+    inputs:
+      runner:
+        description: Official hosted Windows image (alternate capacity during queue delays)
+        type: choice
+        default: windows-latest
+        options:
+          - windows-latest
+          - windows-2022
+          - windows-2025
 
 permissions:
   contents: read
@@ -20,7 +29,7 @@ concurrency:
 jobs:
   rune-windows:
     name: Rune native UI / Windows x64
-    runs-on: windows-latest
+    runs-on: ${{ inputs.runner || 'windows-latest' }}
     timeout-minutes: 100
     steps:
       - uses: actions/checkout@v7
