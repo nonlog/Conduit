@@ -106,7 +106,7 @@ class ConduitMotionInstrumentedTest {
         val middle = compose.onNodeWithTag("navigation-indicator").getUnclippedBoundsInRoot().left.value
         compose.mainClock.advanceTimeBy(1200)
         val end = compose.onNodeWithTag("navigation-indicator").getUnclippedBoundsInRoot().left.value
-        assertTrue("Indicator must glide rather than jump", middle > initial && middle < end)
+        assertTrue("Indicator must glide rather than jump: initial=$initial intermediate=$middle final=$end", middle > initial && middle < end)
         assertEquals("Settings", selected)
     }
 

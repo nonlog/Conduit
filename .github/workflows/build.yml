@@ -16,7 +16,9 @@ permissions:
 
 concurrency:
   group: conduit-build-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  # Keep an already compiling native package while Android/UI fixes queue the next revision.
+  # GitHub retains only the newest pending run in this group.
+  cancel-in-progress: false
 
 jobs:
   # Only run the emulator-backed visual regression suite when explicitly dispatched
@@ -125,7 +127,9 @@ jobs:
 
       - name: Remove private runner signing material
         if: always()
-        run: rm -f "$RUNNER_TEMP/conduit-release.p12"
+        run: |
+          rm -f "$RUNNER_TEMP/conduit-release.p12"
+          echo 'CONDUIT_ANDROID_KEYSTORE=' >> "$GITHUB_ENV"
 
       - name: Upload signed Android release
         if: startsWith(github.ref, 'refs/tags/')

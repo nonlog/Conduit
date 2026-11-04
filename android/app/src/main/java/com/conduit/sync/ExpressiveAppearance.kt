@@ -131,7 +131,7 @@ internal fun ExpressiveNavigationDock(
                     animationSpec = if (LocalConduitMotion.current) MaterialTheme.motionScheme.defaultSpatialSpec() else snap(),
                     label = "Navigation selection",
                 )
-                Box(Modifier.testTag("navigation-indicator").offset(x = offset).width(cell).fillMaxHeight()
+                Box(Modifier.offset(x = offset).testTag("navigation-indicator").width(cell).fillMaxHeight()
                     .clip(CircleShape).background(MaterialTheme.colorScheme.surfaceContainerHighest))
                 Row(Modifier.fillMaxSize().selectableGroup()) {
                     DockItem("Home", R.drawable.ic_dashboard, selectedIndex == 0, onHome, Modifier.weight(1f))
