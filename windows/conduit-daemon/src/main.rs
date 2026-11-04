@@ -248,9 +248,9 @@ async fn main() -> Result<()> {
         if command == "pair" {
             let dir = config_dir()?;
             std::fs::create_dir_all(&dir)?;
-            let action = args
-                .next()
-                .context("usage: conduit-daemon pair <status|start|cancel|forget|rekey-imported --confirm>")?;
+            let action = args.next().context(
+                "usage: conduit-daemon pair <status|start|cancel|forget|rekey-imported --confirm>",
+            )?;
             let confirmation = args.next();
             if action == "rekey-imported" {
                 if confirmation.as_deref() != Some(std::ffi::OsStr::new("--confirm"))
@@ -260,12 +260,16 @@ async fn main() -> Result<()> {
                 }
                 // No live daemon can use the old key while it is being replaced.
                 // Keep the port reserved until the new identity is on disk.
-                let _offline_guard = std::net::TcpListener::bind(("0.0.0.0", PORT))
-                    .context("stop Conduit on THIS computer before repairing its imported identity")?;
+                let _offline_guard = std::net::TcpListener::bind(("0.0.0.0", PORT)).context(
+                    "stop Conduit on THIS computer before repairing its imported identity",
+                )?;
                 let repaired = pairing::repair_cloned_identity(&dir)?;
                 println!("New desktop id: {}", repaired.new_device_id);
                 println!("New fingerprint: {}", repaired.new_fingerprint);
-                println!("Original identity and pairing backed up in {}", repaired.backup_dir.display());
+                println!(
+                    "Original identity and pairing backed up in {}",
+                    repaired.backup_dir.display()
+                );
                 println!("Restart Conduit and pair the phone to this computer again.");
                 return Ok(());
             }

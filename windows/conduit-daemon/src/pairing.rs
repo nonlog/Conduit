@@ -452,7 +452,11 @@ mod tests {
         let bytes = std::fs::read(dir.join("identity.bin")).unwrap();
         std::fs::write(dir.join(PEER_FILE), "trusted-phone").unwrap();
         std::fs::write(dir.join(PEER_NAME_FILE), "My phone").unwrap();
-        std::fs::write(dir.join("transfers.tsv"), "transfer history must not change").unwrap();
+        std::fs::write(
+            dir.join("transfers.tsv"),
+            "transfer history must not change",
+        )
+        .unwrap();
         let fixed = repair_cloned_identity(&dir).unwrap();
         assert_ne!(fixed.new_device_id, id);
         assert_eq!(
