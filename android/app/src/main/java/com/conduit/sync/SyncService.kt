@@ -297,6 +297,7 @@ class SyncService : Service() {
 
     private fun publishPeerConnections() {
         if (!::link.isInitialized || destroyed) return
+        val previouslyConnected = connectedSnapshot.isNotEmpty()
         val secondary = if (::companions.isInitialized) companions.states().associateBy { it.id }
             else emptyMap()
         LinkStatus.devices = PairedDesktops.list(filesDir).map { peer ->
@@ -319,6 +320,8 @@ class SyncService : Service() {
         ClipboardAccessibilityService.setLinkActive(connected.isNotEmpty())
         setSyncObserversActive(connected.isNotEmpty())
         if (connected.isNotEmpty()) showLinkedNotification()
+        else if (previouslyConnected && !pairingActive()) showPairingOrHideOfflineNotification()
+        LinkTileService.refresh(this)
     }
 
     /** Explicit, user-opened LAN pairing window. Uptime excludes deep sleep and never wakes it. */
@@ -331,7 +334,8 @@ class SyncService : Service() {
         LinkStatus.pairing = false
         Log.i(TAG, "pairing window expired")
         if (knownPeer != null && Settings.linkWanted && networkUp) {
-            hideLinkNotification()
+            // A different already linked PC must keep its foreground notification.
+            showPairingOrHideOfflineNotification()
             redial()
         } else if (knownPeer == null) {
             Settings.linkWanted = false
@@ -607,7 +611,8 @@ class SyncService : Service() {
                     LinkStatus.state = state
                     LinkStatus.peer = peer
                     val linked = state == LinkState.Connected
-                    ClipboardAccessibilityService.setLinkActive(linked)
+                    // Central multi-link snapshot owns clipboard availability.
+                    // A primary disconnect must not mark secondary connections offline.
                     activeLink = if (linked) link else null
                     main.post {
                         if (!destroyed) publishPeerConnections()
@@ -657,6 +662,10 @@ class SyncService : Service() {
                                     Log.d(TAG, "ignoring delayed Idle from superseded session $eventGeneration")
                                     return@post
                                 }
+                                // The explicit unpair closes this transport on purpose. Its
+                                // old Idle event must not start an unwanted reconnect to the
+                                // peer whose trust is being removed.
+                                if (eventGeneration == revokingPrimaryGeneration) return@post
                                 if (pairingActive()) {
                                     showPairingNotification()
                                     if (pairingRendezvous != null && endpoint != null) {
@@ -830,6 +839,13 @@ class SyncService : Service() {
                     remotePairing: Boolean,
                 ): Boolean {
                     if (pairingActive()) {
+                        val trusted = PairedDesktops.list(filesDir)
+                        if (trusted.size >= PairedDesktops.MAX_PEERS &&
+                            trusted.none { it.id == deviceId }
+                        ) {
+                            Log.w(TAG, "rejecting an additional desktop: trusted device registry full")
+                            return false
+                        }
                         // Pairing/replacement is mutual. With a human pairing code, the temporary
                         // rendezvous deliberately uses Relay; without one, mDNS/LAN is used. The
                         // ordinary remembered-peer Relay cannot consume a Pair-new window because
@@ -1347,6 +1363,13 @@ class SyncService : Service() {
         pairingUntilUptimeMs > SystemClock.uptimeMillis()
 
     private fun beginPairing(rawCode: String?) {
+        if (PairedDesktops.list(filesDir).size >= PairedDesktops.MAX_PEERS) {
+            android.widget.Toast.makeText(
+                this, "Maximum ${PairedDesktops.MAX_PEERS} computers paired; forget one to add another",
+                android.widget.Toast.LENGTH_LONG,
+            ).show()
+            return
+        }
         val normalized = rawCode?.let(PairingCode::normalize).orEmpty()
         if (normalized.isNotEmpty() && !PairingCode.isValid(normalized)) {
             Log.w(TAG, "refusing malformed pairing code")
@@ -1427,14 +1450,39 @@ class SyncService : Service() {
         knownPeer?.let { forgetDevice(it, remote) }
     }
 
+    /** No duplicate revocation tasks for the same Noise identity. Main-thread owned. */
+    private val revokingPeers = mutableSetOf<String>()
+    private var revokingPrimaryGeneration: Long? = null
+
     /** Unpair only the chosen authenticated computer; other connections and trust survive. */
     private fun forgetDevice(id: String, remote: Boolean) {
         if (PairedDesktops.list(filesDir).none { it.id == id }) return
+        if (!remote) {
+            // The old implementation removed the companion (and closed its writer)
+            // immediately after enqueueing PAIR_RESPONSE(false). That often dropped
+            // the revoke and left the desktop trusting this phone indefinitely.
+            if (!revokingPeers.add(id)) return
+            val target = selectedLink(id)
+            if (target === link) revokingPrimaryGeneration = link.sessionGeneration
+            if (target != null) {
+                target.forgetPeer {
+                    main.post {
+                        revokingPeers.remove(id)
+                        if (!destroyed) completeForgetDevice(id, remote = false)
+                        else PairedDesktops.remove(filesDir, id)
+                    }
+                }
+                return
+            }
+            revokingPeers.remove(id)
+        }
+        completeForgetDevice(id, remote)
+    }
+
+    private fun completeForgetDevice(id: String, remote: Boolean) {
+        if (PairedDesktops.list(filesDir).none { it.id == id }) return
         val primary = id == knownPeer
         Log.i(TAG, "forgetting one desktop: " + id.take(8))
-        // The authenticated sender schedules the mutual unpair response before closing
-        // its own socket. Never send another device's response through the main Link.
-        if (!remote) selectedLink(id)?.forgetPeer()
         PairedDesktops.remove(filesDir, id)
         ShareTarget.publishAll(this, PairedDesktops.list(filesDir))
         if (!primary) {
@@ -1477,13 +1525,25 @@ class SyncService : Service() {
         val completedViaRelay = completedPairing && pairingRendezvous != null
         val completedRelayId = relayAttempt?.id
         val changed = deviceId != knownPeer
-        knownPeer = deviceId
-        LinkStatus.pairedDeviceId = deviceId
         if (changed) {
+            // Authenticated does not mean durable: a full disk or failed write must
+            // not displace the working primary in memory and leave the phone with
+            // a phantom pairing that disappears on restart.
             runCatching { Identity.rememberPeer(filesDir, deviceId) }
                 .onSuccess { Log.i(TAG, "paired with $deviceId, relay rendezvous stored") }
-                .onFailure { Log.w(TAG, "could not store the peer id; relay stays unavailable", it) }
+                .onFailure { cause ->
+                    Log.e(TAG, "could not persist new desktop trust; rejecting session", cause)
+                    main.post {
+                        if (!destroyed) android.widget.Toast.makeText(
+                            this, "Cannot save computer pairing; check available storage",
+                            android.widget.Toast.LENGTH_LONG,
+                        ).show()
+                    }
+                    throw IllegalStateException("Pairing could not be saved", cause)
+                }
         }
+        knownPeer = deviceId
+        LinkStatus.pairedDeviceId = deviceId
         if (completedPairing) {
             cancelPairing(resumeOldPeer = false)
             LinkStatus.path = completedPairingPath(completedViaRelay, completedRelayId)

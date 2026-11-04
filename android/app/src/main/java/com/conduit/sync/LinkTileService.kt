@@ -10,7 +10,7 @@ import android.graphics.drawable.Icon
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 
-/** Quick Settings toggle for the one Conduit link. */
+/** Quick Settings toggle for all trusted Conduit desktop links. */
 class LinkTileService : TileService() {
 
     override fun onStartListening() {
@@ -25,7 +25,7 @@ class LinkTileService : TileService() {
         // The persisted request is authoritative. A service can be between process creation and
         // Link initialisation while the tile is tapped, and using activeLink as the gate made an
         // in-progress search impossible to stop: the tap simply issued CONNECT again.
-        val paired = Identity.peer(filesDir) != null
+        val paired = PairedDesktops.list(filesDir).isNotEmpty()
         if (!paired && !LinkStatus.pairing) {
             val open = Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             // AndroidX chooses the supported launch overload on each Android version
@@ -50,19 +50,21 @@ class LinkTileService : TileService() {
 
     private fun updateTile() {
         val tile = qsTile ?: return
+        val trusted = PairedDesktops.list(filesDir)
         val peer = LinkStatus.peerName ?: Identity.peerName(filesDir) ?: "desktop"
-        val paired = LinkStatus.pairedDeviceId ?: Identity.peer(filesDir)
+        val connected = LinkStatus.devices.filter { it.state == LinkState.Connected }
         val linkRequested = Settings.linkWanted
         tile.icon = Icon.createWithResource(this, R.drawable.ic_stat_link)
         tile.label = "Conduit"
-        tile.state = if (linkRequested && paired != null) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
+        tile.state = if (linkRequested && trusted.isNotEmpty()) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
         tile.subtitle = when {
-            LinkStatus.pairing -> "Pairing on LAN"
-            paired == null -> "Open Conduit to pair"
-            LinkStatus.state == LinkState.Connected -> "Linked to $peer"
+            connected.size > 1 -> "Linked to ${connected.size} computers"
+            connected.size == 1 -> "Linked to ${connected.first().name.ifBlank { "desktop" }}"
+            LinkStatus.pairing -> "Pairing a desktop"
+            trusted.isEmpty() -> "Open Conduit to pair"
             LinkStatus.state == LinkState.Waiting -> "$peer offline · auto reconnect on"
-            LinkStatus.state == LinkState.Retrying -> "Reconnecting to $peer"
-            linkRequested -> "Connecting to $peer"
+            LinkStatus.state == LinkState.Retrying -> "Reconnecting to desktops"
+            linkRequested -> "Connecting to desktops"
             else -> "Not linked"
         }
         tile.updateTile()
