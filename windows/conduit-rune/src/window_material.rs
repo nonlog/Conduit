@@ -43,10 +43,13 @@ mod native {
     use std::sync::atomic::{AtomicIsize, Ordering};
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows_sys::Win32::Graphics::Dwm::{
-        DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE, DwmExtendFrameIntoClientArea,
+        DWM_BB_BLURREGION, DWM_BB_ENABLE, DWM_BLURBEHIND, DWMWA_SYSTEMBACKDROP_TYPE,
+        DWMWA_USE_IMMERSIVE_DARK_MODE, DwmEnableBlurBehindWindow, DwmExtendFrameIntoClientArea,
         DwmSetWindowAttribute,
     };
-    use windows_sys::Win32::Graphics::Gdi::{BLACKNESS, GetDC, HDC, PatBlt, ReleaseDC};
+    use windows_sys::Win32::Graphics::Gdi::{
+        BLACKNESS, CreateRectRgn, DeleteObject, GetDC, HDC, PatBlt, ReleaseDC,
+    };
     use windows_sys::Win32::UI::Controls::MARGINS;
     use windows_sys::Win32::UI::HiDpi::{
         GetWindowDpiAwarenessContext, SetThreadDpiAwarenessContext,
@@ -139,6 +142,33 @@ mod native {
         }
     }
 
+    unsafe fn per_pixel_composition(hwnd: HWND, enabled: bool) -> bool {
+        unsafe {
+            // Vulkan may expose INHERIT alpha. The HWND must explicitly opt
+            // into per-pixel DWM composition; a backdrop type alone can report
+            // success while displaying only its opaque fallback tint.
+            let region = if enabled {
+                CreateRectRgn(0, 0, -1, -1)
+            } else {
+                std::ptr::null_mut()
+            };
+            if enabled && region.is_null() {
+                return false;
+            }
+            let blur = DWM_BLURBEHIND {
+                dwFlags: DWM_BB_ENABLE | if enabled { DWM_BB_BLURREGION } else { 0 },
+                fEnable: i32::from(enabled),
+                hRgnBlur: region,
+                fTransitionOnMaximized: 0,
+            };
+            let ok = DwmEnableBlurBehindWindow(hwnd, &blur) >= 0;
+            if !region.is_null() {
+                DeleteObject(region);
+            }
+            ok
+        }
+    }
+
     #[repr(C)]
     struct HighContrast {
         size: u32,
@@ -202,13 +232,7 @@ mod native {
                 &dark as *const _ as _,
                 std::mem::size_of_val(&dark) as u32,
             );
-            let hr = DwmSetWindowAttribute(
-                hwnd,
-                DWMWA_SYSTEMBACKDROP_TYPE as u32,
-                &requested as *const _ as _,
-                std::mem::size_of_val(&requested) as u32,
-            );
-            let active = requested != 1 && hr >= 0;
+            let active = requested != 1;
             let margin = if active { -1 } else { 0 };
             let margins = MARGINS {
                 cxLeftWidth: margin,
@@ -216,10 +240,19 @@ mod native {
                 cyTopHeight: margin,
                 cyBottomHeight: margin,
             };
+            let frame_ok = DwmExtendFrameIntoClientArea(hwnd, &margins) >= 0;
+            let alpha_ok = per_pixel_composition(hwnd, active);
+            let hr = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_SYSTEMBACKDROP_TYPE as u32,
+                &requested as *const _ as _,
+                std::mem::size_of_val(&requested) as u32,
+            );
             // Changing a native backdrop/frame can invalidate the backing even
             // without a resize. Clear once after that change as well; callers
             // already request the matching Rune frame on activation/settings.
-            if DwmExtendFrameIntoClientArea(hwnd, &margins) < 0 || !clear_backing(hwnd) {
+            if !frame_ok || !alpha_ok || hr < 0 || !clear_backing(hwnd) {
+                per_pixel_composition(hwnd, false);
                 let none = 1i32;
                 let _ = DwmSetWindowAttribute(
                     hwnd,
@@ -227,6 +260,7 @@ mod native {
                     &none as *const _ as _,
                     std::mem::size_of_val(&none) as u32,
                 );
+                let _ = DwmExtendFrameIntoClientArea(hwnd, &MARGINS::default());
                 return false;
             }
             active
