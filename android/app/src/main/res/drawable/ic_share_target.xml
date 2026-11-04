@@ -1,26 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Direct Share tile: the same original two-way Conduit mark on the product gradient. -->
+<!-- Generated from conduit-mark.fragment.svg by scripts/sync-android-brand.py. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:aapt="http://schemas.android.com/aapt"
-    android:width="108dp"
-    android:height="108dp"
-    android:viewportWidth="108"
-    android:viewportHeight="108">
-    <path android:pathData="M24,0H84C97.255,0 108,10.745 108,24V84C108,97.255 97.255,108 84,108H24C10.745,108 0,97.255 0,84V24C0,10.745 10.745,0 24,0Z">
-        <aapt:attr name="android:fillColor">
-            <gradient
-                android:startX="0"
-                android:startY="0"
-                android:endX="108"
-                android:endY="108"
-                android:type="linear">
-                <item android:offset="0" android:color="#FF6E5BD6" />
-                <item android:offset="1" android:color="#FF2F6FE0" />
-            </gradient>
-        </aapt:attr>
-    </path>
-    <path android:pathData="M33,45 L72,45" android:strokeWidth="9" android:strokeColor="#FFFFFF" android:strokeLineCap="round" />
-    <path android:pathData="M64,37 L72,45 L64,53" android:strokeWidth="9" android:strokeColor="#FFFFFF" android:strokeLineCap="round" android:strokeLineJoin="round" />
-    <path android:pathData="M75,63 L36,63" android:strokeWidth="9" android:strokeColor="#FFFFFF" android:strokeLineCap="round" />
-    <path android:pathData="M44,55 L36,63 L44,71" android:strokeWidth="9" android:strokeColor="#FFFFFF" android:strokeLineCap="round" android:strokeLineJoin="round" />
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#FF252B31" android:pathData="M24,0H84C97.25,0 108,10.75 108,24V84C108,97.25 97.25,108 84,108H24C10.75,108 0,97.25 0,84V24C0,10.75 10.75,0 24,0Z" />
+    <group android:scaleX="2.5" android:scaleY="2.5" android:translateX="24" android:translateY="24">
+    <path android:pathData="M10 13a4.5 4.5 0 0 0 6.36 0l3-3A4.5 4.5 0 0 0 13 3.64L11.3 5.3" android:fillColor="#00000000" android:strokeColor="#FFFFFFFF" android:strokeWidth="2" android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path android:pathData="M14 11a4.5 4.5 0 0 0-6.36 0l-3 3A4.5 4.5 0 0 0 11 20.36l1.7-1.66" android:fillColor="#00000000" android:strokeColor="#FFFFFFFF" android:strokeWidth="2" android:strokeLineCap="round" android:strokeLineJoin="round" />
+    </group>
 </vector>

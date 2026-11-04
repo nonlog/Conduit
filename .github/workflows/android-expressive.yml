@@ -3,10 +3,10 @@ name: Android Expressive
 on:
   push:
     branches: [master]
-    paths: ['android/**', '.github/workflows/android-expressive.yml', 'tools/ci-expressive-ui.sh']
+    paths: ['android/**', '.github/workflows/android-expressive.yml', 'tools/ci-expressive-ui.sh', 'scripts/sync-android-brand.py', 'windows/conduit-daemon/assets/conduit-mark.fragment.svg']
   pull_request:
     branches: [master]
-    paths: ['android/**', '.github/workflows/android-expressive.yml', 'tools/ci-expressive-ui.sh']
+    paths: ['android/**', '.github/workflows/android-expressive.yml', 'tools/ci-expressive-ui.sh', 'scripts/sync-android-brand.py', 'windows/conduit-daemon/assets/conduit-mark.fragment.svg']
   workflow_dispatch:
 
 permissions:
@@ -37,7 +37,9 @@ jobs:
           ./gradlew --no-daemon :app:dependencyInsight --configuration debugRuntimeClasspath --dependency androidx.compose.material3:material3
       - name: Test and assemble debug and optimized release
         working-directory: android
-        run: ./gradlew --no-daemon --stacktrace testDebugUnitTest assembleDebug assembleRelease
+        run: |
+          python3 ../scripts/sync-android-brand.py --check
+          ./gradlew --no-daemon --stacktrace testDebugUnitTest assembleDebug assembleRelease
       - name: Android lint
         working-directory: android
         run: ./gradlew --no-daemon --stacktrace lintDebug
@@ -80,7 +82,7 @@ jobs:
           arch: x86_64
           target: google_apis
           profile: pixel_6
-          disable-animations: true
+          disable-animations: false
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: bash tools/ci-expressive-ui.sh
       - uses: actions/upload-artifact@v7

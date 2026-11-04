@@ -1,12 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Android 13+ themed layer for the original bidirectional Conduit mark. -->
+<!-- Generated from conduit-mark.fragment.svg by scripts/sync-android-brand.py. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="108dp"
-    android:height="108dp"
-    android:viewportWidth="108"
-    android:viewportHeight="108">
-    <path android:pathData="M33,45 L72,45" android:strokeWidth="9" android:strokeColor="#000000" android:strokeLineCap="round" />
-    <path android:pathData="M64,37 L72,45 L64,53" android:strokeWidth="9" android:strokeColor="#000000" android:strokeLineCap="round" android:strokeLineJoin="round" />
-    <path android:pathData="M75,63 L36,63" android:strokeWidth="9" android:strokeColor="#000000" android:strokeLineCap="round" />
-    <path android:pathData="M44,55 L36,63 L44,71" android:strokeWidth="9" android:strokeColor="#000000" android:strokeLineCap="round" android:strokeLineJoin="round" />
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <group android:scaleX="2.5" android:scaleY="2.5" android:translateX="24" android:translateY="24">
+    <path android:pathData="M10 13a4.5 4.5 0 0 0 6.36 0l3-3A4.5 4.5 0 0 0 13 3.64L11.3 5.3" android:fillColor="#00000000" android:strokeColor="#FF000000" android:strokeWidth="2" android:strokeLineCap="round" android:strokeLineJoin="round" />
+    <path android:pathData="M14 11a4.5 4.5 0 0 0-6.36 0l-3 3A4.5 4.5 0 0 0 11 20.36l1.7-1.66" android:fillColor="#00000000" android:strokeColor="#FF000000" android:strokeWidth="2" android:strokeLineCap="round" android:strokeLineJoin="round" />
+    </group>
 </vector>

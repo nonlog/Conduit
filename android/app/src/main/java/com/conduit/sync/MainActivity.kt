@@ -528,8 +528,8 @@ internal fun ConduitApp(
         showPairDialog = true
     }
 
-    if (showPairDialog) {
-        AlertDialog(
+    MotionAlertDialog(
+            visible = showPairDialog,
             onDismissRequest = { showPairDialog = false },
             title = { Text("Pair desktop") },
             text = {
@@ -587,7 +587,6 @@ internal fun ConduitApp(
                 TextButton(onClick = { showPairDialog = false }) { Text("Cancel") }
             },
         )
-    }
 
     BackHandler(enabled = page == "history" || tab != MainTab.Home) {
         if (page == "history") page = "main" else tabName = MainTab.Home.name
@@ -620,9 +619,10 @@ internal fun ConduitApp(
             )
         },
     ) { insets ->
-        when (tab) {
+        MotionPageHost(index = tab.ordinal, modifier = Modifier.padding(insets)) { shown ->
+        when (MainTab.entries[shown]) {
             MainTab.Home -> HomeTab(
-                modifier = Modifier.padding(insets),
+                modifier = Modifier,
                 peerName = effectivePeer,
                 pairedDeviceId = effectiveId,
                 pairing = pairing,
@@ -638,10 +638,10 @@ internal fun ConduitApp(
                 onSendFiles = onSendFiles,
                 onOpenHistory = { tabName = MainTab.Clipboard.name },
             )
-            MainTab.Transfers -> TransfersTab(Modifier.padding(insets), transfers, effectivePeer, onCancelTransfer)
-            MainTab.Clipboard -> ClipboardTab(Modifier.padding(insets), history, onClearHistory)
+            MainTab.Transfers -> TransfersTab(Modifier, transfers, effectivePeer, onCancelTransfer)
+            MainTab.Clipboard -> ClipboardTab(Modifier, history, onClearHistory)
             MainTab.Settings -> SettingsTab(
-                modifier = Modifier.padding(insets),
+                modifier = Modifier,
                 appVersion = appVersion,
                 pairedDeviceId = pairedDeviceId,
                 peerName = peerName,
@@ -665,6 +665,7 @@ internal fun ConduitApp(
                 onForgetDevice = onForgetDevice,
                 onOpenHistory = { tabName = MainTab.Clipboard.name },
             )
+        }
         }
     }
 }
@@ -765,8 +766,8 @@ private fun SettingsTab(
     onForgetDevice: (String) -> Unit = {},
 ) {
     var showTheme by rememberSaveable { mutableStateOf(false) }
-    if (showTheme) {
-        AlertDialog(
+    MotionAlertDialog(
+            visible = showTheme,
             onDismissRequest = { showTheme = false },
             title = { Text("Theme") },
             text = {
@@ -789,10 +790,9 @@ private fun SettingsTab(
             },
             confirmButton = { TextButton(onClick = { showTheme = false }) { Text("Close") } },
         )
-    }
     var confirmForgetId by rememberSaveable { mutableStateOf<String?>(null) }
-    if (confirmForgetId != null) {
-        AlertDialog(
+    MotionAlertDialog(
+            visible = confirmForgetId != null,
             onDismissRequest = { confirmForgetId = null },
             title = { Text("Forget ${devices.firstOrNull { it.id == confirmForgetId }?.name ?: peerName ?: "desktop"}?") },
             text = {
@@ -812,7 +812,6 @@ private fun SettingsTab(
                 TextButton(onClick = { confirmForgetId = null }) { Text("Cancel") }
             },
         )
-    }
 
     LazyColumn(
         modifier = modifier.fillMaxWidth(),
@@ -860,9 +859,7 @@ private fun SettingsTab(
             )
         }
         item {
-            ExpressiveSectionTitle("Sync & privacy")
-        }
-        item {
+            MotionSettingsSection("Sync & privacy") {
             ExpressiveCard(modifier = Modifier.fillMaxWidth()) {
                 Column {
                     PreferenceRow(
@@ -898,11 +895,10 @@ private fun SettingsTab(
                     )
                 }
             }
+            }
         }
         item {
-            ExpressiveSectionTitle("Background delivery")
-        }
-        item {
+            MotionSettingsSection("Background delivery") {
             BackgroundDeliverySettingsCard(
                 batteryOptimizationIgnored = batteryOptimizationIgnored,
                 showOplusBatteryRow = Build.MANUFACTURER.equals("oneplus", ignoreCase = true) ||
@@ -913,6 +909,7 @@ private fun SettingsTab(
                 onRequestBatteryOptimization = onRequestBatteryOptimization,
                 onOpenOplusFreezeSettings = onOpenOplusFreezeSettings,
             )
+            }
         }
         item {
             ExpressiveSectionTitle("About")

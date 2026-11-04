@@ -168,11 +168,11 @@ mod tests {
     #[test]
     fn reversal_uses_presented_position_and_targets_are_bounded() {
         let now = Instant::now();
+        let mut position = ScrollPos::default();
+        position.offset = [0.0, 200.0];
+        position.max = [0.0, 1000.0];
         let mut p = Position {
-            current: ScrollPos {
-                offset: [0.0, 200.0],
-                max: [0.0, 1000.0],
-            },
+            current: position,
             ..Default::default()
         };
         assert_eq!(p.target_for(WheelEvent::new(0.0, -120.0), now), Some(320.0));

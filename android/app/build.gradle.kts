@@ -12,7 +12,7 @@ android {
         applicationId = "com.conduit.sync"
         minSdk = 29
         targetSdk = 36
-        versionCode = 16
+        versionCode = 17
         versionName = "0.1.15"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -79,6 +79,7 @@ dependencies {
     implementation(platform("androidx.compose:compose-bom:2026.09.00"))
     implementation("androidx.compose.material3:material3:1.5.0-beta01")
     implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.animation:animation")
     implementation("androidx.activity:activity-compose:1.13.0")
     // Code Scanner brings an obsolete Fragment transitively; align ActivityResult support.
     implementation("androidx.fragment:fragment:1.9.1")

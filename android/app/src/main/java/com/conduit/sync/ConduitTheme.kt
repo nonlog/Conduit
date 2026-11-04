@@ -16,6 +16,7 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
@@ -24,7 +25,7 @@ import androidx.compose.ui.unit.sp
 
 /** Public Material 3 Expressive API, not a local imitation of MaterialTheme. */
 @Composable
-internal fun ConduitTheme(darkOverride: Boolean? = null, content: @Composable () -> Unit) {
+internal fun ConduitTheme(darkOverride: Boolean? = null, motionOverride: Boolean? = null, content: @Composable () -> Unit) {
     val dark = darkOverride ?: when (Settings.themeMode) {
         "dark" -> true
         "light" -> false
@@ -77,6 +78,8 @@ internal fun ConduitTheme(darkOverride: Boolean? = null, content: @Composable ()
         secondaryContainer = Color(0xFFDFE6E2), onSecondaryContainer = Color(0xFF26312E),
         tertiaryContainer = Color(0xFFEBEFED), onTertiaryContainer = Color(0xFF535F5C),
     )
+    val motionEnabled = motionOverride ?: rememberSystemMotionEnabled()
+    CompositionLocalProvider(LocalConduitMotion provides motionEnabled) {
     MaterialExpressiveTheme(
         colorScheme = colors,
         motionScheme = MotionScheme.expressive(),
@@ -95,4 +98,5 @@ internal fun ConduitTheme(darkOverride: Boolean? = null, content: @Composable ()
         ),
         content = content,
     )
+    }
 }
