@@ -118,6 +118,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_brand_mark_keeps_both_link_interiors_hollow() {
+        // Rune's glyph parser does not inherit attributes from SVG groups.
+        // Compare actual coverage inside each loop, not just nonempty pixels.
+        let alpha = rune::text::icon_coverage(&CONDUIT, 48);
+        assert_eq!(alpha.len(), 48 * 48);
+        assert!(alpha.iter().any(|value| *value > 128));
+        for (x, y) in [(32, 14), (16, 34)] {
+            assert!(alpha[y * 48 + x] < 32, "link interior is filled at {x},{y}");
+        }
+    }
+
+    #[test]
     fn every_sidebar_icon_has_visible_strokes() {
         for icon in [
             &CONDUIT,

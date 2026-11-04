@@ -1,4 +1,2 @@
-<g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-  <path d="M10 13a4.5 4.5 0 0 0 6.36 0l3-3A4.5 4.5 0 0 0 13 3.64L11.3 5.3"/>
-  <path d="M14 11a4.5 4.5 0 0 0-6.36 0l-3 3A4.5 4.5 0 0 0 11 20.36l1.7-1.66"/>
-</g>
+<path d="M10 13a4.5 4.5 0 0 0 6.36 0l3-3A4.5 4.5 0 0 0 13 3.64L11.3 5.3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M14 11a4.5 4.5 0 0 0-6.36 0l-3 3A4.5 4.5 0 0 0 11 20.36l1.7-1.66" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
