@@ -21,8 +21,27 @@ try {
         foreach ($theme in @('dark','light')) {
             foreach ($size in @('760x510','1020x605')) {
                 $png = Join-Path $output "$scene-$theme-$size.png"
-                & $exe --snap $png --scene $scene --theme $theme --size $size --scale 1.25 --at 0.5
-                if ($LASTEXITCODE -ne 0) { throw "Native rendering failed for $scene/$theme/$size" }
+                # A PE GUI executable is asynchronous when invoked with '&' in PowerShell.
+                # Wait on this exact renderer process instead of reading a stale LASTEXITCODE.
+                $start = [Diagnostics.ProcessStartInfo]::new($exe)
+                $start.UseShellExecute = $false
+                $start.CreateNoWindow = $true
+                foreach ($arg in @('--snap',$png,'--scene',$scene,'--theme',$theme,'--size',$size,'--scale','1.25','--at','0.5')) {
+                    $start.ArgumentList.Add($arg)
+                }
+                $process = [Diagnostics.Process]::Start($start)
+                try {
+                    if (-not $process.WaitForExit(45000)) {
+                        $process.Kill($true)
+                        $process.WaitForExit()
+                        throw "Native rendering timed out for $scene/$theme/$size"
+                    }
+                    if ($process.ExitCode -ne 0) {
+                        throw "Native rendering failed for $scene/$theme/$size (exit $($process.ExitCode))"
+                    }
+                } finally {
+                    $process.Dispose()
+                }
                 if (-not (Test-Path -LiteralPath $png) -or (Get-Item -LiteralPath $png).Length -lt 1KB) {
                     throw "Native renderer did not produce a usable image: $png"
                 }
