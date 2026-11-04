@@ -6,31 +6,17 @@ import { Resvg } from '@resvg/resvg-js';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const assets = path.resolve(here, '..', '..', 'assets');
 
-// Exact target-size frames keep Windows from resampling a neighbouring bitmap at common DPI
-// scales. The mark itself is the original Conduit identity: two simple tracks moving in opposite
-// directions. It reads as bidirectional sync before it reads as any particular device type.
+// Exact-size monochrome link glyphs, generated from the same source as Rune.
+// No colored tile, orange arrows, raster logo, or image-service dependency.
 const brandSizes = [16, 20, 24, 30, 32, 36, 40, 48, 60, 64, 72, 80, 96, 256];
 const traySizes = [16, 20, 24, 32, 40, 48, 64];
 const explorerSizes = [16, 20, 24, 32, 40, 48];
-// Keep the original transparent, bidirectional mark; adopt CDS clay as its brand color.
-const clayGlyph = '#D97757';
-
-function arrowsSvg(color, strokeWidth = 2.15) {
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
-  <g fill="none" stroke="${color}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M3.5 8h17"/>
-    <path d="M16.5 4l4 4-4 4"/>
-    <path d="M20.5 16h-17"/>
-    <path d="M7.5 12l-4 4 4 4"/>
-  </g>
-</svg>`;
+const mark = fs.readFileSync(path.join(assets, 'conduit-mark.fragment.svg'), 'utf8');
+if (!mark.includes('currentColor') || /<image|<script|https?:/i.test(mark)) {
+  throw new Error('The app mark must be a self-contained themeable vector');
 }
-
-function explorerArrowsSvg(color) {
-  // Explorer's modern context menu uses light, outline system glyphs. Keep the same product mark
-  // but reduce stroke weight slightly so it sits beside Edit/Open-with rather than reading like a
-  // filled app badge. The dedicated exact-size ICO frames preserve the apparent size at high DPI.
-  return arrowsSvg(color, 1.85);
+function markSvg(color) {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">${mark.replaceAll('currentColor', color)}</svg>`;
 }
 
 function render(svg, size) {
@@ -63,18 +49,18 @@ function writeIco(file, frames) {
 fs.mkdirSync(assets, { recursive: true });
 
 function writeThemeIcon(stem, color) {
-  const svg = arrowsSvg(color);
+  const svg = markSvg(color);
   const frames = brandSizes.map((size) => ({ size, png: render(svg, size) }));
   writeIco(path.join(assets, `${stem}.ico`), frames);
   fs.writeFileSync(path.join(assets, `${stem}.png`), render(svg, 512));
 }
 
-writeThemeIcon('conduit-icon-light', clayGlyph);
-writeThemeIcon('conduit-icon-dark', clayGlyph);
-writeThemeIcon('conduit-icon', clayGlyph);
+writeThemeIcon('conduit-icon-light', '#273247');
+writeThemeIcon('conduit-icon-dark', '#E7EDF5');
+writeThemeIcon('conduit-icon', '#4169E1');
 
-const trayLightSvg = arrowsSvg(clayGlyph);
-const trayDarkSvg = arrowsSvg(clayGlyph);
+const trayLightSvg = markSvg('#273247');
+const trayDarkSvg = markSvg('#E7EDF5');
 writeIco(
   path.join(assets, 'conduit-tray-light.ico'),
   traySizes.map((size) => ({ size, png: render(trayLightSvg, size) })),
@@ -84,8 +70,8 @@ writeIco(
   traySizes.map((size) => ({ size, png: render(trayDarkSvg, size) })),
 );
 
-const explorerLightSvg = explorerArrowsSvg(clayGlyph);
-const explorerDarkSvg = explorerArrowsSvg(clayGlyph);
+const explorerLightSvg = markSvg('#273247');
+const explorerDarkSvg = markSvg('#E7EDF5');
 writeIco(
   path.join(assets, 'conduit-explorer-light.ico'),
   explorerSizes.map((size) => ({ size, png: render(explorerLightSvg, size) })),

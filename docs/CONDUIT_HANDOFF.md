@@ -36,11 +36,17 @@
   Preview uninstall registration pointed to a nonexistent directory and was removed with a
   local registry export beside the binary backup. No release or merge.
   The current request authorizes retiring Nova, not rotating the original PC/phone identity.
-- Repository policy requires explicit permission to push. Permission was requested while local
-  work continued; absent an affirmative answer, keep the revision local and PR #27 Draft.
-  Next: obtain push authorization, run new Actions, review all native screenshots, then deploy
-  CI-built desktop with data-preserving checks. Complete real dual-PC acceptance only once the
-  phone can be updated safely and the second PC is reachable.
+- User has explicitly granted full execution permission for this change, including push,
+  CI and deployment. Do not request duplicate authorization. No image-generation mockups:
+  the deliverable is working native source and installed binaries.
+- This revision replaces the orange-arrow bitmap identity with one themeable connection glyph
+  shared by Rune, Windows executable icons, system tray and Explorer. It adds actual transfer
+  filters and file-type glyphs, semantic failed/completed states and bounded error details.
+- Design reference: interface-design skill (Dammyjay93) and Linear's calmer-interface design
+  notes. No third-party artwork, wallpapers or generated mockup assets enter the product.
+- Next: push the existing branch, verify new Actions and native screenshots, then deploy only
+  CI-built binaries after preserving installed state. Phone signing and physical dual-PC QA
+  are separate unfinished acceptance items, not reasons to block the desktop UI deployment.
 
 ## Historical checkpoints below (superseded where they conflict)
 

@@ -169,15 +169,34 @@ impl Page {
     }
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum TransferFilter {
+    #[default]
+    All,
+    Active,
+    Completed,
+    Failed,
+}
+impl TransferFilter {
+    fn accepts(self, transfer: &bridge::Transfer) -> bool {
+        match self {
+            Self::All => true,
+            Self::Active => !transfer.terminal,
+            Self::Completed => transfer.state == "completed",
+            Self::Failed => transfer.state == "failed",
+        }
+    }
+}
+
 struct Ui {
     page: Page,
     snap: bridge::Snapshot,
     image_cache: Option<ImageCache>,
     wallpaper: Option<Image>,
-    brand_image: Option<Image>,
     pairing_qr: Option<Image>,
     pairing_qr_code: String,
     search: TextEdit,
+    transfer_filter: TransferFilter,
     appearance: String,
     relays: TextEdit,
     manual_proxy: TextEdit,
@@ -202,10 +221,10 @@ impl Ui {
                 Page::Overview
             },
             search: TextEdit::new(""),
+            transfer_filter: TransferFilter::All,
             appearance: bridge::theme_preference(),
             image_cache: None,
             wallpaper: None,
-            brand_image: None,
             pairing_qr: None,
             pairing_qr_code: String::new(),
             relays: TextEdit::new(snap.settings.relays.join("\n")),
@@ -448,6 +467,7 @@ struct Paint {
     subdued: Color,
     faint: Color,
     green: Color,
+    danger: Color,
     selected: Color,
 }
 
@@ -463,11 +483,12 @@ impl Paint {
                 sidebar: color("#101216"),
                 card: color("#191c21"),
                 inset: color("#14171b"),
-                line: color("#2b3038"),
+                line: color("#292d35"),
                 subdued: color("#abb3c0"),
                 faint: color("#788390"),
-                green: color("#61d8aa"),
-                selected: color("#242d3d"),
+                green: color("#66cfa9"),
+                danger: color("#f38b8b"),
+                selected: color("#202630"),
             }
         } else {
             Paint {
@@ -481,7 +502,8 @@ impl Paint {
                 line: color("#e2e5ea"),
                 subdued: color("#59697d"),
                 faint: color("#7c8a9b"),
-                green: color("#16865d"),
+                green: color("#137b55"),
+                danger: color("#c43d4b"),
                 selected: color("#eaf1ff"),
             }
         }
@@ -677,7 +699,7 @@ fn heading(label: &str, paint: Paint) -> El {
 
 fn page_title(label: &str, paint: Paint) -> El {
     text(label)
-        .font(rune::TextStyle::new(22.0, 700.0))
+        .font(rune::TextStyle::new(24.0, 650.0))
         .color(paint.t.text)
 }
 
@@ -730,8 +752,8 @@ fn nav(page: Page, selected: bool, paint: Paint) -> El {
         .child(
             text(page.name())
                 .font(rune::TextStyle::new(
-                    12.0,
-                    if selected { 620.0 } else { 470.0 },
+                    13.0,
+                    if selected { 600.0 } else { 450.0 },
                 ))
                 .color(if selected {
                     paint.t.text
@@ -742,16 +764,9 @@ fn nav(page: Page, selected: bool, paint: Paint) -> El {
 }
 
 fn sidebar(ui: &Ui, paint: Paint, compact: bool) -> El {
-    let logo = if let Some(image) = &ui.brand_image {
-        el().key("conduit-brand-icon")
-            .size(25.0, 25.0)
-            .pixels_fit(image.pixels(), SurfaceFit::Fit)
-    } else {
-        el().key("conduit-brand-icon")
-            .size(25.0, 25.0)
-            .center()
-            .child(icon(&icons::ARROWS_LEFT_RIGHT, 22.0).color(paint.accent))
-    };
+    let logo = icon(&icons::CONDUIT, 24.0)
+        .key("conduit-brand-icon")
+        .color(paint.t.text);
     let mut menu = col().key("side-navigation").w_full().gap(4.0);
     for page in [
         Page::Overview,
@@ -770,7 +785,7 @@ fn sidebar(ui: &Ui, paint: Paint, compact: bool) -> El {
     }
     col()
         .key("sidebar")
-        .w(if compact { 168.0 } else { 180.0 })
+        .w(if compact { 176.0 } else { 192.0 })
         .h_full()
         .padding(12.0)
         .gap(18.0)
@@ -820,9 +835,13 @@ fn sidebar(ui: &Ui, paint: Paint, compact: bool) -> El {
                             .color(paint.subdued),
                         )
                         .child(
-                            text("Rust / Rune")
-                                .font(rune::TextStyle::new(10.0, 450.0))
-                                .color(paint.faint),
+                            text(if ui.snap.connection.linked {
+                                "Encrypted connection"
+                            } else {
+                                "Ready when you are"
+                            })
+                            .font(rune::TextStyle::new(10.0, 450.0))
+                            .color(paint.faint),
                         ),
                 )
                 .child(
@@ -913,6 +932,8 @@ fn summary_connection(ui: &Ui, paint: Paint, compact: bool) -> El {
                             )
                             .child(
                                 text(endpoint)
+                                    .grow(1.0)
+                                    .min_w(0.0)
                                     .font(rune::TextStyle::new(11.0, 450.0))
                                     .color(paint.faint)
                                     .truncate_middle(),
@@ -964,7 +985,11 @@ fn transfer_row(transfer: &bridge::Transfer, paint: Paint) -> El {
         "From phone"
     };
     let detail = if tr.terminal {
-        format!("{}  /  {}", direction, byte_size(tr.total))
+        if tr.state == "failed" && !tr.detail.is_empty() {
+            format!("{} / {}", direction, tr.detail)
+        } else {
+            format!("{} / {}", direction, byte_size(tr.total))
+        }
     } else {
         format!(
             "{} of {}  /  {}%",
@@ -979,14 +1004,15 @@ fn transfer_row(transfer: &bridge::Transfer, paint: Paint) -> El {
         .gap(5.0)
         .child(
             text(&tr.name)
-                .font(rune::TextStyle::new(12.0, 560.0))
+                .font(rune::TextStyle::new(13.0, 560.0))
                 .color(paint.t.text)
                 .truncate_middle(),
         )
         .child(
             text(detail)
-                .font(rune::TextStyle::new(10.0, 440.0))
-                .color(paint.faint),
+                .font(rune::TextStyle::new(11.0, 440.0))
+                .color(paint.faint)
+                .truncate(),
         );
     if !tr.terminal {
         details = details.child(
@@ -1016,7 +1042,7 @@ fn transfer_row(transfer: &bridge::Transfer, paint: Paint) -> El {
         .child(
             el().size(32.0, 36.0)
                 .center()
-                .child(icon(&icons::TRANSFER, 20.0).color(paint.faint)),
+                .child(icon(file_glyph(&tr.name), 20.0).color(paint.subdued)),
         )
         .child(details);
     if !tr.terminal {
@@ -1032,19 +1058,36 @@ fn transfer_row(transfer: &bridge::Transfer, paint: Paint) -> El {
             },
         ));
     } else {
+        let status_color = match tr.state.as_str() {
+            "completed" => paint.green,
+            "failed" => paint.danger,
+            _ => paint.faint,
+        };
+        let mut status = row().center_y().gap(6.0);
+        if tr.state == "completed" || tr.state == "failed" {
+            status = status.child(
+                icon(
+                    if tr.state == "completed" {
+                        &icons::CHECK
+                    } else {
+                        &icons::CLOSE
+                    },
+                    14.0,
+                )
+                .color(status_color),
+            );
+        }
         body = body.child(
-            text(match tr.state.as_str() {
-                "completed" => "Completed",
-                "failed" => "Failed",
-                "cancelled" => "Cancelled",
-                _ => "Finished",
-            })
-            .font(rune::TextStyle::new(10.0, 530.0))
-            .color(if tr.state == "completed" {
-                paint.subdued
-            } else {
-                paint.faint
-            }),
+            status.child(
+                text(match tr.state.as_str() {
+                    "completed" => "Completed",
+                    "failed" => "Failed",
+                    "cancelled" => "Cancelled",
+                    _ => "Finished",
+                })
+                .font(rune::TextStyle::new(11.0, 530.0))
+                .color(status_color),
+            ),
         );
     }
     body
@@ -1074,6 +1117,7 @@ fn transfer_list(ui: &Ui, paint: Paint, limit: usize) -> El {
         .snap
         .transfers
         .iter()
+        .filter(|transfer| ui.page != Page::Transfers || ui.transfer_filter.accepts(transfer))
         .filter(|transfer| {
             ui.page != Page::Transfers
                 || query.is_empty()
@@ -1089,15 +1133,15 @@ fn transfer_list(ui: &Ui, paint: Paint, limit: usize) -> El {
         .collect::<Vec<_>>();
     if records.is_empty() {
         list = list.child(empty_state(
-            if query.is_empty() {
+            if query.is_empty() && ui.transfer_filter == TransferFilter::All {
                 "No transfers yet"
             } else {
                 "No matching transfers"
             },
-            if query.is_empty() {
+            if query.is_empty() && ui.transfer_filter == TransferFilter::All {
                 "Send a file or drag it into Conduit."
             } else {
-                "Try another filename or status."
+                "Choose another filter or search term."
             },
             &icons::TRANSFER,
             paint,
@@ -1143,21 +1187,41 @@ fn overview(ui: &Ui, paint: Paint) -> El {
         )
 }
 
+fn transfer_filters(ui: &Ui, paint: Paint) -> El {
+    let mut filters = row()
+        .key("transfer-filters")
+        .gap(2.0)
+        .padding(3.0)
+        .radius(8.0)
+        .fill(paint.inset);
+    for (key, label, value) in [
+        ("all", "All", TransferFilter::All),
+        ("active", "Active", TransferFilter::Active),
+        ("completed", "Completed", TransferFilter::Completed),
+        ("failed", "Failed", TransferFilter::Failed),
+    ] {
+        filters = filters.child(segment(
+            format!("filter-{key}"),
+            label,
+            ui.transfer_filter == value,
+            paint,
+            move |ui| ui.transfer_filter = value,
+        ));
+    }
+    filters
+}
+
 fn transfers(ui: &Ui, paint: Paint) -> El {
     col()
         .key("transfers")
         .w_full()
-        .gap(14.0)
+        .gap(16.0)
         .child(
             row()
                 .w_full()
                 .center_y()
                 .justify_between()
-                .child(
-                    text(format!("{} transfers", ui.snap.transfers.len()))
-                        .font(rune::TextStyle::new(12.0, 480.0))
-                        .color(paint.subdued),
-                )
+                .child(transfer_filters(ui, paint))
                 .child(action_button(
                     "send-new-file",
                     "Send file",
@@ -1167,8 +1231,24 @@ fn transfers(ui: &Ui, paint: Paint) -> El {
                     |ui| ui.open_picker(),
                 )),
         )
-        .child(el().w_full().h(1.0).fill(paint.line))
+        .child(el().w_full().h(1.0).fill(paint.line.alpha(0.65)))
         .child(transfer_list(ui, paint, usize::MAX))
+}
+
+fn file_glyph(name: &str) -> &'static Icon {
+    match name
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" | "jpg" | "jpeg" | "webp" | "gif" | "heic" => &icons::FILE_IMAGE,
+        "zip" | "7z" | "rar" | "tar" | "gz" => &icons::FILE_ARCHIVE,
+        "mp4" | "mkv" | "mov" | "webm" => &icons::FILE_VIDEO,
+        "mp3" | "wav" | "flac" | "m4a" | "ogg" => &icons::FILE_AUDIO,
+        _ => &icons::FILE_TEXT,
+    }
 }
 
 fn notifications(ui: &Ui, paint: Paint) -> El {
@@ -1886,7 +1966,7 @@ fn about(ui: &Ui, paint: Paint) -> El {
                             .radius(13.0)
                             .fill(paint.selected)
                             .center()
-                            .child(icon(&icons::ARROWS_LEFT_RIGHT, 27.0).color(paint.accent)),
+                            .child(icon(&icons::CONDUIT, 27.0).color(paint.accent)),
                     )
                     .child(
                         col()
@@ -2151,6 +2231,9 @@ fn qa_overview(ui: &mut Ui) {
     connected_scene(ui);
     ui.snap.connection.device = "Android phone".into();
     ui.snap.daemon_available = true;
+    ui.snap.transfers[0].name = "Vacation photos.zip".into();
+    ui.snap.transfers[0].bytes = 45 * 1024 * 1024;
+    ui.snap.transfers[0].total = 64 * 1024 * 1024;
     ui.snap.transfers.extend([
         bridge::Transfer {
             id: "finished-report".into(),
@@ -2183,6 +2266,16 @@ fn qa_overview(ui: &mut Ui) {
             ..Default::default()
         },
     ]);
+    ui.snap.transfers.push(bridge::Transfer {
+        id: "failed-video".into(),
+        name: "Video.mp4".into(),
+        direction: "inbound".into(),
+        bytes: 1024,
+        total: 4 * 1024 * 1024,
+        state: "failed".into(),
+        detail: "Connection lost".into(),
+        terminal: true,
+    });
     ui.snap.notifications = vec![bridge::Notification {
         id: "qa-notification".into(),
         app: "Messages".into(),
@@ -2299,11 +2392,6 @@ fn setup_watcher(handle: AppHandle<Ui>) {
 
 fn initialize_images(ui: &mut Ui, wake: Waker) {
     let cache = ImageCache::new(wake);
-    // Render the actual Conduit app mark, not a placeholder character or an
-    // icon-font codepoint. The PNG ships in the repository and needs no I/O.
-    ui.brand_image = Some(
-        cache.load(include_bytes!("../../conduit-daemon/assets/conduit-icon-dark.png").to_vec()),
-    );
     ui.image_cache = Some(cache);
     ui.refresh_wallpaper();
     ui.refresh_pairing_qr();
@@ -2598,5 +2686,38 @@ mod tests {
             );
         }
         assert!(rt.find("forget-pair").is_none());
+    }
+    #[test]
+    fn native_transfer_filters_are_interactive_and_combine_with_search() {
+        let mut ui = Ui::init();
+        qa_transfers(&mut ui);
+        let mut rt = Runtime::new(ui, view, (1020.0, 605.0), Env::new(true, 1.0));
+        rt.frame(0.0);
+        let (x, y) = rt.find("filter-failed").expect("real failed filter");
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.1);
+        assert!(rt.find("transfer-failed-video").is_some());
+        assert!(rt.find("transfer-finished-report").is_none());
+        rt.state.search.replace_text("Video");
+        rt.frame(0.2);
+        assert!(rt.find("transfer-failed-video").is_some());
+        rt.state.search.replace_text("nonexistent");
+        rt.frame(0.3);
+        assert!(rt.find("transfer-failed-video").is_none());
+    }
+
+    #[test]
+    fn cancelled_transfers_are_not_mislabelled_as_failed() {
+        let t = bridge::Transfer {
+            state: "cancelled".into(),
+            terminal: true,
+            ..Default::default()
+        };
+        assert!(TransferFilter::All.accepts(&t));
+        assert!(!TransferFilter::Failed.accepts(&t));
+        assert!(!TransferFilter::Active.accepts(&t));
+        assert_eq!(file_glyph("PHOTO.JPG").name, icons::FILE_IMAGE.name);
+        assert_eq!(file_glyph("song.mp3").name, icons::FILE_AUDIO.name);
     }
 }
