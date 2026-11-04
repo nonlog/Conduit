@@ -2699,10 +2699,16 @@ mod tests {
         rt.frame(0.1);
         assert!(rt.find("transfer-failed-video").is_some());
         assert!(rt.find("transfer-finished-report").is_none());
-        rt.state.search.replace_text("Video");
+        rt.update(|ui, tx| {
+            ui.search.replace_text("Video");
+            tx.instant();
+        });
         rt.frame(0.2);
         assert!(rt.find("transfer-failed-video").is_some());
-        rt.state.search.replace_text("nonexistent");
+        rt.update(|ui, tx| {
+            ui.search.replace_text("nonexistent");
+            tx.instant();
+        });
         rt.frame(0.3);
         assert!(rt.find("transfer-failed-video").is_none());
     }

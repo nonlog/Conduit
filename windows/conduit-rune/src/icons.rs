@@ -62,39 +62,14 @@ lucide!(
     r#"<rect x="5" y="2" width="14" height="20" rx="2" fill="none" stroke="currentColor" stroke-width="1.75"/><path d="M11 18h2" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>"#
 );
 lucide!(
-    ACTIVITY,
-    "lucide-chart-no-axes-column",
-    r#"<path d="M4 20v-7M10 20V4M16 20v-11M22 20v-5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>"#
-);
-lucide!(
     SEND,
     "lucide-send",
     r#"<path d="m22 2-7 20-4-9-9-4 20-7ZM22 2 11 13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>"#
 );
 lucide!(
-    CHEVRON_RIGHT,
-    "lucide-chevron-right",
-    r#"<path d="m9 18 6-6-6-6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>"#
-);
-lucide!(
     ARROW_UP_RIGHT,
     "lucide-arrow-up-right",
     r#"<path d="M7 17 17 7M7 7h10v10" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>"#
-);
-lucide!(
-    SHIELD_CHECK,
-    "lucide-shield-check",
-    r#"<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/><path d="m9 12 2 2 4-4" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>"#
-);
-lucide!(
-    ARROWS_LEFT_RIGHT,
-    "lucide-arrow-left-right",
-    r#"<path d="M8 3 4 7l4 4M4 7h16M16 21l4-4-4-4M20 17H4" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>"#
-);
-lucide!(
-    CIRCLE,
-    "lucide-circle",
-    r#"<circle cx="12" cy="12" r="7" fill="currentColor"/>"#
 );
 lucide!(
     CHECK,
