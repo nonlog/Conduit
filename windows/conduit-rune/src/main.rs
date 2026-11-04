@@ -1666,6 +1666,10 @@ fn pairing(ui: &Ui, paint: Paint) -> El {
                 },
             ));
     }
+    content = content.child(muted(
+        "Each computer needs its own device identity. Do not copy identity.bin between PCs.",
+        paint,
+    ));
     card("pairing", paint, content)
 }
 

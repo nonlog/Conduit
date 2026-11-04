@@ -83,6 +83,17 @@ class PairedDesktopsTest {
     }
 
     @Test
+    fun directShareTargetsAreExactAndNeverFallBackToAnotherComputer() {
+        val peers = listOf(PairedDesktop(home, "Home"), PairedDesktop(work, "Work"))
+        assertEquals(home, PairedDesktops.targetFromShortcut(peers, "desktop-" + home.take(20)))
+        assertEquals(work, PairedDesktops.targetFromShortcut(peers, "desktop-" + work.take(20)))
+        assertEquals(null, PairedDesktops.targetFromShortcut(peers, "desktop-"))
+        assertEquals(null, PairedDesktops.targetFromShortcut(peers, "desktop-" + "z".repeat(20)))
+        assertEquals(null, PairedDesktops.targetFromShortcut(peers, "desktop"))
+        assertEquals(null, PairedDesktops.targetFromShortcut(peers, null))
+    }
+
+    @Test
     fun peerRegistryIsBoundedAndDoesNotEvictTrustSilently() = withDir { dir ->
         for (i in 0 until PairedDesktops.MAX_PEERS) {
             PairedDesktops.remember(dir, ('A' + i).toString().repeat(ID_LEN))

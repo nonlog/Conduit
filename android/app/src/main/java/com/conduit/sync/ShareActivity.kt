@@ -80,12 +80,16 @@ class ShareActivity : Activity() {
             ?: intent.getStringExtra(Intent.EXTRA_SUBJECT)?.trim()?.takeIf(String::isNotEmpty)
         val trusted = PairedDesktops.list(filesDir)
         val shortcut = intent.getStringExtra("android.intent.extra.shortcut.ID")
-        val fromShortcut = shortcut?.removePrefix("desktop-")
-            ?.takeIf { shortcut.startsWith("desktop-") && it.length == 20 }
-            ?.let { prefix -> trusted.singleOrNull { it.id.startsWith(prefix) }?.id }
-        val target = fromShortcut ?: intent.getStringExtra(EXTRA_PEER_ID)
-            ?.takeIf { id -> trusted.any { it.id == id } }
-            ?: PairedDesktops.selected(filesDir)
+        val fromShortcut = PairedDesktops.targetFromShortcut(trusted, shortcut)
+        val explicit = intent.getStringExtra(EXTRA_PEER_ID)
+        if (shortcut != null && fromShortcut == null ||
+            explicit != null && trusted.none { it.id == explicit }
+        ) {
+            toast("This computer is no longer trusted; select a paired target")
+            finish()
+            return
+        }
+        val target = fromShortcut ?: explicit ?: PairedDesktops.selected(filesDir)
         val device = trusted.firstOrNull { it.id == target }
         val peer = device?.name?.ifBlank { "the desktop" } ?: "the desktop"
 

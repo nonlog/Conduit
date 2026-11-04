@@ -250,13 +250,36 @@ async fn main() -> Result<()> {
             std::fs::create_dir_all(&dir)?;
             let action = args
                 .next()
-                .context("usage: conduit-daemon pair <status|start|cancel|forget>")?;
-            if args.next().is_some() {
-                bail!("usage: conduit-daemon pair <status|start|cancel|forget>");
+                .context("usage: conduit-daemon pair <status|start|cancel|forget|rekey-imported --confirm>")?;
+            let confirmation = args.next();
+            if action == "rekey-imported" {
+                if confirmation.as_deref() != Some(std::ffi::OsStr::new("--confirm"))
+                    || args.next().is_some()
+                {
+                    bail!("The cloned installation must be re-keyed explicitly: pair rekey-imported --confirm");
+                }
+                // No live daemon can use the old key while it is being replaced.
+                // Keep the port reserved until the new identity is on disk.
+                let _offline_guard = std::net::TcpListener::bind(("0.0.0.0", PORT))
+                    .context("stop Conduit on THIS computer before repairing its imported identity")?;
+                let repaired = pairing::repair_cloned_identity(&dir)?;
+                println!("New desktop id: {}", repaired.new_device_id);
+                println!("New fingerprint: {}", repaired.new_fingerprint);
+                println!("Original identity and pairing backed up in {}", repaired.backup_dir.display());
+                println!("Restart Conduit and pair the phone to this computer again.");
+                return Ok(());
+            }
+            if confirmation.is_some() {
+                bail!("usage: conduit-daemon pair <status|start|cancel|forget|rekey-imported --confirm>");
             }
             match action.to_string_lossy().as_ref() {
                 "status" => {
                     let state = pairing::state(&dir);
+                    // Print only the PUBLIC device id so cloned installations can be
+                    // compared safely. No private key material leaves identity.bin.
+                    let own = wire::load_or_create_identity(&dir.join("identity.bin"))?;
+                    println!("desktop_id={}", wire::device_id(&own.public));
+                    println!("desktop_fingerprint={}", wire::fingerprint(&own.public));
                     println!("paired={}", state.device_id.is_some());
                     println!("pairing={}", state.pairing);
                     println!("peer_id={}", state.device_id.as_deref().unwrap_or(""));

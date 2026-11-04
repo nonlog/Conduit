@@ -61,7 +61,7 @@ mod tests {
     fn png_is_offline_valid_and_contains_a_quiet_zone() {
         let bytes = png_for_code("123456").unwrap();
         assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
-        let decoder = png::Decoder::new(&bytes[..]);
+        let decoder = png::Decoder::new(std::io::Cursor::new(bytes.as_slice()));
         let mut reader = decoder.read_info().unwrap();
         let mut buffer = vec![0u8; reader.output_buffer_size().unwrap()];
         let info = reader.next_frame(&mut buffer).unwrap();

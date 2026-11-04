@@ -44,6 +44,40 @@ pre-release. The daemon protocol, persisted pairing, transfer history and
 Share Target remain unchanged. Notification app-icon parity, advanced transfer
 presentation and real-device long-run checks remain quality improvements.
 
+## Multiple computers and migrated identities
+
+One Android phone can trust several independent desktop Noise identities and maintain
+simultaneous authenticated LAN/Relay sessions. On the phone, **Settings → Devices**
+lists connection status for each PC, lets you select an explicit file/Direct Share
+destination, and forgets only that PC. On Rune's **Pairing** page, click
+**Start pairing** to show a locally generated QR code and the equivalent
+six-digit code. Both expire after two minutes; use the Android **Scan QR**
+action, or enter the digits manually. Existing pairings are never replaced
+by adding another PC.
+
+**Important when setting up a second PC:** do not copy the first PC's
+`identity.bin` to it. Copying the entire Scoop `persist/conduit/data`
+directory clones the private Noise identity, making both PCs appear as the
+**same computer** and preventing real multi-device pairing. If a copy has
+already happened, run `conduit-daemon.exe pair status` separately on both
+PCs and compare their public `desktop_id` values. If they match, **only
+on the second/work computer**:
+
+1. Exit the Conduit daemon on the copied computer. Make sure no transfers
+   are in progress.
+2. Run `conduit-daemon.exe pair rekey-imported --confirm` from its installed
+   Scoop directory. This requires the daemon to be stopped, creates a
+   timestamped local backup of the old identity and pairing files, generates
+   a unique device key, and removes that copied installation's old pairing.
+   Your transfer history and configuration remain intact.
+3. Restart the work computer's Conduit and pair again by QR or code on the
+   Android app. **Do not run this repair on the original personal PC.**
+
+The backup contains sensitive private key material; keep it only locally
+under the original Windows account, never upload it, and delete it only
+after confirming the new connection works. This repair is never invoked
+silently during an update.
+
 ## Testing
 
 The **Rune desktop preview** workflow produces an isolated ZIP with

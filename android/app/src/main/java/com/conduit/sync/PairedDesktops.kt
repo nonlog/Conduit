@@ -34,6 +34,15 @@ object PairedDesktops {
     private fun readOne(path: File): String? =
         runCatching { path.readText().trim() }.getOrNull()?.takeIf { it.isNotEmpty() }
 
+    /** Android Direct Share supplies the published shortcut id, not the full Noise id.
+     * A stale or ambiguous shortcut is never allowed to silently use another computer. */
+    fun targetFromShortcut(peers: List<PairedDesktop>, shortcutId: String?): String? {
+        val prefix = shortcutId?.takeIf { it.startsWith("desktop-") }
+            ?.removePrefix("desktop-") ?: return null
+        if (prefix.length != 20 || !prefix.all { it.isLetterOrDigit() || it == '-' || it == '_' }) return null
+        return peers.singleOrNull { it.id.startsWith(prefix) }?.id
+    }
+
     @Synchronized
     fun list(dir: File): List<PairedDesktop> {
         val registry = File(dir, REGISTRY)
