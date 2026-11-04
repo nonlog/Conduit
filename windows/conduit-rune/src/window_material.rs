@@ -219,7 +219,10 @@ mod native {
                 cyTopHeight: margin,
                 cyBottomHeight: margin,
             };
-            if DwmExtendFrameIntoClientArea(hwnd, &margins) < 0 {
+            // Changing a native backdrop/frame can invalidate the backing even
+            // without a resize. Clear once after that change as well; callers
+            // already request the matching Rune frame on activation/settings.
+            if DwmExtendFrameIntoClientArea(hwnd, &margins) < 0 || !clear_backing(hwnd) {
                 let none = 1i32;
                 let _ = DwmSetWindowAttribute(
                     hwnd,
