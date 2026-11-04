@@ -11,8 +11,8 @@ pub fn pairing_url(code: &str) -> Result<String, String> {
 
 pub fn png_for_code(code: &str) -> Result<Vec<u8>, String> {
     let url = pairing_url(code)?;
-    let qr = QrCode::encode_text(&url, QrCodeEcc::Medium)
-        .map_err(|_| "QR payload cannot be encoded")?;
+    let qr =
+        QrCode::encode_text(&url, QrCodeEcc::Medium).map_err(|_| "QR payload cannot be encoded")?;
     let modules = qr.size() as usize;
     const QUIET: usize = 4;
     const SCALE: usize = 6;
@@ -25,8 +25,8 @@ pub fn png_for_code(code: &str) -> Result<Vec<u8>, String> {
             }
             for py in 0..SCALE {
                 for px in 0..SCALE {
-                    let offset = (((y + QUIET) * SCALE + py) * width
-                        + (x + QUIET) * SCALE + px) * 3;
+                    let offset =
+                        (((y + QUIET) * SCALE + py) * width + (x + QUIET) * SCALE + px) * 3;
                     pixels[offset..offset + 3].fill(0);
                 }
             }
@@ -38,7 +38,9 @@ pub fn png_for_code(code: &str) -> Result<Vec<u8>, String> {
         encoder.set_color(png::ColorType::Rgb);
         encoder.set_depth(png::BitDepth::Eight);
         let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
-        writer.write_image_data(&pixels).map_err(|e| e.to_string())?;
+        writer
+            .write_image_data(&pixels)
+            .map_err(|e| e.to_string())?;
     }
     Ok(png_bytes)
 }

@@ -267,7 +267,9 @@ impl Ui {
             None
         } else {
             self.image_cache.as_ref().and_then(|cache| {
-                pairing_qr::png_for_code(&code).ok().map(|bytes| cache.load(bytes))
+                pairing_qr::png_for_code(&code)
+                    .ok()
+                    .map(|bytes| cache.load(bytes))
             })
         };
     }
@@ -1612,16 +1614,12 @@ fn pairing(ui: &Ui, paint: Paint) -> El {
         ));
         if let Some(image) = &ui.pairing_qr {
             content = content.child(
-                row()
-                    .w_full()
-                    .center()
-                    .child(
-                        el()
-                            .key("pairing-qr")
-                            .size(260.0, 260.0)
-                            .radius(12.0)
-                            .pixels_fit(image.pixels(), SurfaceFit::Fit),
-                    ),
+                row().w_full().center().child(
+                    el().key("pairing-qr")
+                        .size(260.0, 260.0)
+                        .radius(12.0)
+                        .pixels_fit(image.pixels(), SurfaceFit::Fit),
+                ),
             );
         }
         content = content

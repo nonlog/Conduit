@@ -208,7 +208,7 @@ internal class CompanionLinks(
             openIncomingFile = { offer -> Files.Incoming.begin(context.contentResolver, offer) },
         ) }
 
-        val discovery by lazy { Discovery(context,
+        val discovery: Discovery by lazy { Discovery(context,
             onFound = { address ->
                 val network = discovery.resolvedNetwork
                 main.post {
