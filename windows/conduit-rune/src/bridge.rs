@@ -713,44 +713,6 @@ pub fn open_folder(kind: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-pub fn open_legacy_ui() -> Result<(), String> {
-    let path = env::current_exe()
-        .map_err(|e| e.to_string())?
-        .with_file_name("Conduit.exe");
-    if !path.is_file() {
-        return Err("The original Windows Share Target host is not installed".into());
-    }
-    let mut command = Command::new(path);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000);
-    }
-    command
-        .arg("--legacy-ui")
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| e.to_string())
-}
-
-pub fn open_nova_ui() -> Result<(), String> {
-    // The production package intentionally retains Nova as a runnable
-    // rollback, even if the Rune framework encounters a platform regression.
-    let path = env::current_exe()
-        .map_err(|e| e.to_string())?
-        .with_file_name("conduit-nova.exe");
-    if !path.is_file() {
-        return Err("Conduit Nova is not installed alongside Rune".into());
-    }
-    let mut command = Command::new(path);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000);
-    }
-    command.spawn().map(|_| ()).map_err(|e| e.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

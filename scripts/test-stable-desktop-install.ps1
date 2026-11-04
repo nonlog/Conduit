@@ -33,6 +33,9 @@ try {
     [IO.File]::WriteAllBytes($identity, [byte[]](9, 8, 7, 6, 5, 4, 3, 2))
     $before = (Get-FileHash -LiteralPath $identity -Algorithm SHA256).Hash
 
+    # Simulate an in-place upgrade over the retired frontend.
+    $retired = Join-Path $install 'conduit-nova.exe'
+    [IO.File]::WriteAllText($retired, 'retired frontend fixture')
     $installAttempted = $true
     $results = @(& (Join-Path $install 'tools/install-windows.ps1') -SourceDir $install -InstallDir $install -NoStart)
     $result = $results | Where-Object { $_ -is [pscustomobject] } | Select-Object -Last 1
@@ -45,6 +48,8 @@ try {
         throw 'Stable installer modified persisted pairing identity'
     }
 
+    if (Test-Path -LiteralPath $retired) { throw 'In-place upgrade kept the retired Nova executable' }
+
     $shortcutPath = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Microsoft\Windows\Start Menu\Programs\Conduit.lnk'
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut($shortcutPath)
@@ -55,7 +60,7 @@ try {
     if ($shareVersion -ne '0.1.15.0') {
         throw "Share Target sparse MSIX registration not upgraded: $shareVersion"
     }
-    Write-Output 'STABLE_INSTALL_SMOKE_PASSED: Rune shortcut, Nova fallback, Share Target registration, identity preservation, daemon not started'
+    Write-Output 'STABLE_INSTALL_SMOKE_PASSED: Rune shortcut, retired frontend removed, Share Target registration, identity preservation, daemon not started'
 }
 finally {
     try {

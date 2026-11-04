@@ -164,6 +164,10 @@ jobs:
             Copy-Item "windows/conduit-daemon/assets/$name" "windows/conduit-ui/Assets/$name" -Force
           }
 
+      - name: Verify native-only desktop sources
+        shell: pwsh
+        run: ./scripts/test-native-only-desktop.ps1
+
       - name: Check Rust formatting
         shell: pwsh
         run: cargo fmt --check
@@ -197,61 +201,16 @@ jobs:
             throw 'Conduit Rune must be a Windows GUI process (no console window)'
           }
 
-      - name: Set up Bun for stable Nova desktop
-        uses: oven-sh/setup-bun@v2
-
-      - name: Check Nova desktop and native bridge
-        working-directory: windows/conduit-tauri
-        shell: pwsh
-        run: |
-          bun install --frozen-lockfile
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          bun run check
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          bun run lint
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          bun test
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          bun run smoke
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Stage original daemon and icons for Nova
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $resources = 'windows/conduit-tauri/src-tauri/resources'
-          foreach ($name in @('conduit-daemon.exe', 'conduit-send.exe')) {
-            Copy-Item -LiteralPath (Join-Path 'target/release' $name) -Destination (Join-Path $resources $name)
-          }
-          foreach ($name in @('conduit-explorer-light.ico', 'conduit-explorer-dark.ico', 'conduit-icon-light.ico', 'conduit-icon-dark.ico')) {
-            Copy-Item -LiteralPath (Join-Path 'windows/conduit-daemon/assets' $name) -Destination (Join-Path $resources $name)
-          }
-
-      - name: Verify and build stable Tauri Nova GUI
-        working-directory: windows/conduit-tauri
-        shell: pwsh
-        run: |
-          cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test --manifest-path src-tauri/Cargo.toml --locked
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          bun run tauri build --ci --config src-tauri/tauri.production.conf.json --no-bundle
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $binary = 'src-tauri/target/release/conduit-tauri-preview.exe'
-          if (-not (Test-Path -LiteralPath $binary -PathType Leaf) -or (Get-Item $binary).Length -lt 1MB) {
-            throw 'Stable Nova GUI executable was not built'
-          }
-
       - name: Verify desktop transfer layout does not pin completed history
         shell: pwsh
         run: ./tools/test-desktop-transfer-layout.ps1
 
-      - name: Restore Uno / WinUI desktop
+      - name: Restore Windows Share Target compatibility host
         working-directory: windows/conduit-ui
         shell: pwsh
         run: dotnet restore Conduit.csproj -r win-x64 -p:Configuration=Release -p:PublishReadyToRun=true
 
-      - name: Publish Uno / WinUI desktop
+      - name: Publish Windows Share Target compatibility host
         working-directory: windows/conduit-ui
         shell: pwsh
         run: >-
@@ -281,11 +240,10 @@ jobs:
           -RustReleaseDir ./target/release
           -ShareTargetPackage ./artifacts/Conduit.ShareTarget.msix
           -ShareTargetCertificate ./artifacts/Conduit.ShareTarget.cer
-          -NovaExecutable ./windows/conduit-tauri/src-tauri/target/release/conduit-tauri-preview.exe
           -RuneExecutable ./windows/conduit-rune/target/release/conduit-rune-preview.exe
           -OutputZip ./artifacts/Conduit-windows-x64.zip
 
-      - name: Verify Rune default desktop, Nova fallback and Share Target
+      - name: Verify native Rune desktop and Share Target
         shell: pwsh
         run: ./scripts/test-stable-desktop-package.ps1 -PackageZip ./artifacts/Conduit-windows-x64.zip
 

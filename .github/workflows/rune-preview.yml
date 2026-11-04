@@ -1,10 +1,11 @@
-name: Rune desktop preview
+name: Rune native desktop
 
 on:
   pull_request:
     paths:
       - "windows/conduit-rune/**"
       - ".github/workflows/rune-preview.yml"
+      - "scripts/snapshot-rune-desktop.ps1"
   workflow_dispatch:
 
 permissions:
@@ -61,6 +62,19 @@ jobs:
             throw "Windows GUI subsystem must be 2, got $subsystem"
           }
           Write-Output 'Rune executable is a native GUI process (PE subsystem 2).'
+
+      - name: Render native desktop acceptance scenes
+        shell: pwsh
+        timeout-minutes: 10
+        run: ./scripts/snapshot-rune-desktop.ps1 -Executable windows/conduit-rune/target/release/conduit-rune-preview.exe -OutputDir artifacts/rune-visual
+
+      - name: Upload native visual acceptance images
+        uses: actions/upload-artifact@v7
+        with:
+          name: conduit-rune-native-visual
+          path: artifacts/rune-visual/*.png
+          retention-days: 3
+          if-no-files-found: error
 
       - name: Package independent Rune preview
         shell: pwsh

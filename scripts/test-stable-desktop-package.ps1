@@ -9,7 +9,6 @@ $zipPath = (Resolve-Path -LiteralPath $PackageZip).Path
 $root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $expected = @(
     'conduit-rune.exe',
-    'conduit-nova.exe',
     'Conduit.exe', 'Conduit.dll', 'Conduit.pri', 'resources.pri',
     'conduit-daemon.exe', 'conduit-send.exe',
     'Conduit.ShareTarget.msix', 'Conduit.ShareTarget.cer',
@@ -28,11 +27,14 @@ try {
         if (@($entries | Where-Object { $_ -match '(^|/)data/(identity\.bin|peer\.txt|transfers\.tsv|config\.txt)$' }).Count -gt 0) {
             throw 'Package must never contain a persisted device identity or history'
         }
+        if (@($entries | Where-Object { $_ -match '(^|/)(conduit-nova|conduit-tauri-preview)\.exe$' }).Count -gt 0) {
+            throw 'Retired Nova/Tauri frontend must not be packaged'
+        }
         [IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $stage)
     }
     finally { $zip.Dispose() }
 
-    foreach ($name in @('conduit-rune.exe', 'conduit-nova.exe', 'Conduit.exe', 'conduit-daemon.exe')) {
+    foreach ($name in @('conduit-rune.exe', 'Conduit.exe', 'conduit-daemon.exe')) {
         $path = Join-Path $stage $name
         $item = Get-Item -LiteralPath $path
         $minSize = if ($name -eq 'Conduit.exe') { 64KB } else { 1MB }
@@ -52,7 +54,7 @@ try {
     }
 
     # Keep the sparse MSIX identity on WinUI while Rune owns the standard
-    # desktop and Nova remains a fully packaged fallback.
+    # native desktop remains the only ordinary control surface.
     $shareZip = [IO.Compression.ZipFile]::OpenRead((Join-Path $stage 'Conduit.ShareTarget.msix'))
     try {
         $entry = $shareZip.GetEntry('AppxManifest.xml')
@@ -70,21 +72,17 @@ try {
     }
     finally { $shareZip.Dispose() }
 
-    $production = Get-Content (Join-Path $root 'windows/conduit-tauri/src-tauri/tauri.production.conf.json') -Raw | ConvertFrom-Json
-    if ($production.app.windows[0].title -ne 'Conduit' -or $production.identifier -ne 'com.nonlog.conduit.desktop') {
-        throw 'Production Nova GUI must not share the Preview identity or title'
-    }
     $installer = Get-Content (Join-Path $stage 'tools/install-windows.ps1') -Raw
-    if ($installer -notmatch 'conduit-rune\.exe' -or $installer -notmatch 'conduit-nova\.exe' -or
+    if ($installer -notmatch 'conduit-rune\.exe' -or
         $installer -notmatch 'Conduit\.exe' -or
         $installer -notmatch 'ConduitShortcut' -or $installer -notmatch 'ShareTargetRegistered') {
-        throw 'Stable installer must prefer Rune and retain Nova and WinUI fallbacks'
+        throw 'Stable installer must select Rune and preserve the Windows Share Target host'
     }
 
     [pscustomobject]@{
         Result = 'passed'
         DefaultDesktop = 'conduit-rune.exe'
-        Fallback = 'conduit-nova.exe'
+        WebViewFrontend = $false
         ShareTarget = 'Conduit.exe (WinUI compatibility host)'
         Entries = $entries.Count
         ZipSha256 = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()

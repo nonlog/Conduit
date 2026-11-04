@@ -1,6 +1,50 @@
 # Conduit handoff
 
-## Transfer/LAN reliability repair in progress
+## Current checkpoint: native-only desktop revision
+
+- Continue the existing `codex/conduit-multipeer-20261104` branch and PR #27.
+  Base implementation is `7df8535`; do not reopen an old worktree or create another feature branch.
+- Latest user requirement supersedes the old fallback plan: retire Nova/Tauri, develop the
+  desktop in Rust/Rune, and replace the oversized dashboard layout. The connected ADB path is
+  Wi-Fi, not USB; do not switch Wi-Fi/cellular during remote control.
+- Current source removes the Nova frontend, its independent workflow and Bun/Tauri build steps;
+  native launchers and Explorer now select Rune only. The WinUI executable is retained only for
+  native Windows Share Target compatibility and redirects ordinary launches to Rune.
+- Install preflight requires the native executable before changing a running installation.
+  In-place upgrades remove only the exact retired executable names, never data or pairing files.
+- Rune now uses a compact device strip, a single page heading, smaller neutral navigation and
+  readable transfer rows; dashboard statistics and alternative desktop buttons are removed.
+  Active QR and manual code now sit side by side, with Cancel visible in the minimum window.
+  Transfer cancellation is independent of the long-running send operation's busy flag.
+- Added native-source and stale-upgrade regression gates. Added deterministic headless scenes
+  and a GitHub Actions-only 28-image visual acceptance matrix (7 scenes, 2 themes, 2 sizes).
+- Local rustfmt, changed PowerShell syntax, native-only source contracts and version consistency
+  checks passed. New layout, small-window QR and byte-size unit tests are added but not yet run.
+  These are NOT compilation, unit-test execution, UI rendering or physical acceptance.
+- The existing parent `7df8535` has green Actions: Build `41821414907`, Android Expressive
+  `41821414917`, Rune preview `41821414936`. Those runs DO NOT verify this new desktop revision.
+  Parent dual-peer instrumentation checks independent Noise text and authenticated revoke;
+  it does not prove two physical computers or targeted real-file transfers.
+- The phone is reachable and still runs 0.1.12. Its installed APK signer differs from the local
+  default debug keystore. Do not uninstall, clear data, replace an identity or bypass signature
+  verification to force an update. Durable signing and a tested preservation/migration path
+  remain Issue #23. The installed Windows runtime is still 0.1.15 until CI-built replacement.
+- The installed Scoop `conduit-nova.exe` was removed after a verified local binary backup
+  in `D:\Workspace\Artifacts\Conduit\retired-nova`. The daemon PID stayed unchanged;
+  identity, peer and config hashes were verified unchanged. The Rune binary is still the
+  old 0.1.15 UI; no new desktop or Android build has been installed. The stale Conduit
+  Preview uninstall registration pointed to a nonexistent directory and was removed with a
+  local registry export beside the binary backup. No release or merge.
+  The current request authorizes retiring Nova, not rotating the original PC/phone identity.
+- Repository policy requires explicit permission to push. Permission was requested while local
+  work continued; absent an affirmative answer, keep the revision local and PR #27 Draft.
+  Next: obtain push authorization, run new Actions, review all native screenshots, then deploy
+  CI-built desktop with data-preserving checks. Complete real dual-PC acceptance only once the
+  phone can be updated safely and the second PC is reachable.
+
+## Historical checkpoints below (superseded where they conflict)
+
+## Historical transfer/LAN reliability repair
 
 Continue `codex/transfer-lan-reliability` in the Conduit-reliability worktree,
 based on released master f2528aa (v0.1.6). Preserve the latest WinUI/Mica layout

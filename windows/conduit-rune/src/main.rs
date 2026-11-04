@@ -167,18 +167,6 @@ impl Page {
             Page::About => &icons::INFO,
         }
     }
-
-    fn subtitle(self) -> &'static str {
-        match self {
-            Page::Overview => "Your device, activity, and recent transfers.",
-            Page::Transfers => "Send files securely and manage transfer progress.",
-            Page::Notifications => "Updates forwarded from your connected phone.",
-            Page::Links => "Links shared between your devices.",
-            Page::Pairing => "Manage your encrypted phone connection.",
-            Page::Settings => "Connection, appearance, and Windows integration.",
-            Page::About => "Conduit version and system information.",
-        }
-    }
 }
 
 struct Ui {
@@ -373,6 +361,24 @@ impl Ui {
         });
     }
 
+    fn cancel_transfer(&mut self, id: String) {
+        self.notice = Some("Cancelling transfer...".into());
+        let handle = HANDLE.get().cloned();
+        std::thread::spawn(move || {
+            let result = bridge::cancel_transfer(&id);
+            let next = bridge::snapshot();
+            if let Some(handle) = handle {
+                handle.update(move |ui, _| {
+                    ui.sync(next);
+                    ui.notice = Some(match result {
+                        Ok(()) => "Transfer cancellation requested".into(),
+                        Err(error) => error,
+                    });
+                });
+            }
+        });
+    }
+
     fn pick_receive_dir(&mut self) {
         if self.busy {
             return;
@@ -442,7 +448,6 @@ struct Paint {
     subdued: Color,
     faint: Color,
     green: Color,
-    purple: Color,
     selected: Color,
 }
 
@@ -454,31 +459,29 @@ impl Paint {
                 t: tok::theme(true),
                 accent: color("#6b9eff"),
                 primary_fill: color("#2d68d7"),
-                surface: color("#10151d"),
-                sidebar: color("#10151d"),
-                card: color("#19212b"),
-                inset: color("#121923"),
-                line: color("#2a3542"),
-                subdued: color("#a4b1c0"),
-                faint: color("#79899b"),
+                surface: color("#101216"),
+                sidebar: color("#101216"),
+                card: color("#191c21"),
+                inset: color("#14171b"),
+                line: color("#2b3038"),
+                subdued: color("#abb3c0"),
+                faint: color("#788390"),
                 green: color("#61d8aa"),
-                purple: color("#a4b1c0"),
-                selected: color("#1c2a3b"),
+                selected: color("#242d3d"),
             }
         } else {
             Paint {
                 t: tok::theme(false),
                 accent: color("#266de4"),
                 primary_fill: color("#266de4"),
-                surface: color("#f5f7fa"),
+                surface: color("#f7f8fa"),
                 sidebar: color("#ffffff"),
                 card: color("#ffffff"),
-                inset: color("#f3f6fa"),
-                line: color("#e0e6ee"),
+                inset: color("#f1f3f6"),
+                line: color("#e2e5ea"),
                 subdued: color("#59697d"),
                 faint: color("#7c8a9b"),
                 green: color("#16865d"),
-                purple: color("#59697d"),
                 selected: color("#eaf1ff"),
             }
         }
@@ -508,9 +511,9 @@ fn action_button(
         .key(key.into())
         .role("button")
         .label(title.clone())
-        .h(40.0)
-        .px(16.0)
-        .gap(9.0)
+        .h(36.0)
+        .px(13.0)
+        .gap(8.0)
         .center()
         .radius(9.0)
         .continuous_corners()
@@ -534,11 +537,11 @@ fn action_button(
             paint.t.text
         }));
     }
-    content.child(text(title).font(type_::LABEL).color(if primary {
-        Color::WHITE
-    } else {
-        paint.t.text
-    }))
+    content.child(
+        text(title)
+            .font(rune::TextStyle::new(12.0, 580.0))
+            .color(if primary { Color::WHITE } else { paint.t.text }),
+    )
 }
 
 fn segment(
@@ -657,9 +660,9 @@ fn card(key: impl Into<String>, paint: Paint, child: El) -> El {
     col()
         .key(key.into())
         .w_full()
-        .padding(20.0)
-        .gap(16.0)
-        .radius(13.0)
+        .padding(18.0)
+        .gap(14.0)
+        .radius(12.0)
         .continuous_corners()
         .fill(paint.card)
         .border(1.0, paint.line)
@@ -702,43 +705,33 @@ fn section_heading(glyph: &'static Icon, label: &str, subtitle: &str, paint: Pai
 }
 
 fn nav(page: Page, selected: bool, paint: Paint) -> El {
-    let label = page.name();
     row()
-        .key(format!("nav-{label}"))
+        .key(format!("nav-{}", page.name()))
         .role("button")
-        .label(label)
+        .label(page.name())
         .w_full()
-        .h(38.0)
-        .px(11.0)
-        .gap(11.0)
+        .h(36.0)
+        .px(10.0)
+        .gap(10.0)
         .center_y()
-        .radius(8.0)
-        .continuous_corners()
+        .radius(7.0)
         .fill(if selected {
             paint.selected
         } else {
             Color::TRANSPARENT
         })
-        .hover(if selected {
-            paint.selected
-        } else {
-            paint.t.hover
-        })
+        .hover(paint.t.hover)
         .on_press(move |ui: &mut Ui| ui.navigate(page))
         .child(
-            icon(page.glyph(), 18.0)
-                .key(format!("nav-icon-{label}"))
-                .color(if selected {
-                    paint.accent
-                } else {
-                    paint.subdued
-                }),
+            icon(page.glyph(), 17.0)
+                .key(format!("nav-icon-{}", page.name()))
+                .color(if selected { paint.accent } else { paint.faint }),
         )
         .child(
-            text(label)
+            text(page.name())
                 .font(rune::TextStyle::new(
-                    14.0,
-                    if selected { 600.0 } else { 450.0 },
+                    12.0,
+                    if selected { 620.0 } else { 470.0 },
                 ))
                 .color(if selected {
                     paint.t.text
@@ -749,11 +742,17 @@ fn nav(page: Page, selected: bool, paint: Paint) -> El {
 }
 
 fn sidebar(ui: &Ui, paint: Paint, compact: bool) -> El {
-    let mut menu = col()
-        .key("side-navigation")
-        .w_full()
-        .gap(4.0)
-        .child(eyebrow("WORKSPACE", paint));
+    let logo = if let Some(image) = &ui.brand_image {
+        el().key("conduit-brand-icon")
+            .size(25.0, 25.0)
+            .pixels_fit(image.pixels(), SurfaceFit::Fit)
+    } else {
+        el().key("conduit-brand-icon")
+            .size(25.0, 25.0)
+            .center()
+            .child(icon(&icons::ARROWS_LEFT_RIGHT, 22.0).color(paint.accent))
+    };
+    let mut menu = col().key("side-navigation").w_full().gap(4.0);
     for page in [
         Page::Overview,
         Page::Transfers,
@@ -764,265 +763,190 @@ fn sidebar(ui: &Ui, paint: Paint, compact: bool) -> El {
     }
     menu = menu
         .child(el().h(12.0))
-        .child(eyebrow("DEVICE & APP", paint));
+        .child(el().w_full().h(1.0).fill(paint.line.alpha(0.65)))
+        .child(el().h(8.0));
     for page in [Page::Pairing, Page::Settings, Page::About] {
         menu = menu.child(nav(page, ui.page == page, paint));
     }
-    let logo = if let Some(image) = &ui.brand_image {
-        el().key("conduit-brand-icon")
-            .size(36.0, 36.0)
-            .radius(10.0)
-            .gradient(paint.accent, paint.accent.mix(paint.purple, 0.28))
-            .pixels_fit(image.pixels(), SurfaceFit::Fit)
-    } else {
-        el().key("conduit-brand-icon")
-            .size(36.0, 36.0)
-            .radius(10.0)
-            .gradient(paint.accent, paint.accent.mix(paint.purple, 0.25))
-            .center()
-            .child(icon(&icons::ARROWS_LEFT_RIGHT, 21.0).color(Color::WHITE))
-    };
     col()
         .key("sidebar")
-        .w(if compact { 192.0 } else { 214.0 })
+        .w(if compact { 168.0 } else { 180.0 })
         .h_full()
-        .padding(if compact { 13.0 } else { 16.0 })
-        .gap(if compact { 14.0 } else { 20.0 })
+        .padding(12.0)
+        .gap(18.0)
         .fill(paint.sidebar)
-        .border(1.0, paint.line.alpha(0.65))
         .child(
             row()
                 .key("brand")
-                .h(54.0)
-                .gap(11.0)
+                .h(44.0)
+                .gap(9.0)
+                .px(7.0)
                 .center_y()
                 .child(logo)
                 .child(
                     text("Conduit")
-                        .font(rune::TextStyle::new(17.0, 680.0))
+                        .font(rune::TextStyle::new(16.0, 680.0))
                         .color(paint.t.text),
                 ),
         )
         .child(menu)
         .child(el().grow(1.0))
-        .child(if compact {
+        .child(
             row()
                 .key("sidebar-device")
                 .role("button")
-                .label("Manage connected device")
+                .label("Manage phone pairing")
                 .w_full()
-                .h(28.0)
+                .h(44.0)
+                .px(8.0)
+                .gap(9.0)
                 .center_y()
-                .gap(8.0)
+                .radius(8.0)
+                .hover(paint.t.hover)
                 .on_press(|ui: &mut Ui| ui.navigate(Page::Pairing))
-                .child(icon(&icons::SMARTPHONE, 15.0).color(paint.accent))
+                .child(icon(&icons::SMARTPHONE, 17.0).color(paint.faint))
                 .child(
-                    text(if ui.snap.connection.linked {
-                        "Phone connected"
-                    } else {
-                        "Connect a phone"
-                    })
-                    .font(rune::TextStyle::new(11.0, 550.0))
-                    .color(paint.subdued),
-                )
-        } else {
-            col()
-                .gap(8.0)
-                .child(el().w_full().h(1.0).fill(paint.line))
-                .child(
-                    row()
-                        .key("sidebar-device")
-                        .role("button")
-                        .label("Manage connected device")
-                        .w_full()
-                        .h(46.0)
-                        .gap(9.0)
-                        .center_y()
-                        .on_press(|ui: &mut Ui| ui.navigate(Page::Pairing))
+                    col()
+                        .grow(1.0)
+                        .min_w(0.0)
+                        .gap(4.0)
                         .child(
-                            el().size(28.0, 28.0)
-                                .radius(8.0)
-                                .fill(paint.selected)
-                                .center()
-                                .child(icon(&icons::SMARTPHONE, 16.0).color(paint.accent)),
+                            text(if ui.snap.connection.linked {
+                                "Phone connected"
+                            } else {
+                                "Connect a phone"
+                            })
+                            .font(rune::TextStyle::new(11.0, 550.0))
+                            .color(paint.subdued),
                         )
                         .child(
-                            col()
-                                .min_w(0.0)
-                                .gap(3.0)
-                                .child(
-                                    text(if ui.snap.connection.linked {
-                                        "Phone connected"
-                                    } else {
-                                        "No device"
-                                    })
-                                    .font(rune::TextStyle::new(12.0, 620.0))
-                                    .color(paint.t.text),
-                                )
-                                .child(
-                                    text(if ui.snap.connection.linked {
-                                        "Noise encrypted"
-                                    } else {
-                                        "Connect a phone"
-                                    })
-                                    .font(rune::TextStyle::new(11.0, 450.0))
-                                    .color(paint.faint),
-                                ),
+                            text("Rust / Rune")
+                                .font(rune::TextStyle::new(10.0, 450.0))
+                                .color(paint.faint),
                         ),
                 )
-        })
+                .child(
+                    el().size(5.0, 5.0)
+                        .radius(3.0)
+                        .fill(if ui.snap.connection.linked {
+                            paint.green
+                        } else {
+                            paint.faint
+                        }),
+                ),
+        )
 }
 
 fn summary_connection(ui: &Ui, paint: Paint, compact: bool) -> El {
     let conn = &ui.snap.connection;
-    let transport = if !conn.linked {
-        "Waiting for a connection"
-    } else if conn.route.to_ascii_lowercase().contains("lan") {
-        "Direct LAN connection"
-    } else if conn.route.to_ascii_lowercase().contains("relay") {
-        "Secure relay connection"
+    let device = if !conn.device.is_empty() {
+        conn.device.as_str()
+    } else if !ui.snap.pairing.device.is_empty() {
+        ui.snap.pairing.device.as_str()
     } else {
-        "Secure device connection"
+        "Your Android phone"
     };
-    let endpoint = if conn.relay.is_empty() {
-        conn.route.clone()
-    } else if conn.relay.chars().count() > 34 {
-        format!("{}…", conn.relay.chars().take(33).collect::<String>())
+    let route = if !conn.linked {
+        "Offline"
+    } else if conn.route.to_ascii_lowercase().contains("lan") {
+        "Direct LAN"
+    } else if conn.route.to_ascii_lowercase().contains("relay") {
+        "Relay"
     } else {
-        conn.relay.clone()
+        "Connected"
     };
     let phone = if let Some(image) = &ui.wallpaper {
         el().key("phone-wallpaper")
-            .size(
-                if compact { 70.0 } else { 84.0 },
-                if compact { 90.0 } else { 104.0 },
-            )
-            .radius(13.0)
+            .size(52.0, 72.0)
+            .radius(9.0)
             .pixels_fit(image.pixels(), SurfaceFit::Fill)
     } else {
         el().key("phone-placeholder")
-            .size(
-                if compact { 70.0 } else { 84.0 },
-                if compact { 90.0 } else { 104.0 },
-            )
-            .radius(13.0)
+            .size(52.0, 72.0)
+            .radius(9.0)
             .fill(paint.inset)
             .center()
-            .child(icon(&icons::SMARTPHONE, 31.0).color(paint.accent))
+            .child(icon(&icons::SMARTPHONE, 25.0).color(paint.faint))
+    };
+    let endpoint = if conn.linked && !conn.relay.is_empty() {
+        conn.relay.clone()
+    } else if conn.linked {
+        "End-to-end encrypted".into()
+    } else {
+        "Pair a phone or reconnect your device".into()
     };
     card(
         "connection",
         paint,
-        col()
-            .gap(17.0)
+        row()
+            .w_full()
+            .center_y()
+            .gap(if compact { 14.0 } else { 18.0 })
+            .child(phone)
             .child(
-                row()
-                    .w_full()
-                    .center_y()
-                    .justify_between()
-                    .child(eyebrow("CONNECTED DEVICE", paint))
-                    .child(tag(conn.state.clone(), paint, conn.linked)),
-            )
-            .child(
-                row()
-                    .w_full()
-                    .center_y()
-                    .gap(17.0)
-                    .child(phone)
+                col()
+                    .grow(1.0)
+                    .min_w(0.0)
+                    .gap(8.0)
                     .child(
-                        col()
-                            .grow(1.0)
+                        text(device)
+                            .font(rune::TextStyle::new(21.0, 650.0))
+                            .color(paint.t.text)
+                            .truncate(),
+                    )
+                    .child(
+                        row()
+                            .key("connection-route")
+                            .w_full()
                             .min_w(0.0)
-                            .gap(9.0)
+                            .center_y()
+                            .gap(7.0)
+                            .child(el().size(6.0, 6.0).radius(3.0).fill(if conn.linked {
+                                paint.green
+                            } else {
+                                paint.faint
+                            }))
                             .child(
-                                text(if conn.device.is_empty() {
-                                    "Your Android phone"
-                                } else {
-                                    conn.device.as_str()
-                                })
-                                .font(rune::TextStyle::new(
-                                    if compact { 20.0 } else { 24.0 },
-                                    680.0,
-                                ))
-                                .color(paint.t.text)
-                                .truncate(),
+                                text(route)
+                                    .font(rune::TextStyle::new(12.0, 570.0))
+                                    .color(paint.subdued),
                             )
                             .child(
-                                text(if conn.linked {
-                                    "Ready to exchange files"
-                                } else {
-                                    "Connect your phone to get started"
-                                })
-                                .font(rune::TextStyle::new(14.0, 450.0))
-                                .color(paint.subdued),
-                            )
-                            .child(
-                                row()
-                                    .center_y()
-                                    .gap(7.0)
-                                    .child(icon(&icons::SHIELD_CHECK, 15.0).color(if conn.linked {
-                                        paint.green
-                                    } else {
-                                        paint.faint
-                                    }))
-                                    .child(
-                                        text(if conn.linked {
-                                            "End-to-end encrypted with Noise"
-                                        } else {
-                                            "Encryption starts after pairing"
-                                        })
-                                        .font(rune::TextStyle::new(12.0, 500.0))
-                                        .color(paint.subdued)
-                                        .truncate(),
-                                    ),
+                                text(endpoint)
+                                    .font(rune::TextStyle::new(11.0, 450.0))
+                                    .color(paint.faint)
+                                    .truncate_middle(),
                             ),
-                    )
-                    .child(
-                        col()
-                            .gap(9.0)
-                            .child(action_button(
-                                "connection-send",
-                                "Send file",
-                                Some(&icons::SEND),
-                                paint,
-                                true,
-                                |ui| ui.open_picker(),
-                            ))
-                            .child(action_button(
-                                "connection-pair",
-                                "Manage pairing",
-                                None,
-                                paint,
-                                false,
-                                |ui| ui.navigate(Page::Pairing),
-                            )),
                     ),
             )
             .child(
-                row()
-                    .key("connection-route")
-                    .w_full()
-                    .h(42.0)
-                    .px(13.0)
-                    .gap(10.0)
-                    .center_y()
-                    .radius(8.0)
-                    .fill(paint.inset)
-                    .child(icon(&icons::ARROWS_LEFT_RIGHT, 15.0).color(paint.accent))
-                    .child(
-                        text(transport)
-                            .font(rune::TextStyle::new(12.0, 600.0))
-                            .color(paint.t.text),
-                    )
-                    .child(el().grow(1.0))
-                    .child(
-                        text(endpoint)
-                            .font(rune::TextStyle::new(11.0, 450.0))
-                            .color(paint.faint)
-                            .truncate_middle(),
-                    ),
+                col()
+                    .gap(8.0)
+                    .child(action_button(
+                        "connection-send",
+                        "Send file",
+                        Some(&icons::SEND),
+                        paint,
+                        true,
+                        |ui| ui.open_picker(),
+                    ))
+                    .child(button("connection-pair", "Pairing", paint, false, |ui| {
+                        ui.navigate(Page::Pairing)
+                    })),
             ),
     )
+}
+
+fn byte_size(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
 }
 
 fn transfer_row(transfer: &bridge::Transfer, paint: Paint) -> El {
@@ -1034,37 +958,47 @@ fn transfer_row(transfer: &bridge::Transfer, paint: Paint) -> El {
             .round()
             .clamp(0.0, 100.0) as u32
     };
-    let name = if tr.name.chars().count() > 46 {
-        format!("{}…", tr.name.chars().take(45).collect::<String>())
+    let direction = if tr.direction == "outbound" {
+        "To phone"
     } else {
-        tr.name.clone()
+        "From phone"
     };
-    let mut transfer_details = col()
+    let detail = if tr.terminal {
+        format!("{}  /  {}", direction, byte_size(tr.total))
+    } else {
+        format!(
+            "{} of {}  /  {}%",
+            byte_size(tr.bytes),
+            byte_size(tr.total),
+            progress
+        )
+    };
+    let mut details = col()
         .grow(1.0)
         .min_w(0.0)
         .gap(5.0)
         .child(
-            text(name)
-                .font(rune::TextStyle::new(13.0, 570.0))
+            text(&tr.name)
+                .font(rune::TextStyle::new(12.0, 560.0))
                 .color(paint.t.text)
                 .truncate_middle(),
         )
         .child(
-            text(format!("{}  ·  {}%", tr.direction, progress))
-                .font(rune::TextStyle::new(11.0, 450.0))
+            text(detail)
+                .font(rune::TextStyle::new(10.0, 440.0))
                 .color(paint.faint),
         );
     if !tr.terminal {
-        transfer_details = transfer_details.child(
+        details = details.child(
             row()
                 .key(format!("progress-{}", tr.id))
-                .w(210.0)
-                .h(4.0)
+                .w(170.0)
+                .h(3.0)
                 .radius(2.0)
                 .fill(paint.line)
                 .child(
-                    el().w(progress as f32 * 2.1)
-                        .h(4.0)
+                    el().w(progress as f32 * 1.7)
+                        .h(3.0)
                         .radius(2.0)
                         .fill(paint.accent),
                 ),
@@ -1075,18 +1009,16 @@ fn transfer_row(transfer: &bridge::Transfer, paint: Paint) -> El {
         .w_full()
         .center_y()
         .gap(12.0)
-        .h(if tr.terminal { 58.0 } else { 68.0 })
-        .px(12.0)
-        .radius(8.0)
+        .h(if tr.terminal { 55.0 } else { 65.0 })
+        .px(6.0)
+        .radius(6.0)
         .hover(paint.t.hover)
         .child(
-            el().size(34.0, 34.0)
-                .radius(8.0)
-                .fill(paint.inset)
+            el().size(32.0, 36.0)
                 .center()
-                .child(icon(&icons::TRANSFER, 17.0).color(paint.subdued)),
+                .child(icon(&icons::TRANSFER, 20.0).color(paint.faint)),
         )
-        .child(transfer_details);
+        .child(details);
     if !tr.terminal {
         let id = tr.id.clone();
         body = body.child(button(
@@ -1096,27 +1028,24 @@ fn transfer_row(transfer: &bridge::Transfer, paint: Paint) -> El {
             false,
             move |ui| {
                 let id = id.clone();
-                ui.operation("Cancelling transfer", move || bridge::cancel_transfer(&id));
+                ui.cancel_transfer(id);
             },
         ));
     } else {
-        body = body
-            .on_press(|ui: &mut Ui| ui.navigate(Page::Transfers))
-            .child(
-                text(match tr.state.as_str() {
-                    "completed" => "Completed",
-                    "failed" => "Failed",
-                    "cancelled" => "Cancelled",
-                    _ => "Finished",
-                })
-                .font(rune::TextStyle::new(11.0, 570.0))
-                .color(if tr.state == "completed" {
-                    paint.green
-                } else {
-                    paint.subdued
-                }),
-            )
-            .child(icon(&icons::CHEVRON_RIGHT, 17.0).color(paint.subdued));
+        body = body.child(
+            text(match tr.state.as_str() {
+                "completed" => "Completed",
+                "failed" => "Failed",
+                "cancelled" => "Cancelled",
+                _ => "Finished",
+            })
+            .font(rune::TextStyle::new(10.0, 530.0))
+            .color(if tr.state == "completed" {
+                paint.subdued
+            } else {
+                paint.faint
+            }),
+        );
     }
     body
 }
@@ -1182,103 +1111,64 @@ fn transfer_list(ui: &Ui, paint: Paint, limit: usize) -> El {
 }
 
 fn overview(ui: &Ui, paint: Paint) -> El {
-    card(
-        "overview-summary",
-        paint,
-        col()
-            .gap(15.0)
-            .child(
-                row()
-                    .justify_between()
-                    .center_y()
-                    .child(section_heading(
-                        &icons::TRANSFER,
-                        "Recent transfers",
-                        "Your latest files, at a glance",
-                        paint,
-                    ))
-                    .child(action_button(
-                        "show-transfers",
-                        "See all",
-                        Some(&icons::CHEVRON_RIGHT),
-                        paint,
-                        false,
-                        |ui| ui.navigate(Page::Transfers),
-                    )),
-            )
-            .child(
-                row()
-                    .gap(9.0)
-                    .child(stat("Transfers", ui.snap.transfers.len(), paint))
-                    .child(stat("Notifications", ui.snap.notifications.len(), paint))
-                    .child(stat("Shared links", ui.snap.links.len(), paint)),
-            )
-            .child(el().w_full().h(1.0).fill(paint.line))
-            .child(transfer_list(ui, paint, 4)),
-    )
-}
-
-fn stat(label: &str, count: usize, paint: Paint) -> El {
-    let (glyph, page, short_label): (&'static Icon, Page, &'static str) = match label {
-        "Notifications" => (&icons::BELL, Page::Notifications, "Alerts"),
-        "Shared links" => (&icons::LINK, Page::Links, "Links"),
-        _ => (&icons::TRANSFER, Page::Transfers, "Files"),
-    };
-    row()
-        .key(format!("metric-{}", label))
-        .role("button")
-        .label(format!("{count} {label}"))
-        .center_y()
-        .gap(8.0)
-        .px(11.0)
-        .h(38.0)
-        .radius(7.0)
-        .fill(paint.inset)
-        .hover(paint.selected)
-        .on_press(move |ui: &mut Ui| ui.navigate(page))
-        .child(icon(glyph, 15.0).color(paint.subdued))
+    col()
+        .key("overview-summary")
+        .w_full()
+        .gap(12.0)
         .child(
-            text(format!("{count}  {short_label}"))
-                .font(rune::TextStyle::new(11.0, 580.0))
-                .color(paint.subdued),
+            row()
+                .w_full()
+                .center_y()
+                .justify_between()
+                .child(heading("Recent transfers", paint))
+                .child(button("show-transfers", "View all", paint, false, |ui| {
+                    ui.navigate(Page::Transfers)
+                })),
+        )
+        .child(el().w_full().h(1.0).fill(paint.line))
+        .child(transfer_list(ui, paint, 4))
+        .child(
+            row()
+                .key("drop-hint")
+                .w_full()
+                .h(40.0)
+                .center_y()
+                .gap(8.0)
+                .child(icon(&icons::SEND, 14.0).color(paint.faint))
+                .child(
+                    text("Drop files anywhere to send to your phone")
+                        .font(rune::TextStyle::new(11.0, 450.0))
+                        .color(paint.faint),
+                ),
         )
 }
 
 fn transfers(ui: &Ui, paint: Paint) -> El {
-    card(
-        "transfers",
-        paint,
-        col()
-            .gap(16.0)
-            .child(
-                row()
-                    .justify_between()
-                    .center_y()
-                    .child(section_heading(
-                        &icons::TRANSFER,
-                        "Transfer history",
-                        "Send, monitor and cancel transfers",
-                        paint,
-                    ))
-                    .child(action_button(
-                        "send-new-file",
-                        "Send file",
-                        Some(&icons::SEND),
-                        paint,
-                        true,
-                        |ui| ui.open_picker(),
-                    )),
-            )
-            .child(
-                row()
-                    .h(34.0)
-                    .gap(8.0)
-                    .child(stat("Transfers", ui.snap.transfers.len(), paint))
-                    .child(muted("Drag files into this window to send them", paint)),
-            )
-            .child(el().w_full().h(1.0).fill(paint.line))
-            .child(transfer_list(ui, paint, usize::MAX)),
-    )
+    col()
+        .key("transfers")
+        .w_full()
+        .gap(14.0)
+        .child(
+            row()
+                .w_full()
+                .center_y()
+                .justify_between()
+                .child(
+                    text(format!("{} transfers", ui.snap.transfers.len()))
+                        .font(rune::TextStyle::new(12.0, 480.0))
+                        .color(paint.subdued),
+                )
+                .child(action_button(
+                    "send-new-file",
+                    "Send file",
+                    Some(&icons::SEND),
+                    paint,
+                    true,
+                    |ui| ui.open_picker(),
+                )),
+        )
+        .child(el().w_full().h(1.0).fill(paint.line))
+        .child(transfer_list(ui, paint, usize::MAX))
 }
 
 fn notifications(ui: &Ui, paint: Paint) -> El {
@@ -1544,14 +1434,17 @@ fn links(ui: &Ui, paint: Paint) -> El {
 
 fn pairing(ui: &Ui, paint: Paint) -> El {
     let p = &ui.snap.pairing;
-    let mut content = col().gap(18.0).child(
+    let mut content = col().w_full().gap(18.0).child(
         row()
-            .justify_between()
+            .w_full()
             .center_y()
-            .child(section_heading(
-                &icons::QR_CODE,
-                "Phone pairing",
-                "Secure device identity",
+            .justify_between()
+            .child(heading(
+                if p.active {
+                    "Scan to pair"
+                } else {
+                    "Phone connection"
+                },
                 paint,
             ))
             .child(tag(
@@ -1560,116 +1453,130 @@ fn pairing(ui: &Ui, paint: Paint) -> El {
                 p.paired,
             )),
     );
-    if p.paired {
-        content = content
-            .child(
+    if p.active {
+        let qr = el()
+            .key("pairing-qr")
+            .label("Temporary pairing QR code")
+            .size(212.0, 212.0)
+            .radius(8.0)
+            .fill(Color::WHITE);
+        let qr = if let Some(image) = &ui.pairing_qr {
+            qr.pixels_fit(image.pixels(), SurfaceFit::Fit)
+        } else {
+            qr.center()
+                .child(icon(&icons::QR_CODE, 40.0).color(paint.faint))
+        };
+        content = content.child(
+            row().w_full().gap(18.0).center_y().child(qr).child(
+                col()
+                    .grow(1.0)
+                    .min_w(0.0)
+                    .gap(14.0)
+                    .child(
+                        muted(
+                            "Open Conduit on your phone, then choose Pair desktop > Scan QR code.",
+                            paint,
+                        )
+                        .w_full()
+                        .max_lines(3),
+                    )
+                    .child(
+                        text("Or enter this code")
+                            .font(rune::TextStyle::new(11.0, 470.0))
+                            .color(paint.faint),
+                    )
+                    .child(
+                        text(&p.code)
+                            .font(rune::TextStyle::new(28.0, 650.0))
+                            .color(paint.t.text),
+                    )
+                    .child(
+                        text("Valid for two minutes")
+                            .font(rune::TextStyle::new(11.0, 450.0))
+                            .color(paint.faint),
+                    )
+                    .child(row().child(button(
+                        "cancel-pair",
+                        "Cancel pairing",
+                        paint,
+                        false,
+                        |ui| {
+                            ui.operation("Cancelling pairing", || {
+                                bridge::daemon_command(&["pair", "cancel"]).map(|_| ())
+                            })
+                        },
+                    ))),
+            ),
+        );
+    } else {
+        if p.paired {
+            content = content.child(
                 row()
                     .w_full()
                     .center_y()
-                    .gap(14.0)
-                    .padding(15.0)
-                    .radius(10.0)
-                    .fill(paint.inset)
-                    .child(
-                        el().size(42.0, 42.0)
-                            .radius(10.0)
-                            .fill(paint.selected)
-                            .center()
-                            .child(icon(&icons::SMARTPHONE, 24.0).color(paint.accent)),
-                    )
+                    .gap(12.0)
+                    .child(icon(&icons::SMARTPHONE, 25.0).color(paint.accent))
                     .child(
                         col()
+                            .grow(1.0)
+                            .min_w(0.0)
                             .gap(5.0)
                             .child(
                                 text(&p.device)
-                                    .font(rune::TextStyle::new(17.0, 650.0))
+                                    .font(rune::TextStyle::new(17.0, 620.0))
                                     .color(paint.t.text)
                                     .truncate(),
                             )
-                            .child(muted("Trusted phone · Noise pairing identity", paint)),
-                    ),
-            )
-            .child(button(
-                "forget-pair",
-                if ui.confirm == Some("forget") {
-                    "Confirm unpair"
-                } else {
-                    "Forget device"
-                },
-                paint,
-                ui.confirm == Some("forget"),
-                |ui| {
-                    if ui.confirm_action("forget") {
-                        ui.operation("Forgetting device", || {
-                            bridge::daemon_command(&["pair", "forget"]).map(|_| ())
-                        });
-                    }
-                },
-            ));
-    }
-    if p.active {
-        content = content.child(muted(
-            "On your phone, choose Pair desktop > Scan QR code. You can also enter the six digits.",
-            paint,
-        ));
-        if let Some(image) = &ui.pairing_qr {
+                            .child(muted("Trusted phone", paint)),
+                    )
+                    .child(button(
+                        "forget-pair",
+                        if ui.confirm == Some("forget") {
+                            "Confirm unpair"
+                        } else {
+                            "Forget device"
+                        },
+                        paint,
+                        ui.confirm == Some("forget"),
+                        |ui| {
+                            if ui.confirm_action("forget") {
+                                ui.operation("Forgetting device", || {
+                                    bridge::daemon_command(&["pair", "forget"]).map(|_| ())
+                                })
+                            }
+                        },
+                    )),
+            );
+        } else {
             content = content.child(
-                row().w_full().center().child(
-                    el().key("pairing-qr")
-                        .size(260.0, 260.0)
-                        .radius(12.0)
-                        .pixels_fit(image.pixels(), SurfaceFit::Fit),
-                ),
+                muted(
+                    "Connect your Android phone using a QR code or six-digit code.",
+                    paint,
+                )
+                .max_lines(2),
             );
         }
-        content = content
-            .child(
-                row()
-                    .w_full()
-                    .h(86.0)
-                    .radius(10.0)
-                    .fill(paint.inset)
-                    .center()
-                    .child(
-                        text(&p.code)
-                            .font(rune::TextStyle::new(27.0, 700.0))
-                            .color(paint.accent),
-                    ),
-            )
-            .child(button(
-                "cancel-pair",
-                "Cancel pairing",
-                paint,
-                false,
-                |ui| {
-                    ui.operation("Cancelling pairing", || {
-                        bridge::daemon_command(&["pair", "cancel"]).map(|_| ())
-                    })
-                },
-            ));
-    } else {
-        content = content
-            .child(muted(
-                "Pair your Android phone to establish an encrypted connection.",
-                paint,
-            ))
-            .child(action_button(
-                "start-pair",
-                "Start pairing",
-                Some(&icons::QR_CODE),
-                paint,
-                true,
-                |ui| {
-                    ui.operation("Starting pairing", || {
-                        bridge::daemon_command(&["pair", "start"]).map(|_| ())
-                    })
-                },
-            ));
+        content = content.child(row().child(action_button(
+            "start-pair",
+            "Start pairing",
+            Some(&icons::QR_CODE),
+            paint,
+            true,
+            |ui| {
+                ui.operation("Starting pairing", || {
+                    bridge::daemon_command(&["pair", "start"]).map(|_| ())
+                })
+            },
+        )));
     }
-    content = content.child(muted(
-        "Each computer needs its own device identity. Do not copy identity.bin between PCs.",
-        paint,
-    ));
+    content = content.child(
+        muted(
+            "Each computer needs its own identity. Do not copy identity.bin between PCs.",
+            paint,
+        )
+        .w_full()
+        .max_lines(2),
+    );
     card("pairing", paint, content)
 }
 
@@ -1953,24 +1860,14 @@ fn windows_integration(ui: &Ui, paint: Paint) -> El {
                     )),
             )
             .child(el().w_full().h(1.0).fill(paint.line))
-            .child(eyebrow("TOOLS & FALLBACKS", paint))
-            .child(
-                row()
-                    .gap(8.0)
-                    .child(button(
-                        "data-folder",
-                        "Open data folder",
-                        paint,
-                        false,
-                        |ui| ui.operation("Opening data folder", || bridge::open_folder("data")),
-                    ))
-                    .child(button("nova-window", "Open Nova", paint, false, |ui| {
-                        ui.operation("Opening Nova", bridge::open_nova_ui)
-                    }))
-                    .child(button("legacy-window", "Open WinUI", paint, false, |ui| {
-                        ui.operation("Opening WinUI", bridge::open_legacy_ui)
-                    })),
-            ),
+            .child(eyebrow("LOCAL DATA", paint))
+            .child(row().gap(8.0).child(button(
+                "data-folder",
+                "Open data folder",
+                paint,
+                false,
+                |ui| ui.operation("Opening data folder", || bridge::open_folder("data")),
+            ))),
     )
 }
 
@@ -2032,34 +1929,24 @@ fn about(ui: &Ui, paint: Paint) -> El {
                 )
                 .truncate_middle(),
             )
-            .child(eyebrow("PROJECT & ALTERNATIVE DESKTOPS", paint))
-            .child(
-                row()
-                    .gap(8.0)
-                    .child(action_button(
-                        "about-github",
-                        "GitHub",
-                        Some(&icons::ARROW_UP_RIGHT),
-                        paint,
-                        false,
-                        |ui| {
-                            ui.operation("Opening GitHub", || {
-                                bridge::open_external("https://github.com/nonlog/Conduit")
-                            })
-                        },
-                    ))
-                    .child(button("about-nova", "Open Nova", paint, false, |ui| {
-                        ui.operation("Opening Nova", bridge::open_nova_ui)
-                    }))
-                    .child(button("about-winui", "Open WinUI", paint, false, |ui| {
-                        ui.operation("Opening WinUI", bridge::open_legacy_ui)
-                    })),
-            ),
+            .child(eyebrow("PROJECT", paint))
+            .child(row().gap(8.0).child(action_button(
+                "about-github",
+                "GitHub",
+                Some(&icons::ARROW_UP_RIGHT),
+                paint,
+                false,
+                |ui| {
+                    ui.operation("Opening GitHub", || {
+                        bridge::open_external("https://github.com/nonlog/Conduit")
+                    })
+                },
+            ))),
     )
 }
 
 fn content(ui: &Ui, paint: Paint, compact: bool) -> El {
-    let mut body = col().key("page-content").gap(16.0);
+    let mut body = col().key("page-content").w_full().min_w(0.0).gap(24.0);
     if ui.page == Page::Overview {
         body = body
             .child(summary_connection(ui, paint, compact))
@@ -2103,8 +1990,6 @@ fn search_field(ui: &Ui, paint: Paint) -> El {
 }
 
 fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
-    // Rune's layout read converges after the first measurement, keeping the
-    // search field out of the title row at narrow desktop window sizes.
     let compact = cx.layout_size("window").is_some_and(|size| size[0] < 930.0);
     let dark = match ui.appearance.as_str() {
         "light" => false,
@@ -2112,61 +1997,52 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
         _ => cx.system_dark(),
     };
     let paint = Paint::new(dark);
-    let state = if ui.snap.connection.linked {
-        "Connected"
-    } else {
-        "Offline"
-    };
-    let mut right = row().gap(12.0).center_y();
     let searchable = matches!(ui.page, Page::Transfers | Page::Notifications | Page::Links);
+    let mut right = row().gap(10.0).center_y();
     if searchable && !compact {
         right = right.child(search_field(ui, paint));
     }
-    if ui.page == Page::Overview {
-        right = right
-            .child(icon(&icons::SHIELD_CHECK, 16.0).color(paint.green))
-            .child(
-                text("Private by design")
-                    .font(rune::TextStyle::new(12.0, 570.0))
+    if !searchable {
+        right = right.child(
+            row()
+                .key("header-status")
+                .gap(7.0)
+                .center_y()
+                .child(
+                    el().size(6.0, 6.0)
+                        .radius(3.0)
+                        .fill(if ui.snap.connection.linked {
+                            paint.green
+                        } else {
+                            paint.faint
+                        }),
+                )
+                .child(
+                    text(if ui.snap.connection.linked {
+                        "Connected"
+                    } else {
+                        "Offline"
+                    })
+                    .font(rune::TextStyle::new(11.0, 530.0))
                     .color(paint.subdued),
-            );
-    } else {
-        right = right.child(tag(state, paint, ui.snap.connection.linked));
+                ),
+        );
     }
     let mut body = col()
         .key("main")
         .grow(1.0)
         .min_w(0.0)
         .h_full()
-        .padding(26.0)
-        .gap(19.0)
+        .padding(if compact { 20.0 } else { 26.0 })
+        .gap(22.0)
         .child(
             row()
                 .key("page-header")
                 .w_full()
+                .h(44.0)
                 .justify_between()
                 .center_y()
-                .child(
-                    col()
-                        .gap(6.0)
-                        .child(eyebrow(
-                            if ui.page == Page::Overview {
-                                "DEVICE BRIDGE"
-                            } else {
-                                "CONDUIT / WORKSPACE"
-                            },
-                            paint,
-                        ))
-                        .child(page_title(
-                            if ui.page == Page::Overview {
-                                "Your devices"
-                            } else {
-                                ui.page.name()
-                            },
-                            paint,
-                        ))
-                        .child(muted(ui.page.subtitle(), paint)),
-                )
+                .child(page_title(ui.page.name(), paint))
                 .child(right),
         );
     if searchable && compact {
@@ -2180,7 +2056,7 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
                 .padding(10.0)
                 .radius(8.0)
                 .fill(paint.accent.alpha(0.1))
-                .child(muted(notice.clone(), paint)),
+                .child(muted(notice.clone(), paint).max_lines(3)),
         );
     }
     body = body.child(
@@ -2198,6 +2074,7 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
         .h_full()
         .fill(paint.surface)
         .child(sidebar(ui, paint, compact))
+        .child(el().w(1.0).h_full().fill(paint.line.alpha(0.65)))
         .child(body);
     if ui.drop_over {
         root = root.outline(2.0, 0.0, paint.accent);
@@ -2263,6 +2140,93 @@ fn connected_scene(ui: &mut Ui) {
         terminal: false,
         ..Default::default()
     }];
+}
+
+// Deterministic visual fixtures; no real names, history, endpoints or pairings.
+fn qa_overview(ui: &mut Ui) {
+    ui.snap = bridge::Snapshot::default();
+    ui.page = Page::Overview;
+    ui.notice = None;
+    ui.appearance = "system".into();
+    connected_scene(ui);
+    ui.snap.connection.device = "Android phone".into();
+    ui.snap.daemon_available = true;
+    ui.snap.transfers.extend([
+        bridge::Transfer {
+            id: "finished-report".into(),
+            name: "Project notes.pdf".into(),
+            direction: "outbound".into(),
+            bytes: 258048,
+            total: 258048,
+            state: "completed".into(),
+            terminal: true,
+            ..Default::default()
+        },
+        bridge::Transfer {
+            id: "received-photo".into(),
+            name: "Camera photo.jpg".into(),
+            direction: "inbound".into(),
+            bytes: 3145728,
+            total: 3145728,
+            state: "completed".into(),
+            terminal: true,
+            ..Default::default()
+        },
+        bridge::Transfer {
+            id: "cancelled-archive".into(),
+            name: "Archive.zip".into(),
+            direction: "outbound".into(),
+            bytes: 1024,
+            total: 10485760,
+            state: "cancelled".into(),
+            terminal: true,
+            ..Default::default()
+        },
+    ]);
+    ui.snap.notifications = vec![bridge::Notification {
+        id: "qa-notification".into(),
+        app: "Messages".into(),
+        title: "Project update".into(),
+        body: "The review notes are ready to read.".into(),
+    }];
+    ui.snap.links = vec![bridge::SharedLink {
+        id: "qa-link".into(),
+        title: "Conduit source code".into(),
+        url: "https://github.com/nonlog/Conduit".into(),
+        source: "Android phone".into(),
+    }];
+}
+fn qa_transfers(ui: &mut Ui) {
+    qa_overview(ui);
+    ui.page = Page::Transfers;
+}
+fn qa_notifications(ui: &mut Ui) {
+    qa_overview(ui);
+    ui.page = Page::Notifications;
+}
+fn qa_links(ui: &mut Ui) {
+    qa_overview(ui);
+    ui.page = Page::Links;
+}
+fn qa_pairing(ui: &mut Ui) {
+    qa_overview(ui);
+    ui.page = Page::Pairing;
+    ui.snap.pairing = bridge::Pairing {
+        active: true,
+        paired: true,
+        device: "Android phone".into(),
+        code: "123456".into(),
+    };
+    ui.refresh_pairing_qr();
+}
+fn qa_settings(ui: &mut Ui) {
+    qa_overview(ui);
+    ui.page = Page::Settings;
+}
+fn qa_offline(ui: &mut Ui) {
+    qa_overview(ui);
+    ui.snap.connection = bridge::Connection::default();
+    ui.snap.transfers.clear();
 }
 
 fn setup_watcher(handle: AppHandle<Ui>) {
@@ -2398,7 +2362,16 @@ fn main() {
     };
 
     let app = App::new(AppSpec {
-        scenes: &[("connected", connected_scene)],
+        scenes: &[
+            ("connected", connected_scene),
+            ("qa-overview", qa_overview),
+            ("qa-transfers", qa_transfers),
+            ("qa-notifications", qa_notifications),
+            ("qa-links", qa_links),
+            ("qa-pairing", qa_pairing),
+            ("qa-settings", qa_settings),
+            ("qa-offline", qa_offline),
+        ],
         on_key: Some(on_key),
         setup: Some(initialize_images),
         min_size: Some((760.0, 510.0)),
@@ -2481,9 +2454,8 @@ mod tests {
                     "connection-route",
                     "connection-send",
                     "overview-summary",
-                    "metric-Transfers",
-                    "metric-Notifications",
-                    "metric-Shared links",
+                    "drop-hint",
+                    "page-header",
                 ] {
                     assert!(rt.find(key).is_some(), "missing {key} in {dark:?} {size:?}");
                 }
@@ -2554,7 +2526,9 @@ mod tests {
         let mut about_rt = Runtime::new(about, view, (1020.0, 605.0), Env::new(false, 1.0));
         about_rt.frame(0.0);
         assert!(about_rt.find("about").is_some());
-        assert!(about_rt.find("about-nova").is_some());
+        assert!(about_rt.find("about-github").is_some());
+        assert!(about_rt.find("about-nova").is_none());
+        assert!(about_rt.find("about-winui").is_none());
     }
 
     #[test]
@@ -2574,5 +2548,55 @@ mod tests {
         rt.frame(1.0 / 60.0);
         assert_eq!(rt.state.search.text, "rune");
         assert!(rt.find("transfer-aabbccddee").is_none());
+    }
+    #[test]
+    fn overview_keeps_primary_actions_visible_without_dashboard_metrics() {
+        for dark in [false, true] {
+            for size in [(760.0, 510.0), (1020.0, 605.0), (1280.0, 800.0)] {
+                let mut ui = Ui::init();
+                connected_scene(&mut ui);
+                ui.appearance = if dark { "dark" } else { "light" }.into();
+                let mut rt = Runtime::new(ui, view, size, Env::new(dark, 1.0));
+                rt.frame(0.0);
+                rt.frame(1.0 / 60.0);
+                for key in [
+                    "connection-send",
+                    "connection-pair",
+                    "show-transfers",
+                    "sidebar-device",
+                ] {
+                    let (x, y) = rt.find(key).unwrap_or_else(|| panic!("missing {key}"));
+                    assert!(
+                        x >= 0.0 && x <= size.0 && y >= 0.0 && y <= size.1,
+                        "{key} is clipped at {size:?}: {x}, {y}"
+                    );
+                }
+                assert!(rt.find("metric-Transfers").is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn readable_transfer_sizes_cover_empty_and_large_files() {
+        assert_eq!(byte_size(0), "0 B");
+        assert_eq!(byte_size(1024), "1.0 KB");
+        assert_eq!(byte_size(1024 * 1024), "1.0 MB");
+        assert_eq!(byte_size(2 * 1024 * 1024 * 1024), "2.0 GB");
+    }
+    #[test]
+    fn paired_active_qr_and_cancel_fit_in_the_smallest_window() {
+        let mut ui = Ui::init();
+        qa_pairing(&mut ui);
+        let mut rt = Runtime::new(ui, view, (760.0, 510.0), Env::new(true, 1.0));
+        rt.frame(0.0);
+        rt.frame(1.0 / 60.0);
+        for key in ["pairing-qr", "cancel-pair"] {
+            let (x, y) = rt.find(key).unwrap_or_else(|| panic!("missing {key}"));
+            assert!(
+                x > 0.0 && x < 760.0 && y > 0.0 && y < 510.0,
+                "clipped {key}"
+            );
+        }
+        assert!(rt.find("forget-pair").is_none());
     }
 }
