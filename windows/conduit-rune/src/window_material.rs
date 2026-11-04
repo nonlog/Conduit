@@ -51,9 +51,7 @@ mod native {
     use windows_sys::Win32::UI::HiDpi::{
         GetWindowDpiAwarenessContext, SetThreadDpiAwarenessContext,
     };
-    use windows_sys::Win32::UI::Shell::{
-        DefSubclassProc, GetWindowSubclass, RemoveWindowSubclass, SetWindowSubclass,
-    };
+    use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetClientRect, SystemParametersInfoW, WM_DPICHANGED, WM_ERASEBKGND, WM_NCDESTROY, WM_SIZE,
     };
@@ -125,12 +123,11 @@ mod native {
 
     unsafe fn prepare_composition(hwnd: HWND) -> bool {
         unsafe {
-            let mut data = 0usize;
-            if GetWindowSubclass(hwnd, Some(backing_proc), BACKING_SUBCLASS, &mut data) != 0 {
-                return true;
-            }
             // Keep the HWND redirection bitmap: some Vulkan drivers present
             // through it. Removing it can make an otherwise working UI vanish.
+            // Reusing the same procedure/id updates one existing hook. Do not
+            // import GetWindowSubclass: older system comctl32 versions export
+            // the installation functions but not that query by name.
             if SetWindowSubclass(hwnd, Some(backing_proc), BACKING_SUBCLASS, 0) == 0 {
                 return false;
             }
