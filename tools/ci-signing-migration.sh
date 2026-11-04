@@ -26,8 +26,8 @@ adb shell sh "$helper" verify "$backup"
 # No real key. This disposable key proves that the restore path survives a genuinely new cert.
 keytool -genkeypair -keystore "$key" -storetype PKCS12 -storepass synthetic-ci-only -keypass synthetic-ci-only -alias migration -keyalg RSA -keysize 2048 -validity 2 -dname 'CN=Synthetic Migration Test' >/dev/null 2>&1
 "$signer" sign --ks "$key" --ks-key-alias migration --ks-pass pass:synthetic-ci-only --key-pass pass:synthetic-ci-only --out "$new" "$apk"
-old_cert="$($signer verify --print-certs "$apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')"
-new_cert="$($signer verify --print-certs "$new" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')"
+old_cert="$($signer verify --print-certs-pem "$apk" | python3 scripts/apk-certificate-digests.py)"
+new_cert="$($signer verify --print-certs-pem "$new" | python3 scripts/apk-certificate-digests.py)"
 [[ -n "$old_cert" && -n "$new_cert" && "$old_cert" != "$new_cert" ]]
 adb uninstall com.conduit.sync >/dev/null
 adb install "$new" >/dev/null
