@@ -2,6 +2,7 @@
 
 mod bridge;
 mod icons;
+mod pairing_qr;
 #[cfg(windows)]
 mod window_icon;
 
@@ -186,6 +187,8 @@ struct Ui {
     image_cache: Option<ImageCache>,
     wallpaper: Option<Image>,
     brand_image: Option<Image>,
+    pairing_qr: Option<Image>,
+    pairing_qr_code: String,
     search: TextEdit,
     appearance: String,
     relays: TextEdit,
@@ -215,6 +218,8 @@ impl Ui {
             image_cache: None,
             wallpaper: None,
             brand_image: None,
+            pairing_qr: None,
+            pairing_qr_code: String::new(),
             relays: TextEdit::new(snap.settings.relays.join("\n")),
             manual_proxy: TextEdit::new(snap.settings.manual_proxy.clone()),
             receive_dir: TextEdit::new(snap.settings.receive_dir.clone()),
@@ -243,6 +248,28 @@ impl Ui {
             self.tray_icon = next.settings.tray_icon;
         }
         self.snap = next;
+        self.refresh_pairing_qr();
+    }
+
+    /// The code is short lived. Cache one bitmap per active code, never use a
+    /// browser, web service or periodic background renderer.
+    fn refresh_pairing_qr(&mut self) {
+        let code = if self.snap.pairing.active {
+            self.snap.pairing.code.clone()
+        } else {
+            String::new()
+        };
+        if self.pairing_qr_code == code {
+            return;
+        }
+        self.pairing_qr_code = code.clone();
+        self.pairing_qr = if code.is_empty() {
+            None
+        } else {
+            self.image_cache.as_ref().and_then(|cache| {
+                pairing_qr::png_for_code(&code).ok().map(|bytes| cache.load(bytes))
+            })
+        };
     }
 
     fn refresh_wallpaper(&mut self) {
@@ -1577,9 +1604,27 @@ fn pairing(ui: &Ui, paint: Paint) -> El {
                     }
                 },
             ));
-    } else if p.active {
+    }
+    if p.active {
+        content = content.child(muted(
+            "On your phone, choose Pair desktop > Scan QR code. You can also enter the six digits.",
+            paint,
+        ));
+        if let Some(image) = &ui.pairing_qr {
+            content = content.child(
+                row()
+                    .w_full()
+                    .center()
+                    .child(
+                        el()
+                            .key("pairing-qr")
+                            .size(260.0, 260.0)
+                            .radius(12.0)
+                            .pixels_fit(image.pixels(), SurfaceFit::Fit),
+                    ),
+            );
+        }
         content = content
-            .child(muted("Enter this pairing code on your phone", paint))
             .child(
                 row()
                     .w_full()
@@ -2295,6 +2340,7 @@ fn initialize_images(ui: &mut Ui, wake: Waker) {
     );
     ui.image_cache = Some(cache);
     ui.refresh_wallpaper();
+    ui.refresh_pairing_qr();
 }
 
 #[cfg(windows)]

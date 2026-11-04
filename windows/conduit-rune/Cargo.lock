@@ -311,6 +311,8 @@ name = "conduit-rune-preview"
 version = "0.1.15"
 dependencies = [
  "notify",
+ "png",
+ "qrcodegen",
  "rfd",
  "rune",
  "url",
@@ -1969,6 +1971,12 @@ checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
 dependencies = [
  "memchr",
 ]
+
+[[package]]
+name = "qrcodegen"
+version = "1.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4339fc7a1021c9c1621d87f5e3505f2805c8c105420ba2f2a4df86814590c142"
 
 [[package]]
 name = "quote"

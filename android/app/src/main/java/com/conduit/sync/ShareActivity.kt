@@ -78,13 +78,22 @@ class ShareActivity : Activity() {
         val text = intent.getStringExtra(Intent.EXTRA_TEXT)
         val title = intent.getCharSequenceExtra(Intent.EXTRA_TITLE)?.toString()?.trim()?.takeIf(String::isNotEmpty)
             ?: intent.getStringExtra(Intent.EXTRA_SUBJECT)?.trim()?.takeIf(String::isNotEmpty)
-        val peer = Identity.peerName(filesDir) ?: "the desktop"
+        val trusted = PairedDesktops.list(filesDir)
+        val shortcut = intent.getStringExtra("android.intent.extra.shortcut.ID")
+        val fromShortcut = shortcut?.removePrefix("desktop-")
+            ?.takeIf { shortcut.startsWith("desktop-") && it.length == 20 }
+            ?.let { prefix -> trusted.singleOrNull { it.id.startsWith(prefix) }?.id }
+        val target = fromShortcut ?: intent.getStringExtra(EXTRA_PEER_ID)
+            ?.takeIf { id -> trusted.any { it.id == id } }
+            ?: PairedDesktops.selected(filesDir)
+        val device = trusted.firstOrNull { it.id == target }
+        val peer = device?.name?.ifBlank { "the desktop" } ?: "the desktop"
 
         // A share with no session would be queued onto a link that drops it, so the honest
         // answer is to say so and start a connection the next share can use. Sharing to
         // Conduit is also a clear statement that the user wants it linked, which is why this
         // overrides a remembered disconnect.
-        if (LinkStatus.state != LinkState.Connected) {
+        if (target == null || LinkStatus.devices.none { it.id == target && it.state == LinkState.Connected }) {
             Log.w(TAG, "share arrived while ${LinkStatus.state}; connecting instead of sending")
             startForegroundService(
                 Intent(this, SyncService::class.java).setAction(ACTION_CONNECT),
@@ -99,6 +108,7 @@ class ShareActivity : Activity() {
                 startForegroundService(
                     Intent(this, SyncService::class.java)
                         .setAction(ACTION_SHARE)
+                        .putExtra(EXTRA_PEER_ID, target)
                         .putExtra(Intent.EXTRA_TEXT, pageUrl)
                         .putExtra(Intent.EXTRA_TITLE, title),
                 )
@@ -115,7 +125,7 @@ class ShareActivity : Activity() {
                 }
                 toast(
                     when {
-                        !send(sending) -> "Can't read what was shared"
+                        !send(sending, target) -> "Can't read what was shared"
                         uris.size > sending.size ->
                             "Queuing ${sending.size} of ${uris.size} files for $peer"
                         else -> "Queuing ${sending.size} for $peer"
@@ -129,6 +139,7 @@ class ShareActivity : Activity() {
                 startForegroundService(
                     Intent(this, SyncService::class.java)
                         .setAction(ACTION_SHARE)
+                        .putExtra(EXTRA_PEER_ID, target)
                         .putExtra(Intent.EXTRA_TEXT, text)
                         .putExtra(Intent.EXTRA_TITLE, title),
                 )
@@ -151,7 +162,7 @@ class ShareActivity : Activity() {
      * process down, and [SyncService]'s live session with it, which is the one outcome a share
      * must never have.
      */
-    private fun send(uris: List<Uri>): Boolean {
+    private fun send(uris: List<Uri>, target: String?): Boolean {
         // The first item builds the ClipData; the rest are added to it. The URIs have to
         // travel this way rather than as extras — a plain extra carries no grant.
         //
@@ -167,6 +178,7 @@ class ShareActivity : Activity() {
                 // `setClipData` returns void, so this is an `apply` rather than a chain.
                 Intent(this, SyncService::class.java).apply {
                     action = ACTION_SHARE
+                    putExtra(EXTRA_PEER_ID, target)
                     clipData = clip
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 },

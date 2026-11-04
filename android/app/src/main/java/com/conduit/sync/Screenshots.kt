@@ -26,7 +26,7 @@ private const val NAME_PREFIX = "Screenshot_"
  * two screenshots taken before the sender drains its queue are delivered one per callback
  * instead of the newest one causing the older one to disappear.
  */
-class Screenshots(private val context: Context, private val link: Link) {
+class Screenshots(private val context: Context, private val links: () -> List<Link>) {
 
     /** Existing screenshots are not news when the service starts. */
     private var since = 0L
@@ -39,7 +39,14 @@ class Screenshots(private val context: Context, private val link: Link) {
         override fun onChange(selfChange: Boolean, uri: Uri?) {
             // `photo=true` is intentional compatibility: an older desktop that does not
             // know the screenshot field still keeps the image out of the clipboard.
-            link.sendImage("screenshot", photo = true, screenshot = true, emptyIsNoop = true) { next() }
+            val recipients = links()
+            if (recipients.isEmpty()) return
+            val payload = lazy(LazyThreadSafetyMode.SYNCHRONIZED) { next() }
+            recipients.forEach { link ->
+                link.sendImage("screenshot", photo = true, screenshot = true, emptyIsNoop = true) {
+                    payload.value
+                }
+            }
         }
     }
 
