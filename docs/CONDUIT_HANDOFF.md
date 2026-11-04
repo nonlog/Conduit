@@ -18,9 +18,11 @@
   Transfer cancellation is independent of the long-running send operation's busy flag.
 - Added native-source and stale-upgrade regression gates. Added deterministic headless scenes
   and a GitHub Actions-only 28-image visual acceptance matrix (7 scenes, 2 themes, 2 sizes).
-- Local rustfmt, changed PowerShell syntax, native-only source contracts and version consistency
-  checks passed. New layout, small-window QR and byte-size unit tests are added but not yet run.
-  These are NOT compilation, unit-test execution, UI rendering or physical acceptance.
+- Runtime source is pushed at `2448911c8a23ac161be0e0dc7381c57a5dff4f73`.
+  Rune Actions `41833926848` passed all 21 native tests, release compilation, PE GUI checks and all
+  28 native screenshots. The screenshots were inspected; no generated mockup is an app asset.
+  The first visual review caught SVG group-style inheritance unsupported by Rune's icon parser;
+  the final mark uses explicit per-path strokes with a hollow-interior pixel regression.
 - The existing parent `7df8535` has green Actions: Build `41821414907`, Android Expressive
   `41821414917`, Rune preview `41821414936`. Those runs DO NOT verify this new desktop revision.
   Parent dual-peer instrumentation checks independent Noise text and authenticated revoke;
@@ -28,11 +30,12 @@
 - The phone is reachable and still runs 0.1.12. Its installed APK signer differs from the local
   default debug keystore. Do not uninstall, clear data, replace an identity or bypass signature
   verification to force an update. Durable signing and a tested preservation/migration path
-  remain Issue #23. The installed Windows runtime is still 0.1.15 until CI-built replacement.
+  remain Issue #23. The package version is still 0.1.15; this is a verified desktop candidate,
+  not a tagged stable release or a completed physical dual-PC acceptance.
 - The installed Scoop `conduit-nova.exe` was removed after a verified local binary backup
   in `D:\Workspace\Artifacts\Conduit\retired-nova`. The daemon PID stayed unchanged;
-  identity, peer and config hashes were verified unchanged. The Rune binary is still the
-  old 0.1.15 UI; no new desktop or Android build has been installed. The stale Conduit
+  identity, peer and config hashes were verified unchanged. The full native Windows package from
+  Actions `41833926838` is now installed in the existing Scoop location. The stale Conduit
   Preview uninstall registration pointed to a nonexistent directory and was removed with a
   local registry export beside the binary backup. No release or merge.
   The current request authorizes retiring Nova, not rotating the original PC/phone identity.
@@ -44,9 +47,30 @@
   filters and file-type glyphs, semantic failed/completed states and bounded error details.
 - Design reference: interface-design skill (Dammyjay93) and Linear's calmer-interface design
   notes. No third-party artwork, wallpapers or generated mockup assets enter the product.
-- Next: push the existing branch, verify new Actions and native screenshots, then deploy only
-  CI-built binaries after preserving installed state. Phone signing and physical dual-PC QA
-  are separate unfinished acceptance items, not reasons to block the desktop UI deployment.
+- Full Windows Actions `41833926838` passed daemon/Rune verification, packaging, native installer,
+  stale-Nova removal and Windows Share Target installation/uninstallation checks. Its inner package
+  SHA-256 is `95505a91c21202c98d3bcb3d199e38a70e86c0138537ab46c2226e9ae6d32669`.
+- Installed `conduit-rune.exe` SHA-256 is
+  `87471eaec54c4ca504daf47e5859ee8de999c5b1c8ad6b89e775d5224af930d2`;
+  `conduit-daemon.exe` is `28407106bb8b65a2812398a5935dc92dec5d18cff4803e9aaebe95c080ae46bc`.
+  `native-build.json` records the runtime source commit and Actions run beside the installed binaries.
+  The earlier UI-only candidate was superseded by this consistent full-package installation.
+- Actual window captures and rollback files are in `D:\Workspace\Artifacts\Conduit\native-2448911`.
+  The daemon restarted and established a fresh authenticated link to the existing OnePlus phone.
+  Identity, peer, peer-name and config hashes remain unchanged; all 21 transfer records remain.
+  The Scoop data junction is intact. No phone APK replacement or pairing reset was performed.
+- Real-machine launch checks passed: Start-menu shortcut targets Rune, repeat launch reuses its PID,
+  and ordinary `Conduit.exe` launch redirects to the same Rune window and exits. Windows Share Target
+  is registered as `Conduit.Desktop.ShareTarget` version `0.1.15.0`, status OK.
+- `rollback` holds the prior runtime; `ui-rollback` holds the original UI. `private-state-backup`
+  contains sensitive app identity material and has a protected current-user/SYSTEM-only ACL.
+  Never publish or upload the whole artifact directory. The original Nova backup remains separate.
+- Windows-log began returning HTTP 502 during launch confirmation; Chat On Steroids Core
+  was used as fallback. Launch the verified native UI through Explorer's Shell.Application
+  ShellExecute so its lifetime is independent of a bounded command-tool session.
+- Desktop work is installed and verified. Next remaining project gates are Android durable signing
+  and data-preserving APK upgrade (Issue #23), then physical dual-PC QA. PR #27 stays draft for those
+  broader gates; no stable tag or merge was created. Do not mistake this candidate for a new release.
 
 ## Historical checkpoints below (superseded where they conflict)
 
