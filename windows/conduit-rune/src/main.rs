@@ -259,7 +259,7 @@ impl Ui {
         } else {
             String::new()
         };
-        if self.pairing_qr_code == code {
+        if !pairing_qr::needs_refresh(&self.pairing_qr_code, &code, self.pairing_qr.is_some()) {
             return;
         }
         self.pairing_qr_code = code.clone();

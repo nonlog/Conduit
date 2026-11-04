@@ -9,13 +9,18 @@ pub fn pairing_url(code: &str) -> Result<String, String> {
     Ok(format!("conduit://pair?code={code}"))
 }
 
+/// Keep a code stable while the cache loads, but retry if images were initialized later.
+pub fn needs_refresh(cached: &str, requested: &str, has_image: bool) -> bool {
+    cached != requested || (!requested.is_empty() && !has_image)
+}
+
 pub fn png_for_code(code: &str) -> Result<Vec<u8>, String> {
     let url = pairing_url(code)?;
     let qr =
         QrCode::encode_text(&url, QrCodeEcc::Medium).map_err(|_| "QR payload cannot be encoded")?;
     let modules = qr.size() as usize;
     const QUIET: usize = 4;
-    const SCALE: usize = 6;
+    const SCALE: usize = 8;
     let width = (modules + QUIET * 2) * SCALE;
     let mut pixels = vec![255u8; width * width * 3];
     for y in 0..modules {
@@ -48,6 +53,15 @@ pub fn png_for_code(code: &str) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn late_image_cache_initialization_still_creates_visible_qr() {
+        assert!(needs_refresh("", "123456", false));
+        assert!(needs_refresh("123456", "123456", false));
+        assert!(!needs_refresh("123456", "123456", true));
+        assert!(needs_refresh("123456", "654321", true));
+        assert!(!needs_refresh("", "", false));
+    }
 
     #[test]
     fn qr_encodes_the_exact_android_pairing_uri() {
