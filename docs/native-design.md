@@ -24,3 +24,19 @@ No image-generation output belongs in the application.
 - Rendering: event-driven; no background animation, periodic polling or runtime asset downloads.
 - Verification: actual Rune-rendered light/dark screenshots at minimum and normal windows; pointer
   interaction tests and exact-size native app icons. A mockup never counts as an acceptance result.
+
+## Native materials and motion
+- Appearance exposes Acrylic (default), Mica and Solid without changing Windows preferences.
+  Real DWM composition owns the blur; text and functional cards retain readable contrast.
+  Unsupported transparency and high-contrast mode fall back to fully opaque surfaces.
+- Vulkan inherited alpha needs an explicit per-pixel HWND composition opt-in. The native backing
+  is zeroed once at setup, material changes and geometry/erase events. Never remove the HWND
+  redirection bitmap, capture/blur the desktop in a loop, or clear GDI on every GPU frame.
+- Visual acceptance uses an actual temporary colored window behind the installed app, without
+  changing its composition attributes. A successful DWM attribute call or headless image is insufficient.
+- Notched mouse-wheel input glides to a bounded target with reversal from the presented offset.
+  Precise touchpad input stays direct; disabled system animations and the user's scroll toggle win.
+- Disconnect is a reversible, persistent pause, not unpair. Active transfers must be cancelled or
+  completed first. Reconnect preserves identities and routes through the existing daemon.
+- Android uses the same vector source and finite interaction-triggered motion; no idle animation
+  loop or extra radio wakeup is added. The concrete motion contract is in `android/MOTION.md`.

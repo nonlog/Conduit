@@ -1,6 +1,67 @@
 # Conduit handoff
 
-## Current checkpoint: native-only desktop revision
+## Live continuation: five experience changes installed and physically verified
+
+- Continue PR #27 and `codex/conduit-multipeer-20261104`; do not create another branch.
+  User grants push/CI/deployment authority. Installed native UI is `9cace1f` (complete per-pixel
+  DWM composition); Android source is unchanged from `5e2f4e3` (stable signing and migration).
+- The PC now has the complete CI-built `1abf396` Windows candidate, verified by Build
+  `41853681032`; its Windows source is identical to `5e2f4e3`. Scoop persist remains a junction.
+  A full runtime rollback and ACL-protected private state backup are retained locally.
+  The UI-only overlay from successful Rune run `41870326709` is tracked separately in
+  `native-ui-build.json`; native EXE SHA-256 is
+  `dd676d6a44fbba9fee421bc0b5128700acfd84814a4179041c5e6a020dfa672a`.
+  Its install did not restart the daemon or modify identity, pairing or configuration.
+- The OnePlus phone is upgraded from code 13 to the optimized code 17 / 0.1.15 APK at
+  `5e2f4e3`, built by trusted Android workflow `41857249743`. APK SHA-256:
+  `11442edb40ad1b5559711ac2bd7523e6719ef4dab68dd9dd2e109ebffbc93cee`.
+  Stable signer SHA-256: `41407a095b8f8dbe0cbf63084d1f7ca9ff1f35efad07d716fd95d64c8791d2ae`.
+- The one-time certificate migration verified a root-only phone archive and a separate local
+  DPAPI-protected archive plus the original APK before replacement. Every restored state file
+  matched before service startup; the Noise identity also matched after restoring permissions.
+  Notification/accessibility/media permissions and prior battery exemptions were restored.
+  Private backups must never be uploaded. Future updates must retain this stable signer.
+- Physical runtime tests passed: desktop Disconnect closes every established TCP connection;
+  pause survives daemon restart; Connect restores the authenticated Relay path without unpairing.
+  Identity, pairing, configuration and transfer history hashes were unchanged by that test.
+  A subsequent 8192-byte real file round-trip (PC -> phone -> PC) completed in both directions
+  with identical SHA-256, adding two QA records to the preserved history.
+  Actual Rune Disconnect/Connect buttons were also exercised, not only the daemon CLI.
+  When this OnePlus was Dozing, its pending discovery timeout did not run until a one-time screen
+  wake; then it reconnected automatically without another Connect action. Do not claim instant
+  sleep-state reconnection or solve this by adding periodic wakeups. No network was switched.
+- Actual Acrylic now passes: the installed EXE cold-starts with real blurred red/blue backdrop
+  pixels from a temporary verification window (no injected composition changes in the test).
+  Mica, Solid, Light and System were exercised; physical resizing down to 1000x700 and restoring
+  the original bounds left no opaque edges. Final preferences are System + Acrylic, smooth wheel On.
+  Evidence is local under `Artifacts/Conduit/native-9cace1f/runtime-qa`.
+- Root cause: Vulkan's inherited alpha needs explicit DwmEnableBlurBehindWindow per-pixel opt-in,
+  plus zeroed native backing RGB/alpha. DWM backdrop type success alone is NOT proof of real blur.
+  `window_material.rs` now installs an idempotent native subclass, clears on erase/resize/DPI and
+  backdrop changes only, and frees native regions. It does not poll, screenshot the background,
+  perform GDI work per animation frame, or remove Vulkan's redirection bitmap.
+  The earlier `d90392a` NOREDIRECTIONBITMAP experiment is superseded; never deploy that approach.
+  Static GetWindowSubclass was also removed: some comctl32 versions lack its named export.
+- Android CI: 22 UI/motion tests and full certificate-change + same-signer-upgrade rehearsal passed.
+  Rune at `9cace1f`: 28 tests and 28 headless scenes passed in `41870326709`, including a native
+  RGB/alpha erase test and finite wheel-scroll tests. Android `41870326642` also passes.
+  Full packaging run `41870326730` also passed Windows x64, Android and Relay, including native
+  package verification, Share Target registration and installation/uninstallation smoke tests.
+  Its Release job was skipped because no stable tag was created.
+  No project compilation was run locally. WinUI remains only a Windows Share Target host; Nova is absent.
+- Local migration helper was repaired to resolve `adb.exe` explicitly (PowerShell names are
+  case-insensitive), quote the entire remote `su -c` command, and verify restored bytes BEFORE
+  re-enabling services (AndroidX profile caches legitimately change at startup).
+- Mobile launcher/adaptive/monochrome/tile/notification/in-app/Direct Share vectors now share the
+  desktop link mark. Finite page/nav/connection/progress/disclosure/dialog motion is installed
+  in the signed phone APK and respects disabled system animations; see `android/MOTION.md`.
+- This is an installed candidate, not a stable tag or completed two-physical-PC acceptance.
+  Keep the original phone/work-PC identities and Wi-Fi ADB intact. Do not rebuild or repeat the
+  one-time signing migration. Future phone updates use the same stable signer in place.
+
+## Historical checkpoints below (superseded by the installed outcome above)
+
+## Earlier checkpoint: native-only desktop revision
 
 ### Active follow-up: materials, connection control and Android motion
 
