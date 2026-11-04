@@ -2,6 +2,20 @@
 
 ## Current checkpoint: native-only desktop revision
 
+### Active follow-up: materials, connection control and Android motion
+
+- User explicitly keeps Rust/Rune and requests real Mica/Acrylic, smooth wheel scrolling,
+  desktop disconnect/reconnect without unpair, unified Android icons and FlClash-inspired motion.
+- Work stays on the same branch/PR. The first follow-up adds DWM native material selection with
+  opaque/high-contrast fallback, bounded notched-wheel glides (precise trackpads unchanged), and
+  persistent link-intent control. Pause blocks admission and Relay parking, keeps trust, refuses
+  active transfers, and survives daemon restarts. No installed binaries changed yet this round.
+- Windows-log is currently unavailable (account connection error); Core is the working PC fallback.
+  Browser workers failed to start and local Codex workers hit usage limits; neither changed source.
+- ADB was reconnected to the known Wi-Fi device. Do not switch its network during remote work.
+  Android icon/motion work and safe signing upgrade are still pending in this checkpoint.
+- All new formal tests/builds must run in Actions. Local rustfmt is not execution evidence.
+
 - Continue the existing `codex/conduit-multipeer-20261104` branch and PR #27.
   Base implementation is `7df8535`; do not reopen an old worktree or create another feature branch.
 - Latest user requirement supersedes the old fallback plan: retire Nova/Tauri, develop the

@@ -16,6 +16,7 @@ mod data_dir;
 mod explorer;
 mod file;
 mod image;
+mod link_intent;
 mod notification_history;
 mod pairing;
 mod shared_links;
@@ -245,6 +246,21 @@ async fn main() -> Result<()> {
             }
             return Ok(());
         }
+        if command == "link" {
+            let action = args
+                .next()
+                .context("usage: conduit-daemon link <connect|disconnect|status>")?;
+            if args.next().is_some() {
+                bail!("usage: conduit-daemon link <connect|disconnect|status>");
+            }
+            match action.to_string_lossy().as_ref() {
+                "connect" => control::pair(control::PairAction::Connect).await?,
+                "disconnect" => control::pair(control::PairAction::Disconnect).await?,
+                "status" => println!("link_enabled={}", link_intent::load(&config_dir()?)?),
+                _ => bail!("usage: conduit-daemon link <connect|disconnect|status>"),
+            }
+            return Ok(());
+        }
         if command == "pair" {
             let dir = config_dir()?;
             std::fs::create_dir_all(&dir)?;
@@ -298,6 +314,9 @@ async fn main() -> Result<()> {
                     );
                 }
                 "start" => {
+                    if !link_intent::load(&dir)? {
+                        bail!("Connection is paused. Connect before starting pairing.");
+                    }
                     let running = control::pair(control::PairAction::Start).await.is_ok();
                     let window = if running {
                         pairing::state(&dir)
@@ -447,7 +466,15 @@ async fn main() -> Result<()> {
     let dir = config_dir()?;
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let user_config = config::Config::load(&dir)?;
+    let mut link_enabled = link_intent::load(&dir)?;
     let desktop_status = Arc::new(status::StatusFile::new(&dir)?);
+    desktop_status
+        .transfers
+        .set_link_enabled(link_enabled, || Ok(()))?;
+    desktop_status.set_link_enabled(link_enabled);
+    if !link_enabled {
+        pairing::cancel(&dir)?;
+    }
     let identity = wire::load_or_create_identity(&dir.join("identity.bin"))?;
     let device_id = wire::device_id(&identity.public);
     let fingerprint = wire::fingerprint(&identity.public);
@@ -530,8 +557,11 @@ async fn main() -> Result<()> {
         proxy = relay_proxy.as_deref().unwrap_or("direct"),
         "relay configuration"
     );
-    let (mut relay_tasks, mut relay_rx) =
-        start_relay_workers(&relay_endpoints, &device_id, relay_proxy.clone());
+    let (mut relay_tasks, mut relay_rx) = if link_enabled {
+        start_relay_workers(&relay_endpoints, &device_id, relay_proxy.clone())
+    } else {
+        empty_relay_workers()
+    };
     let initial_pairing = pairing::state(&dir);
     let (mut pairing_relay_tasks, mut pairing_relay_rx) = match (
         initial_pairing.pairing_rendezvous.as_deref(),
@@ -588,8 +618,9 @@ async fn main() -> Result<()> {
                                 task.abort();
                                 let _ = task.await;
                             }
-                            let (tasks, rx) =
-                                start_relay_workers(&new_relays, &device_id, new_proxy.clone());
+                            let (tasks, rx) = if link_enabled {
+                                start_relay_workers(&new_relays, &device_id, new_proxy.clone())
+                            } else { empty_relay_workers() };
                             relay_tasks = tasks;
                             relay_rx = rx;
                             relay_endpoints = new_relays;
@@ -603,7 +634,7 @@ async fn main() -> Result<()> {
                                 pair_state.pairing_rendezvous.as_deref(),
                                 pair_state.pairing_expires_ms,
                             ) {
-                                (Some(rendezvous), Some(expires_ms)) => start_pairing_relay_workers(
+                                (Some(rendezvous), Some(expires_ms)) if link_enabled => start_pairing_relay_workers(
                                     &relay_endpoints,
                                     rendezvous,
                                     relay_proxy.clone(),
@@ -640,6 +671,57 @@ async fn main() -> Result<()> {
             }
             Some(request) = pair_rx.recv() => {
                 let result = match request.action {
+                    control::PairAction::Disconnect => {
+                        let outcome = desktop_status.transfers.set_link_enabled(false, || {
+                            // Never remove peer.txt or identity.bin for a temporary disconnect.
+                            link_intent::save(&dir, false)
+                        });
+                        match outcome {
+                            Err(error) => Err(format!("{error:#}")),
+                            Ok(()) => {
+                                link_enabled = false;
+                                desktop_status.set_link_enabled(false);
+                                admission_generation.invalidate();
+                                candidates.abort_all();
+                                if let Err(error) = pairing::cancel(&dir) {
+                                    warn!(%error, "could not remove pairing window; paused admission still blocks it");
+                                }
+                                for task in relay_tasks.drain(..).chain(pairing_relay_tasks.drain(..)) {
+                                    task.abort();
+                                    let _ = task.await;
+                                }
+                                (relay_tasks, relay_rx) = empty_relay_workers();
+                                (pairing_relay_tasks, pairing_relay_rx) = empty_relay_workers();
+                                if let Some(previous) = active.take() {
+                                    previous.abort();
+                                    let _ = previous.await;
+                                }
+                                active_path = None;
+                                desktop_status.set_link_enabled(false);
+                                Ok(())
+                            }
+                        }
+                    }
+                    control::PairAction::Connect => {
+                        if link_enabled { Ok(()) } else {
+                            // Cancel stale pairing windows before reopening any network path.
+                            let outcome = pairing::cancel(&dir).and_then(|_| {
+                                desktop_status.transfers.set_link_enabled(true, || link_intent::save(&dir, true))
+                            });
+                            match outcome {
+                                Err(error) => Err(format!("{error:#}")),
+                                Ok(()) => {
+                                    link_enabled = true;
+                                    desktop_status.set_link_enabled(true);
+                                    (relay_tasks, relay_rx) = start_relay_workers(&relay_endpoints, &device_id, relay_proxy.clone());
+                                    Ok(())
+                                }
+                            }
+                        }
+                    }
+                    control::PairAction::Start if !link_enabled => {
+                        Err("Connection is paused. Connect before starting pairing.".into())
+                    }
                     control::PairAction::Start => match pairing::start(&dir) {
                         Ok(window) => {
                             for task in pairing_relay_tasks.drain(..) {
@@ -715,6 +797,9 @@ async fn main() -> Result<()> {
                 }
             }
         };
+        if !link_enabled {
+            continue;
+        }
         let candidate = match arrival {
             ConnectionArrival::Socket(mut stream, peer, path, relay_endpoint) => {
                 if candidates.len() >= admission::MAX_PENDING {

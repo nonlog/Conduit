@@ -29,6 +29,8 @@ const RELOAD_COMMAND: &str = "\0reload\0";
 const PAIR_START_COMMAND: &str = "\0pair-start\0";
 const PAIR_CANCEL_COMMAND: &str = "\0pair-cancel\0";
 const PAIR_FORGET_COMMAND: &str = "\0pair-forget\0";
+const LINK_PAUSE_COMMAND: &str = "\0link-disconnect\0";
+const LINK_RESUME_COMMAND: &str = "\0link-connect\0";
 const TRANSFER_CANCEL_COMMAND: &str = "\0transfer-cancel\0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -62,6 +64,8 @@ pub enum PairAction {
     Start,
     Cancel,
     Forget,
+    Disconnect,
+    Connect,
 }
 
 pub struct PairRequest {
@@ -153,6 +157,8 @@ async fn handle(
         PAIR_START_COMMAND => Some(PairAction::Start),
         PAIR_CANCEL_COMMAND => Some(PairAction::Cancel),
         PAIR_FORGET_COMMAND => Some(PairAction::Forget),
+        LINK_PAUSE_COMMAND => Some(PairAction::Disconnect),
+        LINK_RESUME_COMMAND => Some(PairAction::Connect),
         _ => None,
     };
     if let Some(action) = pair_action {
@@ -343,6 +349,8 @@ pub async fn pair(action: PairAction) -> Result<()> {
         PairAction::Start => PAIR_START_COMMAND,
         PairAction::Cancel => PAIR_CANCEL_COMMAND,
         PairAction::Forget => PAIR_FORGET_COMMAND,
+        PairAction::Disconnect => LINK_PAUSE_COMMAND,
+        PairAction::Connect => LINK_RESUME_COMMAND,
     };
     simple_command(command, "Conduit pairing state to update").await
 }

@@ -17,6 +17,7 @@ pub struct Connection {
     pub relay: String,
     pub device: String,
     pub linked: bool,
+    pub paused: bool,
 }
 
 #[derive(Clone, Default, PartialEq, Debug)]
@@ -86,6 +87,7 @@ pub const OBSERVED_FILES: &[&str] = &[
     "notifications.tsv",
     "shared-links.tsv",
     "transfers.tsv",
+    "link-intent.txt",
 ];
 
 pub fn wallpaper_bytes() -> Option<Vec<u8>> {
@@ -268,6 +270,30 @@ pub fn save_theme_preference(theme: &str) -> Result<(), String> {
     fs::write(dir.join("rune-theme.txt"), theme).map_err(|e| e.to_string())
 }
 
+pub fn material_preference() -> crate::window_material::Material {
+    crate::window_material::Material::parse(&bounded(&data_dir().join("rune-material.txt"), 32))
+}
+
+pub fn save_material_preference(material: crate::window_material::Material) -> Result<(), String> {
+    let dir = data_dir();
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    fs::write(dir.join("rune-material.txt"), material.name()).map_err(|e| e.to_string())
+}
+
+pub fn smooth_scroll_preference() -> bool {
+    bounded(&data_dir().join("rune-smooth-scroll.txt"), 16).trim() != "false"
+}
+
+pub fn save_smooth_scroll_preference(enabled: bool) -> Result<(), String> {
+    let dir = data_dir();
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    fs::write(
+        dir.join("rune-smooth-scroll.txt"),
+        if enabled { "true" } else { "false" },
+    )
+    .map_err(|e| e.to_string())
+}
+
 pub fn daemon_path() -> Option<PathBuf> {
     if let Some(path) = env::var_os("CONDUIT_DAEMON_PATH").map(PathBuf::from) {
         if path.is_file() {
@@ -336,6 +362,8 @@ pub fn snapshot() -> Snapshot {
     let code = get(&pair, "code");
     let active = expiry > now && code.len() == 6 && code.bytes().all(|b| b.is_ascii_digit());
     let state = get(&status, "state");
+    let paused = get(&status, "link_enabled") == "false"
+        || bounded(&dir.join("link-intent.txt"), 32).trim() == "paused";
     let relay_proxy = get(&config, "relay_proxy");
     let (proxy_mode, manual_proxy) = match relay_proxy.as_str() {
         "system" => ("system", ""),
@@ -360,12 +388,17 @@ pub fn snapshot() -> Snapshot {
     let (autostart, explorer) = (false, false);
     Snapshot {
         connection: Connection {
-            linked: state == "linked",
-            state: match state.as_str() {
-                "linked" => "Connected",
-                "connecting" => "Connecting",
-                "retrying" => "Reconnecting",
-                _ => "Disconnected",
+            linked: !paused && state == "linked",
+            paused,
+            state: if paused {
+                "Paused"
+            } else {
+                match state.as_str() {
+                    "linked" => "Connected",
+                    "connecting" => "Connecting",
+                    "retrying" => "Reconnecting",
+                    _ => "Disconnected",
+                }
             }
             .into(),
             device: {

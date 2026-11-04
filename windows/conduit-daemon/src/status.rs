@@ -13,6 +13,7 @@ const FILE: &str = "status.txt";
 #[derive(Clone, Debug, Default)]
 struct Snapshot {
     state: String,
+    paused: bool,
     peer_name: String,
     peer_id: String,
     path: String,
@@ -41,6 +42,9 @@ impl StatusFile {
 
     pub fn linked(&self, peer_id: &str, path: &str, relay: Option<&str>) {
         self.update(|snapshot| {
+            if snapshot.paused {
+                return;
+            }
             snapshot.state = "linked".into();
             snapshot.peer_id = peer_id.into();
             snapshot.peer_name.clear();
@@ -50,12 +54,32 @@ impl StatusFile {
     }
 
     pub fn peer_name(&self, name: &str) {
-        self.update(|snapshot| snapshot.peer_name = name.into());
+        self.update(|snapshot| {
+            if !snapshot.paused {
+                snapshot.peer_name = name.into();
+            }
+        });
     }
 
     pub fn disconnected(&self) {
         self.update(|snapshot| {
-            snapshot.state = "disconnected".into();
+            snapshot.state = if snapshot.paused {
+                "paused"
+            } else {
+                "disconnected"
+            }
+            .into();
+            snapshot.peer_name.clear();
+            snapshot.peer_id.clear();
+            snapshot.path.clear();
+            snapshot.relay.clear();
+        });
+    }
+
+    pub fn set_link_enabled(&self, enabled: bool) {
+        self.update(|snapshot| {
+            snapshot.paused = !enabled;
+            snapshot.state = if enabled { "disconnected" } else { "paused" }.into();
             snapshot.peer_name.clear();
             snapshot.peer_id.clear();
             snapshot.path.clear();
@@ -84,13 +108,14 @@ fn write_snapshot(path: &Path, snapshot: &Snapshot) -> Result<()> {
         .unwrap_or_default()
         .as_millis();
     let body = format!(
-        "state={}\npeer_name={}\npeer_id={}\npath={}\nrelay={}\nupdated_ms={}\n",
+        "state={}\npeer_name={}\npeer_id={}\npath={}\nrelay={}\nupdated_ms={}\nlink_enabled={}\n",
         one_line(&snapshot.state),
         one_line(&snapshot.peer_name),
         one_line(&snapshot.peer_id),
         one_line(&snapshot.path),
         one_line(&snapshot.relay),
         updated_ms,
+        !snapshot.paused,
     );
     std::fs::write(path, body).with_context(|| format!("writing {}", path.display()))
 }
@@ -121,6 +146,14 @@ mod tests {
         assert!(body.contains("relay=tyo.example:41113\n"));
         status.disconnected();
         assert!(read(&dir).unwrap().contains("state=disconnected\n"));
+        status.set_link_enabled(false);
+        status.disconnected(); // delayed socket destruction cannot clear user intent
+        status.linked("late", "lan", None);
+        assert!(read(&dir).unwrap().contains("state=paused\n"));
+        assert!(read(&dir).unwrap().contains("link_enabled=false\n"));
+        status.set_link_enabled(true);
+        status.linked("peer-id", "lan", None);
+        assert!(read(&dir).unwrap().contains("state=linked\n"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

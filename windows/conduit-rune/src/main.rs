@@ -3,8 +3,10 @@
 mod bridge;
 mod icons;
 mod pairing_qr;
+mod smooth_scroll;
 #[cfg(windows)]
 mod window_icon;
+mod window_material;
 
 use notify::{RecursiveMode, Watcher};
 use rune::tok::{self, Theme, type_};
@@ -198,6 +200,11 @@ struct Ui {
     search: TextEdit,
     transfer_filter: TransferFilter,
     appearance: String,
+    material: window_material::Material,
+    backdrop_active: bool,
+    smooth_scrolling: bool,
+    motion_allowed: bool,
+    wheel_scroll: smooth_scroll::SmoothScroll,
     relays: TextEdit,
     manual_proxy: TextEdit,
     receive_dir: TextEdit,
@@ -207,6 +214,7 @@ struct Ui {
     confirm: Option<&'static str>,
     notice: Option<String>,
     busy: bool,
+    link_busy: bool,
     drop_over: bool,
 }
 
@@ -223,6 +231,11 @@ impl Ui {
             search: TextEdit::new(""),
             transfer_filter: TransferFilter::All,
             appearance: bridge::theme_preference(),
+            material: bridge::material_preference(),
+            backdrop_active: false,
+            smooth_scrolling: bridge::smooth_scroll_preference(),
+            motion_allowed: window_material::animations_enabled(),
+            wheel_scroll: smooth_scroll::SmoothScroll::default(),
             image_cache: None,
             wallpaper: None,
             pairing_qr: None,
@@ -237,6 +250,7 @@ impl Ui {
             confirm: None,
             notice,
             busy: false,
+            link_busy: false,
             drop_over: false,
         }
     }
@@ -319,9 +333,30 @@ impl Ui {
     fn navigate(&mut self, page: Page) {
         if self.page != page {
             self.search.replace_text("");
+            self.wheel_scroll.reset();
         }
         self.page = page;
         self.confirm = None;
+    }
+
+    fn set_material(&mut self, material: window_material::Material) {
+        match bridge::save_material_preference(material) {
+            Ok(()) => {
+                self.material = material;
+                self.backdrop_active = window_material::apply(material, &self.appearance);
+            }
+            Err(error) => self.notice = Some(error),
+        }
+    }
+
+    fn set_smooth_scrolling(&mut self, enabled: bool) {
+        match bridge::save_smooth_scroll_preference(enabled) {
+            Ok(()) => {
+                self.smooth_scrolling = enabled;
+                self.wheel_scroll.reset();
+            }
+            Err(error) => self.notice = Some(error),
+        }
     }
 
     fn save_settings(&mut self) {
@@ -391,6 +426,39 @@ impl Ui {
                     ui.sync(next);
                     ui.notice = Some(match result {
                         Ok(()) => "Transfer cancellation requested".into(),
+                        Err(error) => error,
+                    });
+                });
+            }
+        });
+    }
+
+    fn toggle_connection(&mut self) {
+        if self.link_busy {
+            return;
+        }
+        let enable = self.snap.connection.paused;
+        self.link_busy = true;
+        self.notice = Some(
+            if enable {
+                "Resuming connection..."
+            } else {
+                "Disconnecting..."
+            }
+            .into(),
+        );
+        let handle = HANDLE.get().cloned();
+        std::thread::spawn(move || {
+            let result =
+                bridge::daemon_command(&["link", if enable { "connect" } else { "disconnect" }]);
+            let next = bridge::snapshot();
+            if let Some(handle) = handle {
+                handle.update(move |ui, _| {
+                    ui.link_busy = false;
+                    ui.sync(next);
+                    ui.notice = Some(match result {
+                        Ok(_) if enable => "Connection enabled; waiting for your phone".into(),
+                        Ok(_) => "Disconnected. Pairing is preserved; connect to resume.".into(),
                         Err(error) => error,
                     });
                 });
@@ -507,6 +575,19 @@ impl Paint {
                 selected: color("#eaf1ff"),
             }
         }
+    }
+}
+
+impl Paint {
+    fn with_backdrop(mut self, active: bool, dark: bool) -> Self {
+        if active {
+            // Leave the native backdrop visible through the shell. Text/cards retain contrast.
+            self.surface = self.surface.alpha(if dark { 0.62 } else { 0.72 });
+            self.sidebar = self.sidebar.alpha(if dark { 0.28 } else { 0.38 });
+            self.card = self.card.alpha(0.86);
+            self.inset = self.inset.alpha(0.88);
+        }
+        self
     }
 }
 
@@ -828,6 +909,8 @@ fn sidebar(ui: &Ui, paint: Paint, compact: bool) -> El {
                         .child(
                             text(if ui.snap.connection.linked {
                                 "Phone connected"
+                            } else if ui.snap.connection.paused {
+                                "Connection paused"
                             } else {
                                 "Connect a phone"
                             })
@@ -865,7 +948,9 @@ fn summary_connection(ui: &Ui, paint: Paint, compact: bool) -> El {
     } else {
         "Your Android phone"
     };
-    let route = if !conn.linked {
+    let route = if conn.paused {
+        "Paused"
+    } else if !conn.linked {
         "Offline"
     } else if conn.route.to_ascii_lowercase().contains("lan") {
         "Direct LAN"
@@ -887,7 +972,9 @@ fn summary_connection(ui: &Ui, paint: Paint, compact: bool) -> El {
             .center()
             .child(icon(&icons::SMARTPHONE, 25.0).color(paint.faint))
     };
-    let endpoint = if conn.linked && !conn.relay.is_empty() {
+    let endpoint = if conn.paused {
+        "Pairing kept; reconnect when ready".into()
+    } else if conn.linked && !conn.relay.is_empty() {
         conn.relay.clone()
     } else if conn.linked {
         "End-to-end encrypted".into()
@@ -951,9 +1038,26 @@ fn summary_connection(ui: &Ui, paint: Paint, compact: bool) -> El {
                         true,
                         |ui| ui.open_picker(),
                     ))
-                    .child(button("connection-pair", "Pairing", paint, false, |ui| {
-                        ui.navigate(Page::Pairing)
-                    })),
+                    .child(
+                        row()
+                            .gap(6.0)
+                            .child(button("connection-pair", "Pairing", paint, false, |ui| {
+                                ui.navigate(Page::Pairing)
+                            }))
+                            .child(button(
+                                "connection-toggle",
+                                if ui.link_busy {
+                                    "Working..."
+                                } else if conn.paused {
+                                    "Connect"
+                                } else {
+                                    "Disconnect"
+                                },
+                                paint,
+                                conn.paused,
+                                |ui| ui.toggle_connection(),
+                            )),
+                    ),
             ),
     )
 }
@@ -1750,6 +1854,7 @@ fn settings(ui: &Ui, paint: Paint) -> El {
             move |ui| match bridge::save_theme_preference(mode) {
                 Ok(()) => {
                     ui.appearance = mode.into();
+                    ui.backdrop_active = window_material::apply(ui.material, mode);
                     #[cfg(windows)]
                     if let Err(error) = window_icon::update_appearance(mode) {
                         ui.notice = Some(format!("Could not update window appearance: {error}"));
@@ -1759,20 +1864,87 @@ fn settings(ui: &Ui, paint: Paint) -> El {
             },
         ));
     }
+    let mut materials = row().gap(3.0).padding(3.0).radius(9.0).fill(paint.inset);
+    for (material, label) in [
+        (window_material::Material::Acrylic, "Acrylic"),
+        (window_material::Material::Mica, "Mica"),
+        (window_material::Material::Solid, "Solid"),
+    ] {
+        materials = materials.child(segment(
+            format!("material-{}", material.name()),
+            label,
+            ui.material == material,
+            paint,
+            move |ui| ui.set_material(material),
+        ));
+    }
     let appearance_card = card(
         "settings-appearance",
         paint,
-        row()
+        col()
             .w_full()
-            .center_y()
-            .justify_between()
+            .gap(16.0)
             .child(
-                col()
-                    .gap(5.0)
-                    .child(heading("Appearance", paint))
-                    .child(muted("Choose how Conduit looks", paint)),
+                row()
+                    .w_full()
+                    .center_y()
+                    .justify_between()
+                    .child(
+                        col()
+                            .gap(5.0)
+                            .child(heading("Appearance", paint))
+                            .child(muted("Choose how Conduit looks", paint)),
+                    )
+                    .child(appearance),
             )
-            .child(appearance),
+            .child(el().w_full().h(1.0).fill(paint.line))
+            .child(
+                row()
+                    .w_full()
+                    .center_y()
+                    .justify_between()
+                    .child(
+                        col()
+                            .gap(5.0)
+                            .child(heading("Window material", paint))
+                            .child(
+                                text(if ui.backdrop_active {
+                                    "Native Windows backdrop"
+                                } else {
+                                    "Solid fallback when transparency is unavailable"
+                                })
+                                .font(rune::TextStyle::new(10.0, 450.0))
+                                .color(paint.faint)
+                                .max_lines(2),
+                            ),
+                    )
+                    .child(materials),
+            )
+            .child(el().w_full().h(1.0).fill(paint.line))
+            .child(
+                row()
+                    .w_full()
+                    .center_y()
+                    .justify_between()
+                    .child(
+                        col()
+                            .gap(5.0)
+                            .child(heading("Smooth wheel scrolling", paint))
+                            .child(
+                                text("Respects Windows animation settings; trackpad stays direct")
+                                    .font(rune::TextStyle::new(10.0, 450.0))
+                                    .color(paint.faint)
+                                    .max_lines(2),
+                            ),
+                    )
+                    .child(preference_toggle(
+                        "smooth-scroll",
+                        "Toggle smooth wheel scrolling",
+                        ui.smooth_scrolling,
+                        paint,
+                        |ui| ui.set_smooth_scrolling(!ui.smooth_scrolling),
+                    )),
+            ),
     );
     let mut connection = col()
         .gap(15.0)
@@ -2076,7 +2248,7 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
         "dark" => true,
         _ => cx.system_dark(),
     };
-    let paint = Paint::new(dark);
+    let paint = Paint::new(dark).with_backdrop(ui.backdrop_active, dark);
     let searchable = matches!(ui.page, Page::Transfers | Page::Notifications | Page::Links);
     let mut right = row().gap(10.0).center_y();
     if searchable && !compact {
@@ -2100,6 +2272,8 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
                 .child(
                     text(if ui.snap.connection.linked {
                         "Connected"
+                    } else if ui.snap.connection.paused {
+                        "Paused"
                     } else {
                         "Offline"
                     })
@@ -2114,6 +2288,7 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
         .min_w(0.0)
         .h_full()
         .padding(if compact { 20.0 } else { 26.0 })
+        .fill(paint.surface)
         .gap(22.0)
         .child(
             row()
@@ -2139,20 +2314,32 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
                 .child(muted(notice.clone(), paint).max_lines(3)),
         );
     }
+    let scroll_key = format!("page-scroll-{}", ui.page.name());
     body = body.child(
-        content(ui, paint, compact)
-            .scroll(ScrollSpec {
-                stick_bottom: false,
-            })
-            .grow(1.0)
-            .min_h(0.0),
+        ui.wheel_scroll.viewport::<Ui>(
+            col()
+                .key(scroll_key.clone())
+                .w_full()
+                .grow(1.0)
+                .min_h(0.0)
+                .scroll(ScrollSpec {
+                    stick_bottom: false,
+                })
+                .child(content(ui, paint, compact)),
+            scroll_key,
+            ui.smooth_scrolling && ui.motion_allowed,
+        ),
     );
     let mut root = row()
         .key("window")
         .role("window")
         .w_full()
         .h_full()
-        .fill(paint.surface)
+        .fill(if ui.backdrop_active {
+            Color::TRANSPARENT
+        } else {
+            paint.surface
+        })
         .child(sidebar(ui, paint, compact))
         .child(el().w(1.0).h_full().fill(paint.line.alpha(0.65)))
         .child(body);
@@ -2199,6 +2386,32 @@ fn on_key(ui: &mut Ui, event: &KeyEvent, _: &mut Tx) -> bool {
             true
         }
         _ => false,
+    }
+}
+
+fn refresh_native_preferences(ui: &mut Ui, focused: bool, tx: &mut Tx) {
+    if focused {
+        ui.motion_allowed = window_material::animations_enabled();
+        ui.backdrop_active = window_material::apply(ui.material, &ui.appearance);
+        #[cfg(windows)]
+        let _ = window_icon::update_appearance(&ui.appearance);
+        tx.instant();
+    }
+}
+
+fn setup_native_window(window: &rune::WindowHandle) {
+    #[cfg(windows)]
+    let _ = window_icon::install(window);
+    let active = window_material::install(
+        window,
+        bridge::material_preference(),
+        &bridge::theme_preference(),
+    );
+    if let Some(handle) = HANDLE.get() {
+        handle.update(move |ui, tx| {
+            ui.backdrop_active = active;
+            tx.instant();
+        });
     }
 }
 
@@ -2465,23 +2678,22 @@ fn main() {
         min_size: Some((760.0, 510.0)),
         ..AppSpec::new(window_title(), (1020.0, 605.0), Ui::init, view)
     })
+    .window_options(rune::WindowOptions {
+        transparent: cfg!(windows),
+        ..Default::default()
+    })
+    .on_focus(refresh_native_preferences)
     .tab_visits_controls(true)
     // Rune's first Windows frame can be initialized before the final DPI-sized
     // client area settles. Nudge its native size once to trigger a real resize
     // event and synchronize the surface + logical viewport without polling.
     .on_window(|window| {
         window.resize_instant((1020.0, 604.0));
-        #[cfg(windows)]
-        let _ = window_icon::install(window);
+        setup_native_window(window);
     })
     // Try again after the first GPU frame if the native HWND was not yet
     // available when Rune first invoked on_window().
-    .on_ready(|window| {
-        #[cfg(windows)]
-        let _ = window_icon::install(window);
-        #[cfg(not(windows))]
-        let _ = window;
-    });
+    .on_ready(setup_native_window);
     let handle = app.handle();
     let _ = HANDLE.set(handle.clone());
     // Only a user-launched desktop starts or watches the installed daemon. Headless
@@ -2507,6 +2719,38 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paused_connection_has_reconnect_without_losing_pairing_controls() {
+        let mut ui = Ui::init();
+        connected_scene(&mut ui);
+        ui.snap.connection.linked = false;
+        ui.snap.connection.paused = true;
+        ui.snap.pairing.paired = true;
+        let mut rt = Runtime::new(ui, view, (760.0, 510.0), Env::new(true, 1.0));
+        rt.frame(0.0);
+        rt.frame(1.0 / 60.0);
+        assert!(rt.find("connection-toggle").is_some());
+        assert!(rt.find("connection-pair").is_some());
+        assert!(rt.state.snap.pairing.paired);
+        assert!(!rt.state.snap.connection.linked);
+    }
+
+    #[test]
+    fn native_appearance_controls_expose_real_material_and_motion_preferences() {
+        let mut ui = Ui::init();
+        ui.page = Page::Settings;
+        let mut rt = Runtime::new(ui, view, (1020.0, 605.0), Env::new(true, 1.0));
+        rt.frame(0.0);
+        for key in [
+            "material-acrylic",
+            "material-mica",
+            "material-solid",
+            "smooth-scroll",
+        ] {
+            assert!(rt.find(key).is_some(), "missing {key}");
+        }
+    }
 
     #[test]
     fn native_ui_renders_and_navigates_without_daemon() {
