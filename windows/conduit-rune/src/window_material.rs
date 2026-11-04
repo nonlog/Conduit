@@ -41,15 +41,49 @@ mod native {
     use super::Material;
     use rune::raw_window_handle::RawWindowHandle;
     use std::sync::atomic::{AtomicIsize, Ordering};
+    use windows_sys::Win32::Foundation::{GetLastError, SetLastError};
     use windows_sys::Win32::Graphics::Dwm::{
         DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE, DwmExtendFrameIntoClientArea,
         DwmSetWindowAttribute,
     };
     use windows_sys::Win32::UI::Controls::MARGINS;
-    use windows_sys::Win32::UI::WindowsAndMessaging::SystemParametersInfoW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GWL_EXSTYLE, GetWindowLongPtrW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, SystemParametersInfoW,
+        WS_EX_NOREDIRECTIONBITMAP,
+    };
     use winreg::{RegKey, enums::HKEY_CURRENT_USER};
 
     static WINDOW: AtomicIsize = AtomicIsize::new(0);
+
+    /// Rune presents a transparent DirectComposition visual. A legacy HWND
+    /// redirection bitmap underneath it can hide DWM's backdrop behind an
+    /// opaque white surface, even when the backdrop attribute reports success.
+    /// Configure our own HWND before its first frame; never change another app.
+    unsafe fn prepare_composition(hwnd: *mut core::ffi::c_void) -> bool {
+        unsafe {
+            let before = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            let required = WS_EX_NOREDIRECTIONBITMAP as isize;
+            if before & required != 0 {
+                return true;
+            }
+            SetLastError(0);
+            let previous = SetWindowLongPtrW(hwnd, GWL_EXSTYLE, before | required);
+            if previous == 0 && GetLastError() != 0 {
+                return false;
+            }
+            let _ = SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            );
+            GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & required != 0
+        }
+    }
 
     #[repr(C)]
     struct HighContrast {
@@ -104,7 +138,8 @@ mod native {
         if hwnd.is_null() {
             return false;
         }
-        let requested = material.backdrop(transparency_permitted());
+        let permitted = transparency_permitted() && unsafe { prepare_composition(hwnd) };
+        let requested = material.backdrop(permitted);
         let dark = i32::from(dark(appearance));
         unsafe {
             let _ = DwmSetWindowAttribute(
