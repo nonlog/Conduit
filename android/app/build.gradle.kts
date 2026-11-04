@@ -21,8 +21,22 @@ android {
         compose = true
     }
 
+    // Private persistent signing is injected only by the trusted release/dispatch job.
+    // Pull-request/emulator debug builds never need or contain the release key.
+    val privateKeyStore = System.getenv("CONDUIT_ANDROID_KEYSTORE")?.takeIf { it.isNotBlank() }
+    if (privateKeyStore != null) {
+        signingConfigs.create("privateRelease") {
+            storeFile = file(privateKeyStore)
+            storeType = "PKCS12"
+            storePassword = requireNotNull(System.getenv("CONDUIT_ANDROID_KEYSTORE_PASSWORD")) { "Release signing password is missing" }
+            keyAlias = "conduit-release"
+            keyPassword = storePassword
+        }
+    }
+
     buildTypes {
         release {
+            if (privateKeyStore != null) signingConfig = signingConfigs.getByName("privateRelease")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(

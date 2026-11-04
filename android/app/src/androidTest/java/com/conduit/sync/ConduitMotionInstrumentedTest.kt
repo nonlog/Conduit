@@ -13,7 +13,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.test.assertDoesNotExist
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -123,7 +122,8 @@ class ConduitMotionInstrumentedTest {
         compose.mainClock.advanceTimeByFrame()
         compose.mainClock.advanceTimeBy(64)
         val bounds = compose.onNodeWithTag("section-content-Test section").getUnclippedBoundsInRoot()
-        assertTrue("Collapse must have an intermediate height", bounds.height.value > 1f && bounds.height.value < 159f)
+        val height = (bounds.bottom - bounds.top).value
+        assertTrue("Collapse must have an intermediate height", height > 1f && height < 159f)
         compose.mainClock.advanceTimeBy(600)
         compose.onNodeWithText("Details").assertDoesNotExist()
         compose.onNodeWithTag("section-Test section").performClick()

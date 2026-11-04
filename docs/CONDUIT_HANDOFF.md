@@ -15,6 +15,16 @@
 - ADB was reconnected to the known Wi-Fi device. Do not switch its network during remote work.
   Android icon/motion work and safe signing upgrade are still pending in this checkpoint.
 - All new formal tests/builds must run in Actions. Local rustfmt is not execution evidence.
+- Implemented finite mobile page/nav/state/disclosure/dialog/progress transitions and generated
+  launcher, monochrome, notification/tile and share vectors from the desktop's single SVG source.
+  Android versionCode is 17. First CI app compilation/lint passed; instrumentation API fixes and
+  real intermediate-frame tests are in progress. Native desktop tests passed on db65e2a.
+- Prepared a persistent encrypted private Android release signer in GitHub encrypted repository
+  secrets; only its public fingerprint is committed at android/signing-cert.sha256. No private
+  material is in source, logs or downloadable build artifacts. Tagged releases must verify it.
+- Original phone signer differs. A narrowly scoped root data backup/restore helper and disposable
+  emulator certificate-migration rehearsal must pass before a one-time live migration. Do not
+  uninstall a real app until verified backup, original APK and restore/rollback are available.
 
 - Continue the existing `codex/conduit-multipeer-20261104` branch and PR #27.
   Base implementation is `7df8535`; do not reopen an old worktree or create another feature branch.

@@ -20,4 +20,7 @@ if ! find artifacts/expressive-ui -name '*.png' -print -quit | grep -q .; then
   echo 'No PNG screenshots collected' >&2
   status=1
 fi
+if [[ "$status" == 0 ]]; then
+  bash tools/ci-signing-migration.sh || status=$?
+fi
 exit "$status"
