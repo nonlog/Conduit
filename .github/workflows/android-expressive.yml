@@ -47,6 +47,10 @@ jobs:
         run: |
           python3 ../scripts/sync-android-brand.py --check
           ./gradlew --no-daemon --stacktrace testDebugUnitTest assembleDebug assembleRelease
+      - name: Verify scanner and LSPosed entry points survive release shrinking
+        run: |
+          release_apk="$(find android/app/build/outputs/apk/release -maxdepth 1 -name '*.apk' -type f -print -quit)"
+          bash scripts/verify-android-entrypoints.sh "$release_apk"
       - name: Verify persistent signing identity
         if: github.event_name == 'workflow_dispatch'
         run: bash scripts/verify-android-signer.sh android/app/build/outputs/apk/release/app-release.apk
