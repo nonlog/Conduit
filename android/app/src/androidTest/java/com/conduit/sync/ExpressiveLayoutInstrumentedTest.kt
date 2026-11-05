@@ -201,8 +201,8 @@ class ExpressiveLayoutInstrumentedTest {
         compose.setContent {
             ConduitTheme(darkOverride = true) {
                 assertSame(MotionScheme.expressive(), MaterialTheme.motionScheme)
-                assertEquals(0xFF111414.toInt(), MaterialTheme.colorScheme.background.toArgb())
-                assertEquals(0xFF1E2020.toInt(), MaterialTheme.colorScheme.surfaceContainerLow.toArgb())
+                assertEquals(0xFF101413.toInt(), MaterialTheme.colorScheme.background.toArgb())
+                assertEquals(0xFF191E1D.toInt(), MaterialTheme.colorScheme.surfaceContainerLow.toArgb())
                 assertEquals(24f, MaterialTheme.typography.headlineLarge.fontSize.value, 0.01f)
             }
         }
