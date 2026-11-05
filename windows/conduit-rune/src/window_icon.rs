@@ -179,11 +179,9 @@ pub fn release() {
 
 #[cfg(test)]
 mod tests {
-    use super::effective_dark;
-
     #[test]
     fn explicit_theme_controls_native_caption_independently_of_windows_theme() {
-        assert!(effective_dark("dark"));
-        assert!(!effective_dark("light"));
+        assert!(crate::window_material::effective_dark("dark"));
+        assert!(!crate::window_material::effective_dark("light"));
     }
 }
