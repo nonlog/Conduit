@@ -1,5 +1,56 @@
 # Conduit handoff
 
+## Release checkpoint: eight fixes verified, v0.1.17 tag created
+
+- Runtime source is `77414cb33b84d3315db1be6247980e24f42604dd` on the existing
+  `codex/conduit-multipeer-20261104` / PR #27. The working tree was clean before this
+  documentation update. Do not return to the old frontend or create another branch.
+- All eight reported defects have corresponding source changes. Native CI `41995538429`
+  passes 43 tests and 28 rendered scenes. Full Build `41995538358` passes Windows, Android,
+  Relay, installation/uninstallation and real tray-exit process regression. Explicit signed
+  Android workflow `41996884568` passes 24 Android 16 UI tests, actual scanner Activity start
+  and cancellation, certificate/update rehearsal, optimized APK scanner/LSPosed entry-point
+  checks, and the existing fixed signing identity. No project was compiled on the user's PC.
+- The native UI from that verified run is installed as an overlay over full candidate
+  `999c670` (Build `41990771559`). Installed Rune SHA-256 is
+  `7be6d39f4aa4c93217267633341ba73b426072ff3556fce1b95fec62bb9a90e1`.
+  `native-ui-build.json` now records the actual base package, not a hardcoded older revision.
+  Installing the overlay left the daemon, pairing and configuration unchanged.
+- The real desktop tray Exit route was exercised while linked, with no file transfer active.
+  WM_COMMAND/MENU_EXIT ended the daemon normally in 24 ms, released port 41112, removed the
+  tray window and preserved identity, peer, peer-name and configuration hashes. No process kill
+  was used. The daemon was restarted through Explorer and reconnected to the existing phone.
+- Native caption hit testing, full-client bounds, minimize and maximize passed on the installed
+  binary. WS_CAPTION is absent and native resize/Snap/system-menu styles remain. Current screen
+  capture fails with an invalid desktop handle, so do not claim a new live DWM pixel inspection.
+  A one-shot render of the installed binary against an isolated copy of real notification rows
+  and cached PNGs verified actual app icons, local date/time and card layout. This private QA
+  fixture contains notification content, not device keys; never publish it or its screenshot.
+- Phone is now updated IN PLACE to the optimized `77414cb` APK, 0.1.17 / versionCode 19.
+  APK SHA-256 is `45b5be7d3f78eff94a314e2de5b5ac21b924742e02c495e59a8e602113053603`.
+  Both installed-old and new certificate fingerprints matched the committed fixed signer.
+  Five original identity/pairing files remained hash-identical after `adb install -r`.
+  No uninstall, data clear, signature migration, network change or new permission grant occurred.
+  Rollback APK and hash-only verification are under `Artifacts/Conduit/eight-fixes/android-77414cb`.
+- Phone ADB is `192.168.110.93:5555`. Camera permission was already granted, but the phone is
+  keyguard-locked; one ordinary wake did not expose the app. Physical optical QR scanning was
+  not performed. Scanner startup/cancellation is verified by the real CI emulator, not a mock.
+  Do not remove the lock or keep waking it. Keep the original trust identities intact.
+- Wallpaper absence on a new PC is an explicit Android permission boundary. All-files access
+  remains denied/default; the original PC has an older cached JPEG. The phone's new Device
+  wallpaper preview row explains the permission and refreshes all connected peers after approval.
+  Do not silently grant that broad permission, copy a private wallpaper across machines, or claim
+  fresh wallpaper delivery without the user's approval. Existing cached previews still render.
+- Annotated `v0.1.17` was created at the verified runtime commit; tagger is Codex. All project
+  versions are 0.1.17 (Android code 19). Await the tagged full Actions release, then verify assets,
+  update `nonlog/scoop-www/bucket/conduit.json`, and upgrade the local Scoop installation so its
+  package metadata no longer says 0.1.15 while running candidate overlays. Never rewrite v0.1.16.
+- Current PC helpers use Chat On Steroids Core: Windows-log returned an account-connection error.
+  QA evidence is `Artifacts/Conduit/native-77414cb/runtime-qa`. Preserve rollback/private backups;
+  remove temporary staging and the private notification fixture after final verification.
+
+## Earlier implementation checkpoint (superseded by verified state above)
+
 ## Active follow-up: eight reported desktop/mobile defects
 
 - Continue PR #27 on `codex/conduit-multipeer-20261104`. Latest published release remains
