@@ -163,6 +163,7 @@ jobs:
           foreach ($file in @(
             'scripts/test-stable-desktop-install.ps1',
             'scripts/test-stable-desktop-package.ps1',
+            'scripts/test-daemon-exit.ps1',
             'scripts/verify-version.ps1'
           )) {
             $tokens = $null
@@ -306,6 +307,11 @@ jobs:
         shell: pwsh
         timeout-minutes: 10
         run: ./scripts/test-stable-desktop-install.ps1 -PackageZip ./artifacts/Conduit-windows-x64.zip
+
+      - name: Verify actual tray Exit shuts down and releases the daemon
+        shell: pwsh
+        timeout-minutes: 4
+        run: ./scripts/test-daemon-exit.ps1 -PackageZip ./artifacts/Conduit-windows-x64.zip
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v7

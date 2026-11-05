@@ -196,7 +196,7 @@ impl Drop for Bridge {
                 .take(),
         );
         if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+            crate::shutdown::join_native(thread, "clipboard");
         }
         info!("clipboard listener down");
     }

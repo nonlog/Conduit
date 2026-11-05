@@ -18,6 +18,8 @@ pub struct Config {
     pub tray_icon: Option<bool>,
     /// Empty or absent means the Windows Downloads known folder.
     pub receive_dir: Option<String>,
+    /// Zero disables age cleanup; the bounded record count still applies.
+    pub notification_retention_days: Option<u32>,
 }
 
 impl Config {
@@ -55,6 +57,9 @@ impl Config {
             body.push_str(value);
             body.push('\n');
         }
+        if let Some(days) = self.notification_retention_days {
+            body.push_str(&format!("notification_retention_days={days}\n"));
+        }
         std::fs::write(&path, body).with_context(|| format!("writing {}", path.display()))?;
         Ok(path)
     }
@@ -91,6 +96,38 @@ impl Config {
 
     pub fn show_tray_icon(&self) -> bool {
         self.tray_icon.unwrap_or(true)
+    }
+
+    pub fn retention_days(&self) -> u32 {
+        self.notification_retention_days
+            .unwrap_or(crate::notification_history::DEFAULT_RETENTION_DAYS)
+    }
+
+    pub fn publish_effective(&self, dir: &Path, default_relays: &str) -> Result<()> {
+        let source = if std::env::var("CONDUIT_RELAYS").is_ok()
+            || self.relays.is_none() && std::env::var("CONDUIT_RELAY").is_ok()
+        {
+            "environment"
+        } else if self.relays.is_some() {
+            "config"
+        } else {
+            "default"
+        };
+        // Never include proxy credentials, private keys or unrelated configuration.
+        let relays = self
+            .resolved_relays(default_relays)
+            .join(";")
+            .replace(['\r', '\n'], "");
+        let temporary = dir.join("effective-settings.tmp");
+        std::fs::write(
+            &temporary,
+            format!(
+                "relays={relays}\nrelays_source={source}\nnotification_retention_days={}\n",
+                self.retention_days()
+            ),
+        )?;
+        std::fs::rename(temporary, dir.join("effective-settings.txt"))?;
+        Ok(())
     }
 }
 
@@ -168,6 +205,15 @@ fn parse(text: &str) -> Result<Config> {
                 })
             }
             "receive_dir" => config.receive_dir = Some(value),
+            "notification_retention_days" => {
+                let days: u32 = value
+                    .parse()
+                    .context("notification retention must be a whole number of days")?;
+                if days > 3650 {
+                    bail!("notification retention must be 0..3650 days");
+                }
+                config.notification_retention_days = Some(days);
+            }
             other => bail!("unknown configuration key {other:?} on line {}", index + 1),
         }
     }
@@ -222,6 +268,26 @@ mod tests {
     #[test]
     fn relay_list_is_ordered_and_deduplicated() {
         assert_eq!(split_relays(" wa:1;tyo:2, wa:1 "), vec!["wa:1", "tyo:2"]);
+    }
+
+    #[test]
+    fn notification_policy_rejects_bad_values_and_preserves_disabled() {
+        assert_eq!(Config::default().retention_days(), 30);
+        assert_eq!(
+            parse("notification_retention_days=0")
+                .unwrap()
+                .retention_days(),
+            0
+        );
+        assert_eq!(
+            parse("notification_retention_days=3650")
+                .unwrap()
+                .retention_days(),
+            3650
+        );
+        for value in ["-1", "3651", "1.5", "bad"] {
+            assert!(parse(&format!("notification_retention_days={value}")).is_err());
+        }
     }
 
     #[test]

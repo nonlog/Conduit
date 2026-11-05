@@ -6,10 +6,147 @@
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::Notify;
 
 const FILE: &str = "notifications.tsv";
 pub const MAX_ENTRIES: usize = 100;
+pub const DEFAULT_RETENTION_DAYS: u32 = 30;
+const DAY_MS: u64 = 86_400_000;
+
+/// One serialized owner for history writes, settings changes and explicit clears.
+/// The maintenance task sleeps until the oldest retained row expires, not on a poll.
+pub struct History {
+    dir: PathBuf,
+    days: Mutex<u32>,
+    changed: Notify,
+}
+
+impl History {
+    pub fn new(dir: &Path, days: u32) -> Result<Arc<Self>> {
+        anyhow::ensure!(days <= 3650, "notification retention must be 0..3650 days");
+        let history = Arc::new(Self {
+            dir: dir.to_owned(),
+            days: Mutex::new(days),
+            changed: Notify::new(),
+        });
+        history.prune()?;
+        Ok(history)
+    }
+
+    pub fn configure(&self, days: u32) -> Result<()> {
+        anyhow::ensure!(days <= 3650, "notification retention must be 0..3650 days");
+        let mut policy = self.days.lock().unwrap_or_else(|error| error.into_inner());
+        prune_at(&self.dir, days, now_ms())?;
+        *policy = days;
+        self.changed.notify_one();
+        Ok(())
+    }
+
+    pub fn clear(&self) -> Result<()> {
+        let _guard = self.days.lock().unwrap_or_else(|error| error.into_inner());
+        write(&self.dir, Vec::new())?;
+        self.changed.notify_one();
+        Ok(())
+    }
+
+    pub fn prune(&self) -> Result<usize> {
+        let days = self.days.lock().unwrap_or_else(|error| error.into_inner());
+        let removed = prune_at(&self.dir, *days, now_ms())?;
+        self.changed.notify_one();
+        Ok(removed)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_new(
+        &self,
+        key: &str,
+        package: &str,
+        app: &str,
+        title: &str,
+        body: &str,
+        timestamp_ms: u64,
+    ) -> Result<()> {
+        let days = self.days.lock().unwrap_or_else(|error| error.into_inner());
+        let now = now_ms();
+        // A bad remote clock must not make a notification survive forever.
+        let timestamp = if timestamp_ms == 0 {
+            now
+        } else {
+            timestamp_ms.min(now)
+        };
+        record_new(&self.dir, key, package, app, title, body, timestamp)?;
+        prune_at(&self.dir, *days, now)?;
+        self.changed.notify_one();
+        Ok(())
+    }
+
+    pub fn record_update(&self, key: &str, title: &str, body: &str) -> Result<()> {
+        let days = self.days.lock().unwrap_or_else(|error| error.into_inner());
+        record_update(&self.dir, key, title, body)?;
+        prune_at(&self.dir, *days, now_ms())?;
+        self.changed.notify_one();
+        Ok(())
+    }
+
+    pub async fn maintain(self: Arc<Self>) {
+        loop {
+            let changed = self.changed.notified();
+            let expiry = {
+                let days = self.days.lock().unwrap_or_else(|error| error.into_inner());
+                next_expiry(&read(&self.dir), *days)
+            };
+            match expiry {
+                None => changed.await,
+                Some(expiry) => {
+                    let delay =
+                        std::time::Duration::from_millis(expiry.saturating_sub(now_ms()).max(1));
+                    tokio::select! {
+                        _ = changed => {},
+                        _ = tokio::time::sleep(delay) => {
+                            if let Err(error) = self.prune() {
+                                tracing::warn!(%error, "notification expiry cleanup failed; retry on next history event");
+                                // A broken filesystem must not produce an idle retry loop.
+                                self.changed.notified().await;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn expired(timestamp_ms: u64, days: u32, now: u64) -> bool {
+    days != 0 && timestamp_ms < now.saturating_sub(u64::from(days) * DAY_MS)
+}
+
+fn next_expiry(entries: &[Entry], days: u32) -> Option<u64> {
+    if days == 0 {
+        return None;
+    }
+    entries
+        .iter()
+        .map(|entry| {
+            entry
+                .timestamp_ms
+                .saturating_add(u64::from(days) * DAY_MS)
+                .saturating_add(1)
+        })
+        .min()
+}
+
+fn prune_at(dir: &Path, days: u32, now: u64) -> Result<usize> {
+    let mut entries = read(dir);
+    let before = entries.len();
+    entries.retain(|entry| !expired(entry.timestamp_ms, days, now));
+    let removed = before - entries.len();
+    if removed != 0 {
+        write(dir, entries)?;
+    }
+    Ok(removed)
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
@@ -103,7 +240,10 @@ fn write(dir: &Path, mut entries: Vec<Entry>) -> Result<()> {
             entry.timestamp_ms, entry.key, entry.package, entry.app, entry.title, entry.body,
         );
     }
-    std::fs::write(path(dir), body).context("writing notification history")
+    let destination = path(dir);
+    let temporary = destination.with_extension(format!("{}.tmp", std::process::id()));
+    std::fs::write(&temporary, body).context("writing notification history")?;
+    std::fs::rename(&temporary, destination).context("publishing notification history")
 }
 
 fn parse_line(line: &str) -> Option<Entry> {
@@ -144,6 +284,39 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn age_boundary_disabled_policy_and_future_timestamps_are_explicit() {
+        let now = 90 * DAY_MS;
+        assert!(!expired(now - 30 * DAY_MS, 30, now));
+        assert!(expired(now - 30 * DAY_MS - 1, 30, now));
+        assert!(!expired(1, 0, now));
+        assert!(!expired(now + DAY_MS, 30, now));
+        assert_eq!(next_expiry(&[], 30), None);
+    }
+
+    #[test]
+    fn retention_and_clear_serialize_without_rewriting_pairing() {
+        let dir = scratch("policy");
+        std::fs::write(dir.join("identity.bin"), b"preserve").unwrap();
+        record_new(&dir, "old", "pkg", "App", "Old", "Body", 1).unwrap();
+        record_new(&dir, "new", "pkg", "App", "Recent", "Body", now_ms()).unwrap();
+        let history = History::new(&dir, 30).unwrap();
+        assert_eq!(read(&dir).len(), 1);
+        history.configure(0).unwrap();
+        history
+            .record_new("keep", "pkg", "App", "Old", "Body", 1)
+            .unwrap();
+        assert_eq!(read(&dir).len(), 2);
+        assert!(history.configure(3651).is_err());
+        history.clear().unwrap();
+        assert!(read(&dir).is_empty());
+        assert_eq!(
+            std::fs::read(dir.join("identity.bin")).unwrap(),
+            b"preserve"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(

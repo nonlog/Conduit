@@ -20,6 +20,7 @@ mod link_intent;
 mod notification_history;
 mod pairing;
 mod shared_links;
+mod shutdown;
 mod status;
 mod toast;
 mod transfer;
@@ -152,8 +153,19 @@ impl Drop for SessionGuard {
     }
 }
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()?;
+    let result = runtime.block_on(run());
+    // Tokio's default destructor waits indefinitely for any blocking shell/file
+    // operation. Network and native workers are explicitly stopped in run().
+    runtime.shutdown_timeout(Duration::from_secs(2));
+    result
+}
+
+async fn run() -> Result<()> {
     // Keep the headless daemon, control surface, Start-menu shortcut and toast identity under one
     // Windows application identity. This must happen before any shell/toast interaction.
     unsafe {
@@ -363,6 +375,17 @@ async fn main() -> Result<()> {
             }
             return Ok(());
         }
+        if command == "notifications" {
+            let action = args
+                .next()
+                .context("usage: conduit-daemon notifications <clear|prune>")?;
+            let action = action.to_string_lossy();
+            if args.next().is_some() || !matches!(action.as_ref(), "clear" | "prune") {
+                bail!("usage: conduit-daemon notifications <clear|prune>");
+            }
+            control::notifications(action == "clear").await?;
+            return Ok(());
+        }
         if command == "reload" && args.next().is_none() {
             control::reload().await?;
             return Ok(());
@@ -490,6 +513,10 @@ async fn main() -> Result<()> {
         })?;
     info!(port = PORT, "listening");
 
+    let history = notification_history::History::new(&dir, user_config.retention_days())?;
+    user_config.publish_effective(&dir, DEFAULT_RELAYS)?;
+    let history_task = tokio::spawn(history.clone().maintain());
+
     // Optional tray icon. It is one blocked Win32 message loop and is not created at all when the
     // setting is off. Failures are non-fatal: transport and clipboard sync remain useful without it.
     let (tray_exit_tx, mut tray_exit_rx) = mpsc::unbounded_channel::<()>();
@@ -534,8 +561,17 @@ async fn main() -> Result<()> {
     let (pair_tx, mut pair_rx) = mpsc::channel::<control::PairRequest>(4);
     let (pair_session_tx, _) = broadcast::channel::<control::PairAction>(4);
     let control_transfers = desktop_status.transfers.clone();
-    tokio::spawn(async move {
-        if let Err(e) = control::serve(outbound_tx, reload_tx, pair_tx, control_transfers).await {
+    let control_history = history.clone();
+    let control_task = tokio::spawn(async move {
+        if let Err(e) = control::serve(
+            outbound_tx,
+            reload_tx,
+            pair_tx,
+            control_transfers,
+            control_history,
+        )
+        .await
+        {
             warn!(error = %e, "local control pipe stopped");
         }
     });
@@ -595,6 +631,12 @@ async fn main() -> Result<()> {
                         let new_proxy = new_config.resolved_proxy();
                         let relay_changed = new_relays != relay_endpoints || new_proxy != relay_proxy;
                         let mut apply_error = None;
+                        if let Err(error) = history.configure(new_config.retention_days()) {
+                            apply_error = Some(format!("updating notification retention: {error:#}"));
+                        }
+                        if let Err(error) = new_config.publish_effective(&dir, DEFAULT_RELAYS) {
+                            apply_error = Some(format!("publishing effective settings: {error:#}"));
+                        }
 
                         if wanted_tray != tray.is_some() {
                             if wanted_tray {
@@ -903,6 +945,7 @@ async fn main() -> Result<()> {
         let toast_action_tx = toast_action_tx.clone();
         let pair_session_tx = pair_session_tx.clone();
         let data_dir = dir.clone();
+        let history = history.clone();
         active_path = Some(via);
         active = Some(tokio::spawn(async move {
             let _guard = SessionGuard {
@@ -923,6 +966,7 @@ async fn main() -> Result<()> {
                 &toast_action_tx,
                 &pair_session_tx,
                 &data_dir,
+                &history,
             )
             .await
             {
@@ -931,16 +975,28 @@ async fn main() -> Result<()> {
         }));
     }
 
-    candidates.abort_all();
+    candidates.shutdown().await;
     if let Some(session) = active.take() {
         session.abort();
         let _ = session.await;
     }
-    for task in pairing_relay_tasks.drain(..) {
+    for task in pairing_relay_tasks.drain(..).chain(relay_tasks.drain(..)) {
         task.abort();
         let _ = task.await;
     }
     desktop_status.disconnected();
+    control_task.abort();
+    history_task.abort();
+    let _ = control_task.await;
+    let _ = history_task.await;
+    drop(listener);
+    drop(_advert);
+    // Close channels and native message loops while the runtime is still alive,
+    // rather than leaving their last Arc owners to run inside runtime teardown.
+    drop(toasts);
+    drop(bridge);
+    drop(tray);
+    info!("Conduit daemon shutdown completed");
     Ok(())
 }
 
@@ -1119,6 +1175,7 @@ async fn serve(
     toast_action_tx: &broadcast::Sender<pb::NotifAction>,
     pair_session_tx: &broadcast::Sender<control::PairAction>,
     data_dir: &std::path::Path,
+    history: &notification_history::History,
 ) -> Result<()> {
     let idle_ping = if path.starts_with("relay") {
         RELAY_IDLE_PING
@@ -1612,8 +1669,12 @@ async fn serve(
                 } else {
                     notif.app_name.clone()
                 };
-                if let Err(e) = notification_history::record_new(
-                    data_dir,
+                if let Err(error) =
+                    toast::cache_history_icon(data_dir, &notif.package, &notif.app_icon_png)
+                {
+                    warn!(%error, "could not cache notification app icon");
+                }
+                if let Err(e) = history.record_new(
                     &notif.key,
                     &notif.package,
                     &app,
@@ -1643,12 +1704,7 @@ async fn serve(
                     warn!("malformed notification update dropped");
                     continue;
                 };
-                if let Err(e) = notification_history::record_update(
-                    data_dir,
-                    &notif.key,
-                    &notif.title,
-                    &notif.text,
-                ) {
+                if let Err(e) = history.record_update(&notif.key, &notif.title, &notif.text) {
                     warn!(error = %e, "could not update notification history");
                 }
                 if let Some(toasts) = toasts {

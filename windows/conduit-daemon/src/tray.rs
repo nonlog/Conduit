@@ -81,7 +81,7 @@ impl Drop for Tray {
             }
         }
         if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+            crate::shutdown::join_native(thread, "tray");
         }
     }
 }
