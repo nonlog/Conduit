@@ -56,11 +56,8 @@ internal fun ExpressiveDeviceCard(
     }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         ExpressiveCard(Modifier.fillMaxWidth()) {
-            Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(28.dp))) {
-                // Real Material Expressive shape API. Static decoration, no background renderer.
-                Box(Modifier.align(Alignment.TopEnd).offset(x = 72.dp, y = (-26).dp)
-                    .size(204.dp).background(c.surfaceContainer, MaterialShapes.Cookie9Sided.toShape()))
-                Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+            Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp))) {
+                Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
                         Icon(painterResource(R.drawable.ic_connection_status), null, Modifier.size(20.dp), tint = c.onSurfaceVariant)
                         Text("Connection", style = MaterialTheme.typography.titleMedium)
@@ -70,7 +67,7 @@ internal fun ExpressiveDeviceCard(
                         horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(9.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                Box(Modifier.size(44.dp).background(c.surfaceContainerHighest, MaterialShapes.Clover4Leaf.toShape()),
+                                Box(Modifier.size(44.dp).background(c.surfaceContainerHighest, RoundedCornerShape(14.dp)),
                                     contentAlignment = Alignment.Center) {
                                     Icon(painterResource(R.drawable.ic_desktop), null, Modifier.size(23.dp), tint = c.onSurfaceVariant)
                                 }
@@ -94,14 +91,14 @@ internal fun ExpressiveDeviceCard(
                         FilledIconButton(
                             onClick = { when { pairing -> onCancelPair(); !paired -> onPair(); requested -> onDisconnect(); else -> onConnect() } },
                             shapes = IconButtonDefaults.shapes(shape = CircleShape, pressedShape = RoundedCornerShape(26.dp)),
-                            modifier = Modifier.size(82.dp).semantics { contentDescription = description },
+                            modifier = Modifier.size(64.dp).semantics { contentDescription = description },
                             colors = IconButtonDefaults.filledIconButtonColors(containerColor = c.primary, contentColor = c.onPrimary),
                         ) {
                             Crossfade(
                                 targetState = when { pairing -> R.drawable.ic_close; !paired -> R.drawable.ic_add; requested -> R.drawable.ic_pause; else -> R.drawable.ic_play },
                                 animationSpec = if (LocalConduitMotion.current) tween(ConduitMotion.feedbackMillis) else snap(),
                                 label = "Connect control",
-                            ) { glyph -> Icon(painterResource(glyph), contentDescription = null, modifier = Modifier.size(32.dp)) }
+                            ) { glyph -> Icon(painterResource(glyph), contentDescription = null, modifier = Modifier.size(26.dp)) }
                         }
                     }
                 }

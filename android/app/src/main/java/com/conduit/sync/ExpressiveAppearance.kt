@@ -36,7 +36,7 @@ import androidx.compose.ui.unit.dp
 
 internal object ExpressiveLayout {
     val pageInset = 16.dp
-    val cardCorner = 28.dp
+    val cardCorner = 20.dp
     val cardSpacing = 10.dp
     val dockHeight = 62.dp
 }
@@ -79,8 +79,8 @@ internal fun ExpressiveSectionTitle(title: String, detail: String? = null) {
 @Composable
 internal fun ExpressiveTopBar(title: String, action: (() -> Unit)? = null, back: (() -> Unit)? = null) {
     Row(
-        Modifier.fillMaxWidth().statusBarsPadding().heightIn(min = 84.dp)
-            .padding(horizontal = 16.dp, vertical = 16.dp),
+        Modifier.fillMaxWidth().statusBarsPadding().heightIn(min = 72.dp)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -120,7 +120,7 @@ internal fun ExpressiveNavigationDock(
     ) {
         Surface(
             modifier = Modifier.widthIn(max = 320.dp).fillMaxWidth(),
-            shape = CircleShape,
+            shape = RoundedCornerShape(24.dp),
             color = MaterialTheme.colorScheme.surfaceContainer,
             shadowElevation = 6.dp,
         ) {
@@ -132,7 +132,7 @@ internal fun ExpressiveNavigationDock(
                     label = "Navigation selection",
                 )
                 Box(Modifier.offset(x = offset).testTag("navigation-indicator").width(cell).fillMaxHeight()
-                    .clip(CircleShape).background(MaterialTheme.colorScheme.surfaceContainerHighest))
+                    .clip(RoundedCornerShape(18.dp)).background(MaterialTheme.colorScheme.surfaceContainerHighest))
                 Row(Modifier.fillMaxSize().selectableGroup()) {
                     DockItem("Home", R.drawable.ic_dashboard, selectedIndex == 0, onHome, Modifier.weight(1f))
                     DockItem("Transfers", R.drawable.ic_transfer, selectedIndex == 1, onTransfers, Modifier.weight(1f))

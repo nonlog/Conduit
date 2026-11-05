@@ -291,9 +291,19 @@ class SyncService : Service() {
     /** User-selected destination for explicit shares and files; other links remain connected. */
     private fun selectedLink(targetId: String? = null): Link? {
         val selected = targetId ?: PairedDesktops.selected(filesDir) ?: return null
-        return if (selected == knownPeer) link else if (::companions.isInitialized) {
+        val candidate = if (selected == knownPeer) link else if (::companions.isInitialized) {
             companions.linkFor(selected)
         } else null
+        // An explicit target must remain exact for Direct Share and revoke actions.
+        if (targetId != null) return candidate
+        if (connectedSnapshot.any { it.first == selected }) return candidate
+        // The durable selection can be stale after another computer reconnects.
+        // Prefer an already authenticated link and persist that active destination so
+        // clipboard, files and links all agree with the status shown on screen.
+        val fallback = connectedSnapshot.firstOrNull() ?: return candidate
+        runCatching { PairedDesktops.choose(filesDir, fallback.first) }
+        LinkStatus.selectedDeviceId = fallback.first
+        return fallback.second
     }
 
     private fun publishPeerConnections() {
@@ -311,13 +321,24 @@ class SyncService : Service() {
                 path = if (isPrimary) LinkStatus.path.orEmpty() else extra?.path.orEmpty(),
             )
         }
-        LinkStatus.selectedDeviceId = PairedDesktops.selected(filesDir)
         val connected = ArrayList<Pair<String, Link>>()
         if (LinkStatus.state == LinkState.Connected && knownPeer != null) {
             connected.add(knownPeer!! to link)
         }
         if (::companions.isInitialized) connected.addAll(companions.liveLinks())
         connectedSnapshot = connected.toList()
+        // The primary link may have gone offline while a companion remains live.
+        // Keep the legacy tile/notification reference useful without changing the
+        // independent multi-link snapshot used by clipboard and shares.
+        activeLink = connected.firstOrNull()?.second
+        val selected = PairedDesktops.selected(filesDir)
+        val activeSelection = selected?.takeIf { id -> connected.any { it.first == id } }
+            ?: connected.firstOrNull()?.first
+            ?: selected
+        if (activeSelection != null && activeSelection != selected) {
+            runCatching { PairedDesktops.choose(filesDir, activeSelection) }
+        }
+        LinkStatus.selectedDeviceId = activeSelection
         ClipboardAccessibilityService.setLinkActive(connected.isNotEmpty())
         setSyncObserversActive(connected.isNotEmpty())
         if (connected.isNotEmpty()) showLinkedNotification()
@@ -1596,9 +1617,15 @@ class SyncService : Service() {
      * grant this intent carried has to still be readable.
      */
     private fun onShare(intent: Intent) {
-        val destination = selectedLink(intent.getStringExtra(EXTRA_PEER_ID))
+        val requestedId = intent.getStringExtra(EXTRA_PEER_ID)
+        val destination = selectedLink(requestedId)
         if (destination == null) {
             Log.w(TAG, "No selected trusted desktop is available for this share")
+            return
+        }
+        if (requestedId != null && connectedSnapshot.none { it.first == requestedId }) {
+            Log.w(TAG, "Selected desktop is trusted but offline; share not queued: ${requestedId.take(8)}")
+            android.widget.Toast.makeText(this, "That desktop is offline", android.widget.Toast.LENGTH_SHORT).show()
             return
         }
         intent.getStringExtra(Intent.EXTRA_TEXT)?.takeIf { it.isNotBlank() }?.let { shared ->

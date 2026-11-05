@@ -205,7 +205,11 @@ mod native {
         }
     }
 
-    fn dark(mode: &str) -> bool {
+    /// Resolve the appearance mode once for the whole native window and Rune
+    /// surface.  `Cx::system_dark()` can lag behind a Windows theme change (and
+    /// reports light in some remote sessions), while this is the same registry
+    /// value Windows uses for app chrome.
+    pub fn effective_dark(mode: &str) -> bool {
         match mode {
             "dark" => true,
             "light" => false,
@@ -224,7 +228,7 @@ mod native {
         }
         let permitted = transparency_permitted() && unsafe { prepare_composition(hwnd) };
         let requested = material.backdrop(permitted);
-        let dark = i32::from(dark(appearance));
+        let dark = i32::from(effective_dark(appearance));
         unsafe {
             let _ = DwmSetWindowAttribute(
                 hwnd,
@@ -392,11 +396,15 @@ mod native {
 }
 
 #[cfg(windows)]
-pub use native::{animations_enabled, apply, install};
+pub use native::{animations_enabled, apply, effective_dark, install};
 
 #[cfg(not(windows))]
 pub fn animations_enabled() -> bool {
     true
+}
+#[cfg(not(windows))]
+pub fn effective_dark(mode: &str) -> bool {
+    mode == "dark"
 }
 #[cfg(not(windows))]
 pub fn apply(_: Material, _: &str) -> bool {

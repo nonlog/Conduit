@@ -16,7 +16,6 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     DestroyIcon, ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_LOADFROMFILE, LoadImageW, SendMessageW,
     WM_SETICON,
 };
-use winreg::{RegKey, enums::HKEY_CURRENT_USER};
 
 #[derive(Clone, Copy)]
 struct InstalledIcons {
@@ -28,22 +27,6 @@ static ICONS: OnceLock<Mutex<HashMap<isize, InstalledIcons>>> = OnceLock::new();
 
 fn loaded_icons() -> &'static Mutex<HashMap<isize, InstalledIcons>> {
     ICONS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn system_dark() -> bool {
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    hkcu.open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
-        .and_then(|key| key.get_value::<u32, _>("AppsUseLightTheme"))
-        .map(|value| value == 0)
-        .unwrap_or(false)
-}
-
-fn effective_dark(mode: &str) -> bool {
-    match mode {
-        "dark" => true,
-        "light" => false,
-        _ => system_dark(),
-    }
 }
 
 fn set_dark_caption(hwnd: *mut core::ffi::c_void, dark: bool) -> bool {
@@ -64,11 +47,10 @@ fn set_dark_caption(hwnd: *mut core::ffi::c_void, dark: bool) -> bool {
 fn apply_to_hwnd(hwnd: *mut core::ffi::c_void, requested_dark: bool) -> Result<(), String> {
     // Keep the correct small/large window icons if older Windows versions do
     // not support the immersive DWM caption attribute.
-    let dark = if set_dark_caption(hwnd, requested_dark) {
-        requested_dark
-    } else {
-        system_dark()
-    };
+    let _caption_applied = set_dark_caption(hwnd, requested_dark);
+    // The requested Conduit mode remains authoritative even when an older
+    // Windows build rejects the DWM caption attribute.
+    let dark = requested_dark;
     let key = hwnd as isize;
     let mut cache = loaded_icons().lock().map_err(|err| err.to_string())?;
     if cache.get(&key).is_some_and(|current| current.dark == dark) {
@@ -157,7 +139,7 @@ pub fn install(window: &rune::WindowHandle) -> Result<(), String> {
         };
         apply_to_hwnd(
             handle.hwnd.get() as *mut core::ffi::c_void,
-            effective_dark(&crate::bridge::theme_preference()),
+            crate::window_material::effective_dark(&crate::bridge::theme_preference()),
         )
     })?
 }
@@ -171,7 +153,7 @@ pub fn update_appearance(mode: &str) -> Result<(), String> {
         .keys()
         .copied()
         .collect();
-    let dark = effective_dark(mode);
+    let dark = crate::window_material::effective_dark(mode);
     for hwnd in handles {
         apply_to_hwnd(hwnd as *mut core::ffi::c_void, dark)?;
     }

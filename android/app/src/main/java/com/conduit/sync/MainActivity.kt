@@ -42,8 +42,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
@@ -266,7 +264,11 @@ class MainActivity : ComponentActivity() {
         // The picker can stay open while the desktop disappears. Re-check at the moment we
         // actually hand work to the service instead of trusting the state that made the button
         // visible before the picker launched.
-        val selected = LinkStatus.devices.firstOrNull { it.id == LinkStatus.selectedDeviceId }
+        val selected = resolveActiveDevice(
+            LinkStatus.devices,
+            LinkStatus.selectedDeviceId,
+            LinkStatus.pairedDeviceId,
+        )
         if (selected?.state != LinkState.Connected) {
             val peer = selected?.name?.ifBlank { "the desktop" } ?: "the desktop"
             Log.w(TAG, "picked files while ${LinkStatus.state}; connecting instead of sending")
@@ -278,6 +280,7 @@ class MainActivity : ComponentActivity() {
             ).show()
             return
         }
+        val targetId = selected?.id ?: return
 
         val sending = boundedShare(unique)
         if (unique.size > sending.size) {
@@ -295,7 +298,7 @@ class MainActivity : ComponentActivity() {
             startForegroundService(
                 Intent(this, SyncService::class.java).apply {
                     action = ACTION_SHARE
-                    putExtra(EXTRA_PEER_ID, LinkStatus.selectedDeviceId)
+                    putExtra(EXTRA_PEER_ID, targetId)
                     clipData = clip
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 },
@@ -523,7 +526,7 @@ internal fun ConduitApp(
     onSelectDevice: (String) -> Unit = {},
     onForgetDevice: (String) -> Unit = {},
 ) {
-    val selected = devices.firstOrNull { it.id == selectedDeviceId }
+    val selected = resolveActiveDevice(devices, selectedDeviceId, pairedDeviceId)
     val effectivePeer = selected?.name?.ifBlank { "Desktop" } ?: peerName
     val effectiveId = selected?.id ?: pairedDeviceId
     val effectiveState = selected?.state ?: state
@@ -1249,11 +1252,7 @@ private fun SettingsGroup(
     onHideNotifications: (Boolean) -> Unit,
     onOpenHistory: () -> Unit,
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
-        colors = CardDefaults.cardColors(),
-    ) {
+    ExpressiveCard(Modifier.fillMaxWidth()) {
         Column {
             Row(
                 modifier = Modifier

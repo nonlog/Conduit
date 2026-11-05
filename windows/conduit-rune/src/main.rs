@@ -673,34 +673,34 @@ impl Paint {
         if dark {
             Paint {
                 t: tok::theme(true),
-                accent: color("#6b9eff"),
-                primary_fill: color("#2d68d7"),
-                surface: color("#101216"),
-                sidebar: color("#101216"),
-                card: color("#191c21"),
-                inset: color("#14171b"),
-                line: color("#292d35"),
+                accent: color("#82a9ff"),
+                primary_fill: color("#315fbd"),
+                surface: color("#12161b"),
+                sidebar: color("#12161b"),
+                card: color("#1b2128"),
+                inset: color("#171c22"),
+                line: color("#2a333e"),
                 subdued: color("#abb3c0"),
                 faint: color("#788390"),
                 green: color("#66cfa9"),
                 danger: color("#f38b8b"),
-                selected: color("#202630"),
+                selected: color("#202a37"),
             }
         } else {
             Paint {
                 t: tok::theme(false),
-                accent: color("#266de4"),
-                primary_fill: color("#266de4"),
-                surface: color("#f7f8fa"),
-                sidebar: color("#ffffff"),
-                card: color("#ffffff"),
-                inset: color("#f1f3f6"),
-                line: color("#e2e5ea"),
-                subdued: color("#59697d"),
-                faint: color("#7c8a9b"),
+                accent: color("#2d6fdb"),
+                primary_fill: color("#2d6fdb"),
+                surface: color("#e6ebf1"),
+                sidebar: color("#e6ebf1"),
+                card: color("#eef2f6"),
+                inset: color("#dce3eb"),
+                line: color("#d1d9e4"),
+                subdued: color("#536276"),
+                faint: color("#77879c"),
                 green: color("#137b55"),
                 danger: color("#c43d4b"),
-                selected: color("#eaf1ff"),
+                selected: color("#e0e8f6"),
             }
         }
     }
@@ -714,8 +714,8 @@ impl Paint {
             self.surface = self
                 .surface
                 .alpha(1.0 - f32::from(transparency.min(100)) / 100.0);
-            self.card = self.card.alpha(0.94);
-            self.inset = self.inset.alpha(0.96);
+            self.card = self.card.alpha(0.82);
+            self.inset = self.inset.alpha(0.88);
         }
         self.sidebar = self.surface;
         self
@@ -2705,7 +2705,7 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
     let dark = match ui.appearance.as_str() {
         "light" => false,
         "dark" => true,
-        _ => cx.system_dark(),
+        _ => window_material::effective_dark("system"),
     };
     let paint = Paint::new(dark).with_backdrop(ui.backdrop_active, ui.transparency);
     let searchable = matches!(ui.page, Page::Transfers | Page::Notifications | Page::Links);
