@@ -56,33 +56,17 @@ try {
     if (-not $shortcut.TargetPath.EndsWith('conduit-rune.exe', [StringComparison]::OrdinalIgnoreCase)) {
         throw "Stable shortcut did not select Rune: $($shortcut.TargetPath)"
     }
-    # Derive the release contract from the checked-in native identity manifest, not
-    # a version literal that silently becomes stale at the next tagged release.
+    # Read the expected version from the checked-in native Share Target manifest.
+    # This assertion must advance with every release; never pin a version literal.
     $shareManifestPath = Join-Path $PSScriptRoot '..\windows\conduit-ui\ShareTargetPackage\AppxManifest.xml'
     [xml]$expectedManifest = Get-Content -LiteralPath $shareManifestPath -Raw
     $expectedShareVersion = [string]$expectedManifest.Package.Identity.Version
-    if ($expectedShareVersion -notmatch '^\d+\.\d+\.\d+\.\d+
-    Write-Output 'STABLE_INSTALL_SMOKE_PASSED: Rune shortcut, retired frontend removed, Share Target registration, identity preservation, daemon not started'
-}
-finally {
-    try {
-        # Even a partially failed install can have registered the sparse MSIX
-        # and Start menu shortcut. Cleanup the disposable runner on failure.
-        if ($installAttempted) {
-            & (Join-Path $install 'tools/uninstall-windows.ps1')
-            if (Get-ShareVersion) { throw 'Share Target registration remained after smoke uninstall' }
-        }
-    }
-    finally {
-        if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
-    }
-}
-) {
+    if ($expectedShareVersion -notmatch '^\d+\.\d+\.\d+\.\d+$') {
         throw "Invalid expected Share Target package version: $expectedShareVersion"
     }
     $shareVersion = Get-ShareVersion
     if ($shareVersion -ne $expectedShareVersion) {
-        throw "Share Target sparse MSIX registration mismatch: expected $expectedShareVersion, got $shareVersion"
+        throw "Share Target registration mismatch: expected $expectedShareVersion, got $shareVersion"
     }
     Write-Output 'STABLE_INSTALL_SMOKE_PASSED: Rune shortcut, retired frontend removed, Share Target registration, identity preservation, daemon not started'
 }
