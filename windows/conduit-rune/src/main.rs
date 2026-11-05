@@ -680,8 +680,16 @@ impl Paint {
         let selected = t.bg.mix(t.card, if dark { 0.58 } else { 0.34 });
         Paint {
             t,
-            accent: if dark { color("#82a9ff") } else { color("#2d6fdb") },
-            primary_fill: if dark { color("#315fbd") } else { color("#2d6fdb") },
+            accent: if dark {
+                color("#82a9ff")
+            } else {
+                color("#2d6fdb")
+            },
+            primary_fill: if dark {
+                color("#315fbd")
+            } else {
+                color("#2d6fdb")
+            },
             surface: t.bg,
             sidebar: t.bg,
             card,
@@ -689,8 +697,16 @@ impl Paint {
             line: t.card_border,
             subdued: t.text_secondary,
             faint: t.text_secondary.alpha(0.70),
-            green: if dark { color("#66cfa9") } else { color("#137b55") },
-            danger: if dark { color("#f38b8b") } else { color("#c43d4b") },
+            green: if dark {
+                color("#66cfa9")
+            } else {
+                color("#137b55")
+            },
+            danger: if dark {
+                color("#f38b8b")
+            } else {
+                color("#c43d4b")
+            },
             selected,
         }
     }
