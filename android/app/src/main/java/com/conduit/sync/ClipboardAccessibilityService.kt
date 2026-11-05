@@ -50,14 +50,14 @@ class ClipboardAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         instance = this
         detector = ClipboardDetection(ClipboardLocale.copyLabel(this))
-        configure(LinkStatus.state == LinkState.Connected)
+        configure(SyncService.connectedLinks().isNotEmpty())
         Log.i(ACCESSIBILITY_TAG, "clipboard accessibility service connected")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (
             event == null ||
-            LinkStatus.state != LinkState.Connected ||
+            SyncService.connectedLinks().isEmpty() ||
             ClipboardAccess.isLsposedActive()
         ) return
         val snapshot = ClipboardEventSnapshot.from(event) ?: return

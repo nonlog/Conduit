@@ -634,9 +634,9 @@ class SyncService : Service() {
                     LinkStatus.state = state
                     LinkStatus.peer = peer
                     val linked = state == LinkState.Connected
-                    // Central multi-link snapshot owns clipboard availability.
-                    // A primary disconnect must not mark secondary connections offline.
-                    activeLink = if (linked) link else null
+                    // The aggregate publish below owns the legacy activeLink reference too;
+                    // updating it here would create a brief null window while a companion
+                    // connection is still authenticated.
                     main.post {
                         if (!destroyed) publishPeerConnections()
                     }

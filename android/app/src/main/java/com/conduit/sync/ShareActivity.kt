@@ -89,7 +89,12 @@ class ShareActivity : Activity() {
             finish()
             return
         }
-        val target = fromShortcut ?: explicit ?: PairedDesktops.selected(filesDir)
+        val explicitTarget = fromShortcut ?: explicit
+        val target = explicitTarget ?: resolveActiveDeviceId(
+            LinkStatus.devices,
+            PairedDesktops.selected(filesDir),
+            Identity.peer(filesDir),
+        )
         val device = trusted.firstOrNull { it.id == target }
         val peer = device?.name?.ifBlank { "the desktop" } ?: "the desktop"
 
@@ -97,7 +102,16 @@ class ShareActivity : Activity() {
         // answer is to say so and start a connection the next share can use. Sharing to
         // Conduit is also a clear statement that the user wants it linked, which is why this
         // overrides a remembered disconnect.
-        if (target == null || LinkStatus.devices.none { it.id == target && it.state == LinkState.Connected }) {
+        val targetConnected = target != null && LinkStatus.devices.any {
+            it.id == target && it.state == LinkState.Connected
+        }
+        if (explicitTarget != null && !targetConnected) {
+            Log.w(TAG, "explicit share target is trusted but offline: ${explicitTarget.take(8)}")
+            toast("That computer is offline")
+            finish()
+            return
+        }
+        if (target == null || !targetConnected) {
             Log.w(TAG, "share arrived while ${LinkStatus.state}; connecting instead of sending")
             startForegroundService(
                 Intent(this, SyncService::class.java).setAction(ACTION_CONNECT),

@@ -21,4 +21,9 @@ class PeerSelectionTest {
     fun offlineSelectionIsKeptWhenNothingIsConnected() {
         assertEquals("old", resolveActiveDeviceId(listOf(offline), "old"))
     }
+
+    @Test
+    fun companionConnectionKeepsClipboardGateOpenWhenPrimaryIsOffline() {
+        assertEquals(true, hasConnectedPeer(LinkState.Retrying, listOf(offline, live)))
+    }
 }

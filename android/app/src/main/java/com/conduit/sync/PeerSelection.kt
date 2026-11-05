@@ -26,3 +26,7 @@ internal fun resolveActiveDeviceId(
     selectedId: String?,
     legacyId: String? = null,
 ): String? = resolveActiveDevice(devices, selectedId, legacyId)?.id
+
+/** True when any trusted desktop is authenticated, including a companion link. */
+internal fun hasConnectedPeer(state: LinkState, devices: List<ConnectedDevice>): Boolean =
+    state == LinkState.Connected || devices.any { it.state == LinkState.Connected }
