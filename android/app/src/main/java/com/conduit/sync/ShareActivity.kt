@@ -90,21 +90,24 @@ class ShareActivity : Activity() {
             return
         }
         val explicitTarget = fromShortcut ?: explicit
+        val livePeerIds = SyncService.connectedLinks().map { it.first }
         val target = explicitTarget ?: resolveActiveDeviceId(
             LinkStatus.devices,
             PairedDesktops.selected(filesDir),
             Identity.peer(filesDir),
-        )
+        ) ?: livePeerIds.firstOrNull()
         val device = trusted.firstOrNull { it.id == target }
         val peer = device?.name?.ifBlank { "the desktop" } ?: "the desktop"
 
         // A share with no session would be queued onto a link that drops it, so the honest
-        // answer is to say so and start a connection the next share can use. Sharing to
-        // Conduit is also a clear statement that the user wants it linked, which is why this
-        // overrides a remembered disconnect.
-        val targetConnected = target != null && LinkStatus.devices.any {
-            it.id == target && it.state == LinkState.Connected
-        }
+        // answer is to say so and start a connection the next share can use. Use the service's
+        // authenticated snapshot as the final authority: the UI device list is published on
+        // the main thread and can lag a companion reconnect by one frame.
+        val targetConnected = target != null && (
+            target in livePeerIds || LinkStatus.devices.any {
+                it.id == target && it.state == LinkState.Connected
+            }
+        )
         if (explicitTarget != null && !targetConnected) {
             Log.w(TAG, "explicit share target is trusted but offline: ${explicitTarget.take(8)}")
             toast("That computer is offline")

@@ -290,7 +290,8 @@ class SyncService : Service() {
 
     /** User-selected destination for explicit shares and files; other links remain connected. */
     private fun selectedLink(targetId: String? = null): Link? {
-        val selected = targetId ?: PairedDesktops.selected(filesDir) ?: return null
+        val selected = targetId ?: PairedDesktops.selected(filesDir)
+        if (selected == null) return connectedSnapshot.firstOrNull()?.second
         val candidate = if (selected == knownPeer) link else if (::companions.isInitialized) {
             companions.linkFor(selected)
         } else null
