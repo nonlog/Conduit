@@ -1541,9 +1541,7 @@ fn notification_app_icon(ui: &Ui, notification: &bridge::Notification, paint: Pa
         .label(format!("{} app icon", notification.app))
         .center();
     if let Some((_, image)) = ui.notification_icons.get(&notification.package) {
-        if let Some(pixels) = image.pixels() {
-            return container.pixels_fit(pixels, SurfaceFit::Fit);
-        }
+        return container.pixels_fit(image.pixels(), SurfaceFit::Fit);
     }
     // A missing cache entry has an honest app initial, never an unrelated logo.
     let initial = notification
