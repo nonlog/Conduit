@@ -665,6 +665,8 @@ struct Paint {
     green: Color,
     danger: Color,
     selected: Color,
+    hover_wash: Color,
+    press_wash: Color,
 }
 
 impl Paint {
@@ -694,7 +696,10 @@ impl Paint {
             sidebar: t.bg,
             card,
             inset,
-            line: t.card_border,
+            // Rune's stock card_border/hover tokens are intentionally much
+            // brighter than this neutral shell. Borders and interaction
+            // overlays must be calibrated against the *actual* card surface.
+            line: t.text.alpha(if dark { 0.18 } else { 0.14 }),
             subdued: t.text_secondary,
             faint: t.text_secondary.alpha(0.70),
             green: if dark {
@@ -708,6 +713,11 @@ impl Paint {
                 color("#c43d4b")
             },
             selected,
+            // El::hover is an OVERLAY, not a replacement fill. Passing the
+            // opaque theme hover tint (or giving it 65% opacity) bleaches
+            // dark notification cards and destroys text contrast.
+            hover_wash: t.text.alpha(if dark { 0.055 } else { 0.040 }),
+            press_wash: t.text.alpha(if dark { 0.11 } else { 0.09 }),
         }
     }
 }
@@ -764,11 +774,15 @@ fn action_button(
         })
         .border(if primary { 0.0 } else { 1.0 }, paint.line)
         .hover(if primary {
-            paint.primary_fill.mix(Color::WHITE, 0.09)
+            Color::WHITE.alpha(0.08)
         } else {
-            paint.t.hover
+            paint.hover_wash
         })
-        .press(paint.t.press)
+        .press(if primary {
+            Color::WHITE.alpha(0.15)
+        } else {
+            paint.press_wash
+        })
         .on_press(f);
     if let Some(glyph) = glyph {
         content = content.child(icon(glyph, 17.0).color(if primary {
@@ -805,7 +819,7 @@ fn segment(
             Color::TRANSPARENT
         })
         .border(if selected { 1.0 } else { 0.0 }, paint.line)
-        .hover(paint.selected)
+        .hover(paint.hover_wash)
         .on_press(action)
         .child(
             text(label)
@@ -850,7 +864,7 @@ fn preference_toggle(
                 paint.line
             },
         )
-        .hover(paint.selected)
+        .hover(paint.hover_wash)
         .on_press(action)
         .child(el().size(7.0, 7.0).radius(4.0).fill(if enabled {
             paint.green
@@ -960,7 +974,7 @@ fn nav(page: Page, selected: bool, paint: Paint) -> El {
         } else {
             Color::TRANSPARENT
         })
-        .hover(paint.t.hover)
+        .hover(paint.hover_wash)
         .on_press(move |ui: &mut Ui| ui.navigate(page))
         .child(
             icon(page.glyph(), 17.0)
@@ -1035,7 +1049,7 @@ fn sidebar(ui: &Ui, paint: Paint, compact: bool) -> El {
                 .gap(9.0)
                 .center_y()
                 .radius(8.0)
-                .hover(paint.t.hover)
+                .hover(paint.hover_wash)
                 .on_press(|ui: &mut Ui| ui.navigate(Page::Pairing))
                 .child(icon(&icons::SMARTPHONE, 17.0).color(paint.faint))
                 .child(
@@ -1286,7 +1300,7 @@ fn transfer_row(transfer: &bridge::Transfer, paint: Paint) -> El {
         .h(if tr.terminal { 55.0 } else { 65.0 })
         .px(6.0)
         .radius(6.0)
-        .hover(paint.t.hover)
+        .hover(paint.hover_wash)
         .child(
             el().size(32.0, 36.0)
                 .center()
@@ -1681,7 +1695,8 @@ fn notifications(ui: &Ui, paint: Paint) -> El {
                 .radius(11.0)
                 .fill(paint.card)
                 .border(1.0, paint.line.alpha(0.8))
-                .hover(paint.t.hover.alpha(0.65))
+                .hover(paint.hover_wash)
+                .press(paint.press_wash)
                 .focusable(true)
                 .role("button")
                 .label(format!(
@@ -1753,7 +1768,7 @@ fn links(ui: &Ui, paint: Paint) -> El {
                     .gap(13.0)
                     .center_y()
                     .radius(9.0)
-                    .hover(paint.t.hover)
+                    .hover(paint.hover_wash)
                     .child(
                         el().size(36.0, 36.0)
                             .radius(9.0)
@@ -2661,7 +2676,7 @@ fn caption(paint: Paint) -> El {
             .hover(if key == "caption-close" {
                 paint.danger.alpha(0.2)
             } else {
-                paint.t.hover
+                paint.hover_wash
             })
             .child(glyph)
             .on_press(move |_: &mut Ui| action())
@@ -2800,7 +2815,7 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
                         .role("button")
                         .label("Dismiss message")
                         .focusable(true)
-                        .hover(paint.t.hover)
+                        .hover(paint.hover_wash)
                         .child(
                             text("×")
                                 .font(rune::TextStyle::new(18.0, 450.0))
@@ -3320,6 +3335,23 @@ mod tests {
         rt.frame(1.0 / 60.0);
         assert!(rt.find("notification-qa-calendar").is_some());
         assert!(rt.find("notification-qa-notification").is_none());
+    }
+
+    #[test]
+    fn hover_overlays_preserve_readable_notification_text_in_both_themes() {
+        for dark in [false, true] {
+            for backdrop in [false, true] {
+                let paint = Paint::new(dark).with_backdrop(backdrop, 70);
+                // Rune composites El::hover on top of the *existing* fill.
+                // An opaque or high-alpha hover wash would produce the
+                // unreadable pale rectangle seen in the desktop regression.
+                assert!(paint.hover_wash.a > 0.0 && paint.hover_wash.a <= 0.06);
+                assert!(paint.press_wash.a <= 0.12);
+                assert!(paint.line.a <= 0.19);
+                assert!(paint.card.a >= 0.80);
+                assert_eq!(paint.hover_wash.a, Paint::new(dark).hover_wash.a);
+            }
+        }
     }
 
     #[test]

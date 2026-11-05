@@ -73,6 +73,23 @@ mod native {
         WINDOW.load(Ordering::Acquire) as HWND
     }
 
+    // The title bar is painted by Rune in the client area. Letting
+    // DefWindowProc handle these messages draws the classic *inactive*
+    // caption over it whenever focus leaves the window. Chromium's custom
+    // frame follows the same rule: acknowledge activation without asking
+    // User32 to repaint a system caption that this window does not have.
+    fn custom_frame_paint_result(message: u32, minimized: bool) -> Option<LRESULT> {
+        if minimized {
+            // Windows still needs the native icon label when minimized.
+            return None;
+        }
+        match message {
+            WM_NCACTIVATE => Some(1),
+            WM_NCPAINT => Some(0),
+            _ => None,
+        }
+    }
+
     unsafe fn work_area(hwnd: HWND) -> Option<MONITORINFO> {
         unsafe {
             let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
@@ -93,6 +110,9 @@ mod native {
         _: usize,
     ) -> LRESULT {
         unsafe {
+            if let Some(result) = custom_frame_paint_result(msg, IsIconic(hwnd) != 0) {
+                return result;
+            }
             match msg {
                 WM_NCCALCSIZE => {
                     // lp begins with RECT for both NCCALCSIZE forms. A maximized
@@ -240,6 +260,22 @@ mod native {
             unsafe {
                 PostMessageW(hwnd, WM_CLOSE, 0, 0);
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn custom_caption_never_falls_back_to_classic_inactive_paint() {
+            // Both activation and deactivation use WM_NCACTIVATE; neither
+            // may delegate a caption repaint to User32.
+            assert_eq!(custom_frame_paint_result(WM_NCACTIVATE, false), Some(1));
+            assert_eq!(custom_frame_paint_result(WM_NCPAINT, false), Some(0));
+            assert_eq!(custom_frame_paint_result(WM_NCACTIVATE, true), None);
+            assert_eq!(custom_frame_paint_result(WM_NCPAINT, true), None);
+            assert_eq!(custom_frame_paint_result(WM_NCHITTEST, false), None);
         }
     }
 }
