@@ -179,6 +179,7 @@ internal fun shouldRecoverEstablishedLinkImmediately(
 
 /** Sent by the UI. A disconnect has to be remembered, or START_STICKY undoes the user's tap. */
 const val ACTION_CONNECT = "com.conduit.sync.CONNECT"
+const val ACTION_REFRESH_WALLPAPER = "com.conduit.sync.REFRESH_WALLPAPER"
 const val ACTION_BOOT_CONNECT = "com.conduit.sync.BOOT_CONNECT"
 const val ACTION_DISCONNECT = "com.conduit.sync.DISCONNECT"
 const val ACTION_PAIR = "com.conduit.sync.PAIR"
@@ -397,7 +398,8 @@ class SyncService : Service() {
     private val wallpaperRefresh = Runnable {
         if (destroyed || connectedLinks().isEmpty()) return@Runnable
         connectedLinks().forEach { (_, session) ->
-            session.sendWallpaperPreview(ByteArray(0)) { Wallpapers.preview(this, force = true) }
+            // The event already invalidated the cache. Encode once, reuse for every desktop.
+            session.sendWallpaperPreview(ByteArray(0)) { Wallpapers.preview(this) }
         }
     }
     private val wallpaperListener = WallpaperManager.OnColorsChangedListener { _, which ->
@@ -969,6 +971,13 @@ class SyncService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
+            ACTION_REFRESH_WALLPAPER -> {
+                Wallpapers.invalidate()
+                main.removeCallbacks(wallpaperRefresh)
+                if (connectedLinks().isNotEmpty()) main.post(wallpaperRefresh)
+                // Never turn a concurrent reconnect off just because this refresh raced it.
+                return if (Settings.linkWanted) START_STICKY else START_NOT_STICKY
+            }
             ACTION_CANCEL_TRANSFER -> {
                 intent.getStringExtra(EXTRA_TRANSFER_ID)?.let { id ->
                     link.cancelTransfer(id)

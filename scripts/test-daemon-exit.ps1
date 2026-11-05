@@ -67,6 +67,10 @@ try {
     # contacts a real phone, and only the local control listener is active.
     [IO.File]::WriteAllText((Join-Path $data 'config.txt'), "tray_icon=true`nrelays=`nnotification_retention_days=7`n")
     [IO.File]::WriteAllText((Join-Path $data 'link-intent.txt'), "paused`n")
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    $expired = $now - [long][TimeSpan]::FromDays(8).TotalMilliseconds
+    [IO.File]::WriteAllText((Join-Path $data 'notifications.tsv'),
+        "$expired`told`ttest.package`tTest app`tExpired record`tRemove only this row`n$now`trecent`ttest.package`tTest app`tRecent record`tPreserve this row`n")
     $identityHash = $null
     foreach ($attempt in 1..2) {
         $start = [Diagnostics.ProcessStartInfo]::new((Join-Path $runtime 'conduit-daemon.exe'))
@@ -91,6 +95,23 @@ try {
         $currentHash = (Get-FileHash (Join-Path $data 'identity.bin') -Algorithm SHA256).Hash
         if ($identityHash -and $identityHash -ne $currentHash) { throw 'Restart changed the device identity' }
         $identityHash = $currentHash
+        if ($attempt -eq 1) {
+            # The actual daemon owns pruning and clearing; the UI must never race
+            # a notification arrival by truncating this file itself.
+            [void](Invoke-Control @('notifications','prune'))
+            $history = @(Get-Content -LiteralPath (Join-Path $data 'notifications.tsv'))
+            if ($history.Count -ne 1 -or $history[0] -notmatch '\trecent\t') {
+                throw 'Age retention did not remove only expired notification records'
+            }
+            $effective = Get-Content -LiteralPath (Join-Path $data 'effective-settings.txt') -Raw
+            if ($effective -notmatch '(?m)^relays_source=config$' -or $effective -notmatch '(?m)^relays=$') {
+                throw 'Effective settings did not preserve explicitly disabled Relay'
+            }
+            [void](Invoke-Control @('notifications','clear'))
+            if ((Get-Item -LiteralPath (Join-Path $data 'notifications.tsv')).Length -ne 0) {
+                throw 'Serialized history clear did not clear the records'
+            }
+        }
         # This is the same WM_COMMAND/MENU_EXIT route as clicking Exit in the
         # tray's context menu, not a process kill or a mock channel assertion.
         if (-not [ConduitExitSmoke]::PostMessage($tray, 0x111, [UIntPtr]1002, [IntPtr]::Zero)) {
@@ -108,7 +129,7 @@ try {
         $process.Dispose()
         $process = $null
     }
-    Write-Output 'DAEMON_TRAY_EXIT_PASSED: real menu exit twice, bounded shutdown, port released, identity preserved'
+    Write-Output 'DAEMON_TRAY_EXIT_PASSED: real menu exit twice, bounded shutdown, port released, identity preserved, retention/prune/clear verified'
 } finally {
     if ($process) {
         if (-not $process.HasExited) { $process.Kill($true); $process.WaitForExit() }

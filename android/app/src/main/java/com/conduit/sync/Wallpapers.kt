@@ -23,15 +23,25 @@ private const val MAX_PREVIEW_HEIGHT = 400
  * no preview and the desktop keeps its local fallback.
  */
 object Wallpapers {
+    /** Android protects the real wallpaper behind this optional system permission. */
+    fun accessGranted(context: Context): Boolean =
+        if (android.os.Build.VERSION.SDK_INT >= 33) android.os.Environment.isExternalStorageManager()
+        else context.checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE) == android.content.pm.PackageManager.PERMISSION_GRANTED
     class Preview(val jpeg: ByteArray, val sha256: ByteArray)
 
     @Volatile private var cached: Preview? = null
 
+    @Synchronized
     fun invalidate() {
         cached = null
     }
 
+    @Synchronized
     fun preview(context: Context, force: Boolean = false): Preview? {
+        if (!accessGranted(context)) {
+            cached = null
+            return null
+        }
         if (!force) cached?.let { return it }
         val bitmap = loadPlatformWallpaper(context) ?: return null
         return try {
@@ -45,7 +55,16 @@ object Wallpapers {
     private fun loadPlatformWallpaper(context: Context): Bitmap? = runCatching {
         val manager = WallpaperManager.getInstance(context)
         manager.getWallpaperFile(WallpaperManager.FLAG_SYSTEM)?.use { descriptor ->
-            BitmapFactory.decodeFileDescriptor(descriptor.fileDescriptor)
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFileDescriptor(descriptor.fileDescriptor, null, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@use null
+            val options = BitmapFactory.Options().apply { inSampleSize = 1 }
+            while (bounds.outWidth / (options.inSampleSize * 2) >= MAX_PREVIEW_WIDTH &&
+                bounds.outHeight / (options.inSampleSize * 2) >= MAX_PREVIEW_HEIGHT) {
+                options.inSampleSize *= 2
+            }
+            // decodeFileDescriptor decodes from the start without changing descriptor position.
+            BitmapFactory.decodeFileDescriptor(descriptor.fileDescriptor, null, options)
         }
     }.onFailure {
         Log.d(

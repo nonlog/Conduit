@@ -14,12 +14,29 @@
 - Important API contract under construction: daemon `notifications clear`/`prune`, config
   `notification_retention_days` (0 disables age cleanup; default 30), and public effective Relay
   settings. Do not deploy the UI until the matching daemon and CI are verified.
-- Core local workspace tools work; Windows-log returned a connection error. Wi-Fi ADB currently
-  reports the phone unauthorized. The user was asked to allow debugging; do not clear app data,
-  rotate identities, repeat the prior signing migration, or switch the phone's network.
+- Core local workspace tools work; Windows-log still returns a connection error. Wi-Fi ADB
+  is authorized at 192.168.110.93:5555. Never clear data, rotate identities, repeat signing
+  migration or switch the phone's network. Phone currently runs signed 0.1.15 / code 17.
 - All formal compilation/tests remain in GitHub Actions. Local formatting and dependency-lock
   resolution are not build/test evidence. Release/Scoop publication is part of this task, after
   verification; v0.1.16 must never be rewritten.
+- Daemon changes at 0942bda serialize history operations, validate 0..3650-day retention,
+  schedule the nearest expiry without polling, publish effective Relay settings, and explicitly
+  stop all Relay/control tasks before bounded native-thread and runtime shutdown. A disposable
+  Windows Actions regression sends the real tray Exit menu command and tests restart/port release.
+- ADB's actual release crash matches R8 map dec724a7: Google code-scanner zzny constructor
+  dereferences a null SharedPrefManager returned by MlKitContext. The SDK registry cause is not
+  proven, so do not claim missing R8 keep rules. Replace the Google scanner with offline ZXing
+  ScanContract and a private CaptureActivity. Camera permission is optional and requested only
+  after Scan QR; no background camera, saved frames or downloaded Google module. Manual pairing
+  survives permission denial/cancellation. Add decoder roundtrip and ActivityResult/manifest tests.
+- Actual wallpaper permission is denied, and the original migration backup already recorded
+  allFiles=false. The old PC had a cached JPEG, whereas a newly paired PC cannot fetch new pixels.
+  Add an explicit explanatory Device wallpaper preview permission row and immediate event-driven
+  refresh for all connected peers after approval. Never silently grant broad storage permission.
+- Native caption is client-drawn over the same root tint as sidebar/body, with native hit testing
+  for drag/resize/maximize/Snap; backgrounds use one 0..100-percent transparency value, not HWND
+  global opacity. These additional dirty source changes still require CI and real-window QA.
 
 ## Live continuation: five experience changes installed and physically verified
 

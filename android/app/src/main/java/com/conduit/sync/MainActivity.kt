@@ -17,6 +17,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts.GetContent
 import androidx.activity.result.contract.ActivityResultContracts.GetMultipleContents
 import androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions
+import androidx.lifecycle.Lifecycle
 import androidx.compose.foundation.background
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.selection.toggleable
@@ -78,9 +79,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
-import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
-import com.google.mlkit.vision.barcode.common.Barcode
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 
 private const val TAG = "conduit.ui"
 private const val OPPO_APP_FREEZE_FEATURE = "oplus.software.pms_app_frozen"
@@ -148,6 +148,7 @@ class MainActivity : ComponentActivity() {
     private var clipboardMode by mutableStateOf(ClipboardSyncMode.Unavailable)
     private var clipboardAccessibilityEnabled by mutableStateOf(false)
     private var batteryOptimizationIgnored by mutableStateOf(true)
+    private val pairingQrScanGate = PairingQrScanGate()
 
     /** The public Settings page is only usable on Oplus builds that expose the freezer feature. */
     private val oplusAppFreezeSupported: Boolean by lazy(LazyThreadSafetyMode.NONE) {
@@ -155,12 +156,22 @@ class MainActivity : ComponentActivity() {
             packageManager.hasSystemFeature(OPPO_APP_DISABLE_FEATURE)
     }
 
-    private val pairingScanner by lazy {
-        val options = GmsBarcodeScannerOptions.Builder()
-            .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
-            .enableAutoZoom()
-            .build()
-        GmsBarcodeScanning.getClient(this, options)
+    private var scanResultHandler: ((String) -> Unit)? = null
+    private val pairingScanner = registerForActivityResult(ScanContract()) { result ->
+        pairingQrScanGate.finish()
+        val handler = scanResultHandler
+        scanResultHandler = null
+        if (!isPairingQrResultDeliverable(isDestroyed, isFinishing,
+                lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))) return@registerForActivityResult
+        val payload = result.contents ?: return@registerForActivityResult
+        val code = PairingCode.fromQrPayload(payload)
+        if (code == null) {
+            android.widget.Toast.makeText(this, "That is not a Conduit pairing QR code", android.widget.Toast.LENGTH_SHORT).show()
+        } else {
+            // ActivityResultRegistry retains pending results across recreation.
+            // Its callback can precede onResume; a valid scan must not be dropped.
+            (handler ?: ::sendPair)(code)
+        }
     }
 
     private val ask = registerForActivityResult(RequestMultiplePermissions()) { granted ->
@@ -306,6 +317,12 @@ class MainActivity : ComponentActivity() {
         refreshBatteryOptimization()
     }
 
+    override fun onDestroy() {
+        pairingQrScanGate.cancel()
+        scanResultHandler = null
+        super.onDestroy()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         // singleTop means a second launch reuses this instance, so onCreate does not run
@@ -337,36 +354,29 @@ class MainActivity : ComponentActivity() {
         return true
     }
 
-    /**
-     * Opens the Google Play services QR scanner only when the user asks for it. Conduit itself
-     * never receives camera frames and therefore needs no CAMERA permission or background camera
-     * component. The scanner module is downloaded on first use if the device does not have it yet.
-     */
+    /** A finite offline scanner, with camera permission requested only after this explicit tap. */
     private fun scanPairingQr(onCode: (String) -> Unit) {
-        pairingScanner.startScan()
-            .addOnSuccessListener { barcode ->
-                val code = PairingCode.fromQrPayload(barcode.rawValue.orEmpty())
-                if (code == null) {
-                    android.widget.Toast.makeText(
-                        this,
-                        "That is not a Conduit pairing QR code",
-                        android.widget.Toast.LENGTH_SHORT,
-                    ).show()
-                    return@addOnSuccessListener
-                }
-                onCode(code)
-            }
-            .addOnCanceledListener {
-                Log.d(TAG, "pairing QR scan cancelled")
-            }
-            .addOnFailureListener { error ->
-                Log.w(TAG, "pairing QR scanner failed", error)
-                android.widget.Toast.makeText(
-                    this,
-                    "Could not open the QR scanner",
-                    android.widget.Toast.LENGTH_SHORT,
-                ).show()
-            }
+        if (!pairingQrScanGate.tryBegin()) {
+            Log.d(TAG, "pairing QR scan already active")
+            return
+        }
+
+        scanResultHandler = onCode
+        try {
+            check(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) { "Activity is not ready for scanning" }
+            pairingScanner.launch(ScanOptions()
+                .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                .setPrompt("Scan the Conduit pairing code on your computer")
+                .setBeepEnabled(false)
+                .setBarcodeImageEnabled(false)
+                .setOrientationLocked(false)
+                .setCaptureActivity(PairingScannerActivity::class.java))
+        } catch (error: RuntimeException) {
+            pairingQrScanGate.cancel()
+            scanResultHandler = null
+            Log.w(TAG, "Could not launch QR scanner", error)
+            android.widget.Toast.makeText(this, "Could not open the scanner. Enter the six-digit pairing code instead.", android.widget.Toast.LENGTH_LONG).show()
+        }
     }
 
     /**
@@ -838,6 +848,8 @@ private fun SettingsTab(
                         checked = Settings.wallpaperAccent,
                         onCheckedChange = { Settings.wallpaperAccent = it },
                     )
+                    SettingsDivider()
+                    WallpaperPreviewPreference()
                 }
             }
         }
@@ -1046,7 +1058,7 @@ internal fun SettingsDivider() {
 }
 
 @Composable
-private fun PreferenceRow(
+internal fun PreferenceRow(
     icon: Int, title: String, subtitle: String? = null,
     onClick: (() -> Unit)? = null, trailing: (@Composable () -> Unit)? = null,
 ) {

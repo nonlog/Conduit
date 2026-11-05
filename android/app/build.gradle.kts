@@ -12,8 +12,8 @@ android {
         applicationId = "com.conduit.sync"
         minSdk = 29
         targetSdk = 36
-        versionCode = 18
-        versionName = "0.1.16"
+        versionCode = 19
+        versionName = "0.1.17"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -95,12 +95,12 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.animation:animation")
     implementation("androidx.activity:activity-compose:1.13.0")
-    // Code Scanner brings an obsolete Fragment transitively; align ActivityResult support.
+    // Keep ActivityResult support aligned for the on-demand scanner Activity.
     implementation("androidx.fragment:fragment:1.9.1")
 
-    // On-demand QR pairing. Google Code Scanner delegates camera access and image processing to
-    // Play services, so Conduit itself needs no CAMERA permission and no resident camera pipeline.
-    implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
+    // Offline QR pairing: no Play-services component registry or downloaded module.
+    // Camera permission and lifetime belong only to the explicitly launched scanner Activity.
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 
     // Reading the clipboard from the background is impossible on stock Android 10+, so
     // ClipboardHook lifts the check inside system_server. compileOnly: LSPosed supplies

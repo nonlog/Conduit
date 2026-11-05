@@ -6,6 +6,7 @@ mod notices;
 mod notification_time;
 mod pairing_qr;
 mod smooth_scroll;
+mod window_chrome;
 #[cfg(windows)]
 mod window_icon;
 mod window_material;
@@ -1100,7 +1101,14 @@ fn summary_connection(ui: &Ui, paint: Paint, compact: bool) -> El {
             .radius(9.0)
             .fill(paint.inset)
             .center()
+            .role("button")
+            .label("Wallpaper unavailable: enable Device wallpaper preview in the phone's Settings")
+            .focusable(true)
             .child(icon(&icons::SMARTPHONE, 25.0).color(paint.faint))
+            .on_press(|ui: &mut Ui| { ui.show_notice(
+                "To show the real wallpaper, open Conduit Settings on your phone and enable Device wallpaper preview. Android requires explicit permission.",
+                NoticeKind::Error,
+            ); })
     };
     let endpoint = if conn.paused {
         "Pairing kept; reconnect when ready".into()
@@ -2635,6 +2643,63 @@ fn search_field(ui: &Ui, paint: Paint) -> El {
         )
 }
 
+fn caption(paint: Paint) -> El {
+    let control = |key: &'static str, label: &'static str, glyph: El, action: fn()| {
+        el().key(key)
+            .w(window_chrome::BUTTON_WIDTH)
+            .h(window_chrome::CAPTION_HEIGHT)
+            .center()
+            .role("button")
+            .label(label)
+            .focusable(true)
+            .hover(if key == "caption-close" {
+                paint.danger.alpha(0.2)
+            } else {
+                paint.t.hover
+            })
+            .child(glyph)
+            .on_press(move |_: &mut Ui| action())
+    };
+    row()
+        .key("caption")
+        .w_full()
+        .h(window_chrome::CAPTION_HEIGHT)
+        .center_y()
+        .child(
+            row()
+                .grow(1.0)
+                .padding(12.0)
+                .gap(8.0)
+                .center_y()
+                .child(icon(&icons::CONDUIT, 14.0).color(paint.subdued))
+                .child(
+                    text("Conduit")
+                        .font(rune::TextStyle::new(11.0, 500.0))
+                        .color(paint.subdued),
+                ),
+        )
+        .child(control(
+            "caption-minimize",
+            "Minimize window",
+            el().size(10.0, 1.0).fill(paint.subdued),
+            window_chrome::minimize,
+        ))
+        .child(control(
+            "caption-maximize",
+            "Maximize or restore window",
+            el().size(10.0, 10.0).border(1.0, paint.subdued).radius(1.0),
+            window_chrome::toggle_maximize,
+        ))
+        .child(control(
+            "caption-close",
+            "Close window",
+            text("×")
+                .font(rune::TextStyle::new(20.0, 400.0))
+                .color(paint.subdued),
+            window_chrome::close,
+        ))
+}
+
 fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
     let compact = cx.layout_size("window").is_some_and(|size| size[0] < 930.0);
     let dark = match ui.appearance.as_str() {
@@ -2755,15 +2820,21 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
             ui.smooth_scrolling && ui.motion_allowed,
         ),
     );
-    let mut root = row()
+    let shell_body = row()
+        .w_full()
+        .grow(1.0)
+        .min_h(0.0)
+        .child(sidebar(ui, paint, compact))
+        .child(el().w(1.0).h_full().fill(paint.line.alpha(0.65)))
+        .child(body);
+    let mut root = col()
         .key("window")
         .role("window")
         .w_full()
         .h_full()
         .fill(paint.surface)
-        .child(sidebar(ui, paint, compact))
-        .child(el().w(1.0).h_full().fill(paint.line.alpha(0.65)))
-        .child(body);
+        .child(caption(paint))
+        .child(shell_body);
     if ui.drop_over {
         root = root.outline(2.0, 0.0, paint.accent);
     }
@@ -2823,6 +2894,10 @@ fn refresh_native_preferences(ui: &mut Ui, focused: bool, tx: &mut Tx) {
 fn setup_native_window(window: &rune::WindowHandle) {
     #[cfg(windows)]
     let _ = window_icon::install(window);
+    #[cfg(windows)]
+    if let Err(error) = window_chrome::install(window) {
+        eprintln!("Conduit native caption: {error}");
+    }
     let active = window_material::install(
         window,
         bridge::material_preference(),
