@@ -2,18 +2,22 @@
 
 mod bridge;
 mod icons;
+mod notices;
+mod notification_time;
 mod pairing_qr;
 mod smooth_scroll;
 #[cfg(windows)]
 mod window_icon;
 mod window_material;
 
+use notices::{Kind as NoticeKind, Notice};
 use notify::{RecursiveMode, Watcher};
 use rune::tok::{self, Theme, type_};
 use rune::{
     App, AppHandle, AppSpec, Color, Cx, El, Env, Icon, Image, ImageCache, Key, KeyEvent, Runtime,
     ScrollSpec, SurfaceFit, TextEdit, Tx, Waker, col, el, icon, row, text, text_input,
 };
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
@@ -195,6 +199,8 @@ struct Ui {
     snap: bridge::Snapshot,
     image_cache: Option<ImageCache>,
     wallpaper: Option<Image>,
+    notification_icons: BTreeMap<String, (bridge::IconStamp, Image)>,
+    expanded_notification: Option<String>,
     pairing_qr: Option<Image>,
     pairing_qr_code: String,
     search: TextEdit,
@@ -202,17 +208,21 @@ struct Ui {
     appearance: String,
     material: window_material::Material,
     backdrop_active: bool,
+    transparency: u8,
     smooth_scrolling: bool,
     motion_allowed: bool,
     wheel_scroll: smooth_scroll::SmoothScroll,
     relays: TextEdit,
+    relay_mode: String,
+    notification_retention: TextEdit,
     manual_proxy: TextEdit,
     receive_dir: TextEdit,
     proxy_mode: String,
     tray_icon: bool,
     settings_dirty: bool,
     confirm: Option<&'static str>,
-    notice: Option<String>,
+    notice: Option<Notice>,
+    notice_generation: u64,
     busy: bool,
     link_busy: bool,
     drop_over: bool,
@@ -233,14 +243,21 @@ impl Ui {
             appearance: bridge::theme_preference(),
             material: bridge::material_preference(),
             backdrop_active: false,
+            transparency: bridge::transparency_preference(),
             smooth_scrolling: bridge::smooth_scroll_preference(),
             motion_allowed: window_material::animations_enabled(),
             wheel_scroll: smooth_scroll::SmoothScroll::default(),
             image_cache: None,
             wallpaper: None,
+            notification_icons: BTreeMap::new(),
+            expanded_notification: None,
             pairing_qr: None,
             pairing_qr_code: String::new(),
             relays: TextEdit::new(snap.settings.relays.join("\n")),
+            relay_mode: snap.settings.relay_mode.clone(),
+            notification_retention: TextEdit::new(
+                snap.settings.notification_retention_days.to_string(),
+            ),
             manual_proxy: TextEdit::new(snap.settings.manual_proxy.clone()),
             receive_dir: TextEdit::new(snap.settings.receive_dir.clone()),
             proxy_mode: snap.settings.proxy_mode.clone(),
@@ -248,7 +265,8 @@ impl Ui {
             snap,
             settings_dirty: false,
             confirm: None,
-            notice,
+            notice: notice.map(Notice::error),
+            notice_generation: 0,
             busy: false,
             link_busy: false,
             drop_over: false,
@@ -256,11 +274,16 @@ impl Ui {
     }
 
     fn sync(&mut self, next: bridge::Snapshot) {
-        if self.snap == next {
-            return;
-        }
+        let notifications_changed = self.snap.notifications != next.notifications;
+        let pairing_finished = self.snap.pairing.active
+            && !next.pairing.active
+            && next.pairing.paired
+            && next.connection.linked;
         if !self.settings_dirty {
             self.relays.replace_text(next.settings.relays.join("\n"));
+            self.relay_mode = next.settings.relay_mode.clone();
+            self.notification_retention
+                .replace_text(next.settings.notification_retention_days.to_string());
             self.manual_proxy
                 .replace_text(next.settings.manual_proxy.clone());
             self.receive_dir
@@ -270,6 +293,13 @@ impl Ui {
         }
         self.snap = next;
         self.refresh_pairing_qr();
+        if notifications_changed {
+            self.refresh_notification_icons();
+        }
+        if pairing_finished && self.notice.as_ref().is_some_and(|notice| notice.pairing) {
+            self.show_notice("Phone paired", NoticeKind::Success);
+            self.refresh_wallpaper();
+        }
     }
 
     /// The code is short lived. Cache one bitmap per active code, never use a
@@ -301,6 +331,71 @@ impl Ui {
         }
     }
 
+    fn refresh_notification_icons(&mut self) {
+        let Some(cache) = &self.image_cache else {
+            return;
+        };
+        let packages: BTreeSet<_> = self
+            .snap
+            .notifications
+            .iter()
+            .map(|notification| notification.package.clone())
+            .filter(|package| !package.is_empty())
+            .collect();
+        self.notification_icons
+            .retain(|package, _| packages.contains(package));
+        for package in packages {
+            let Some(stamp) = bridge::notification_icon_stamp(&package) else {
+                continue;
+            };
+            if self
+                .notification_icons
+                .get(&package)
+                .is_some_and(|(old, _)| old == &stamp)
+            {
+                continue;
+            }
+            if let Some(bytes) = bridge::notification_icon_bytes(&package) {
+                self.notification_icons
+                    .insert(package, (stamp, cache.load(bytes)));
+            }
+        }
+    }
+
+    fn show_notice(&mut self, message: impl Into<String>, kind: NoticeKind) -> u64 {
+        self.notice_generation = self.notice_generation.wrapping_add(1);
+        self.notice = Some(Notice::new(message, kind));
+        self.notice_generation
+    }
+
+    fn dismiss_notice(&mut self) {
+        self.notice_generation = self.notice_generation.wrapping_add(1);
+        self.notice = None;
+    }
+
+    fn complete_notice(&mut self, ticket: u64, result: Result<(), String>, success: &str) {
+        if self.notice_generation != ticket {
+            return;
+        }
+        match result {
+            Ok(()) => {
+                self.show_notice(success, NoticeKind::Success);
+            }
+            Err(error) => {
+                self.show_notice(error, NoticeKind::Error);
+            }
+        }
+    }
+
+    fn set_transparency(&mut self, percent: u8, persist: bool) {
+        self.transparency = percent.min(100);
+        if persist {
+            if let Err(error) = bridge::save_transparency_preference(self.transparency) {
+                self.show_notice(error, NoticeKind::Error);
+            }
+        }
+    }
+
     fn operation(
         &mut self,
         message: &'static str,
@@ -312,7 +407,10 @@ impl Ui {
             return;
         }
         self.busy = true;
-        self.notice = Some(format!("{message}…"));
+        let ticket = self.show_notice(format!("{message}…"), NoticeKind::Progress);
+        if let Some(notice) = &mut self.notice {
+            notice.pairing = message == "Starting pairing";
+        }
         let handle = HANDLE.get().cloned();
         std::thread::spawn(move || {
             let result = task();
@@ -321,10 +419,19 @@ impl Ui {
                 handle.update(move |ui, _| {
                     ui.sync(next);
                     ui.busy = false;
-                    ui.notice = Some(match result {
-                        Ok(()) => format!("{message} completed"),
-                        Err(error) => error,
-                    });
+                    if result.is_ok()
+                        && message == "Opening file picker"
+                        && ui.notice_generation == ticket
+                    {
+                        ui.dismiss_notice();
+                    } else {
+                        ui.complete_notice(ticket, result, notices::completion_message(message));
+                        if message == "Starting pairing" {
+                            if let Some(notice) = &mut ui.notice {
+                                notice.pairing = true;
+                            }
+                        }
+                    }
                 });
             }
         });
@@ -334,6 +441,8 @@ impl Ui {
         if self.page != page {
             self.search.replace_text("");
             self.wheel_scroll.reset();
+            self.dismiss_notice();
+            self.expanded_notification = None;
         }
         self.page = page;
         self.confirm = None;
@@ -345,7 +454,9 @@ impl Ui {
                 self.material = material;
                 self.backdrop_active = window_material::apply(material, &self.appearance);
             }
-            Err(error) => self.notice = Some(error),
+            Err(error) => {
+                self.show_notice(error, NoticeKind::Error);
+            }
         }
     }
 
@@ -355,12 +466,28 @@ impl Ui {
                 self.smooth_scrolling = enabled;
                 self.wheel_scroll.reset();
             }
-            Err(error) => self.notice = Some(error),
+            Err(error) => {
+                self.show_notice(error, NoticeKind::Error);
+            }
         }
     }
 
     fn save_settings(&mut self) {
         if self.busy {
+            return;
+        }
+        let Ok(retention) = self.notification_retention.text.trim().parse::<u32>() else {
+            self.show_notice(
+                "Enter notification retention as a whole number of days (0 to 3650)",
+                NoticeKind::Error,
+            );
+            return;
+        };
+        if retention > 3650 {
+            self.show_notice(
+                "Notification retention must be between 0 and 3650 days",
+                NoticeKind::Error,
+            );
             return;
         }
         let settings = bridge::Settings {
@@ -372,6 +499,8 @@ impl Ui {
                 .filter(|part| !part.is_empty())
                 .map(str::to_owned)
                 .collect(),
+            relay_mode: self.relay_mode.clone(),
+            notification_retention_days: retention,
             proxy_mode: self.proxy_mode.clone(),
             manual_proxy: self.manual_proxy.text.clone(),
             receive_dir: self.receive_dir.text.clone(),
@@ -379,7 +508,7 @@ impl Ui {
             ..self.snap.settings.clone()
         };
         self.busy = true;
-        self.notice = Some("Saving settings…".into());
+        let ticket = self.show_notice("Saving settings…", NoticeKind::Progress);
         let handle = HANDLE.get().cloned();
         std::thread::spawn(move || {
             let result = bridge::save_settings(settings);
@@ -394,10 +523,7 @@ impl Ui {
                     }
                     ui.sync(next);
                     ui.busy = false;
-                    ui.notice = Some(match result {
-                        Ok(()) => "Settings saved".into(),
-                        Err(error) => error,
-                    });
+                    ui.complete_notice(ticket, result, "Settings saved");
                 });
             }
         });
@@ -416,7 +542,7 @@ impl Ui {
     }
 
     fn cancel_transfer(&mut self, id: String) {
-        self.notice = Some("Cancelling transfer...".into());
+        let ticket = self.show_notice("Cancelling transfer…", NoticeKind::Progress);
         let handle = HANDLE.get().cloned();
         std::thread::spawn(move || {
             let result = bridge::cancel_transfer(&id);
@@ -424,10 +550,7 @@ impl Ui {
             if let Some(handle) = handle {
                 handle.update(move |ui, _| {
                     ui.sync(next);
-                    ui.notice = Some(match result {
-                        Ok(()) => "Transfer cancellation requested".into(),
-                        Err(error) => error,
-                    });
+                    ui.complete_notice(ticket, result, "Transfer cancellation requested");
                 });
             }
         });
@@ -439,13 +562,13 @@ impl Ui {
         }
         let enable = self.snap.connection.paused;
         self.link_busy = true;
-        self.notice = Some(
+        let ticket = self.show_notice(
             if enable {
                 "Resuming connection..."
             } else {
                 "Disconnecting..."
-            }
-            .into(),
+            },
+            NoticeKind::Progress,
         );
         let handle = HANDLE.get().cloned();
         std::thread::spawn(move || {
@@ -456,11 +579,12 @@ impl Ui {
                 handle.update(move |ui, _| {
                     ui.link_busy = false;
                     ui.sync(next);
-                    ui.notice = Some(match result {
-                        Ok(_) if enable => "Connection enabled; waiting for your phone".into(),
-                        Ok(_) => "Disconnected. Pairing is preserved; connect to resume.".into(),
-                        Err(error) => error,
-                    });
+                    let success = if enable {
+                        "Connection enabled; waiting for your phone"
+                    } else {
+                        "Disconnected. Pairing is preserved; connect to resume."
+                    };
+                    ui.complete_notice(ticket, result.map(|_| ()), success);
                 });
             }
         });
@@ -483,7 +607,10 @@ impl Ui {
                         ui.receive_dir
                             .replace_text(path.to_string_lossy().into_owned());
                         ui.settings_dirty = true;
-                        ui.notice = Some("Receive folder selected; save settings to apply".into());
+                        ui.show_notice(
+                            "Receive folder selected; save settings to apply",
+                            NoticeKind::Success,
+                        );
                     }
                 });
             }
@@ -579,14 +706,17 @@ impl Paint {
 }
 
 impl Paint {
-    fn with_backdrop(mut self, active: bool, dark: bool) -> Self {
+    fn with_backdrop(mut self, active: bool, transparency: u8) -> Self {
         if active {
-            // Leave the native backdrop visible through the shell. Text/cards retain contrast.
-            self.surface = self.surface.alpha(if dark { 0.62 } else { 0.72 });
-            self.sidebar = self.sidebar.alpha(if dark { 0.28 } else { 0.38 });
-            self.card = self.card.alpha(0.86);
-            self.inset = self.inset.alpha(0.88);
+            // Paint the shell ONCE at the root. Its title bar, navigation and
+            // content are transparent children, not differently tinted layers.
+            self.surface = self
+                .surface
+                .alpha(1.0 - f32::from(transparency.min(100)) / 100.0);
+            self.card = self.card.alpha(0.94);
+            self.inset = self.inset.alpha(0.96);
         }
+        self.sidebar = self.surface;
         self
     }
 }
@@ -870,7 +1000,7 @@ fn sidebar(ui: &Ui, paint: Paint, compact: bool) -> El {
         .h_full()
         .padding(12.0)
         .gap(18.0)
-        .fill(paint.sidebar)
+        .fill(Color::TRANSPARENT)
         .child(
             row()
                 .key("brand")
@@ -1355,141 +1485,210 @@ fn file_glyph(name: &str) -> &'static Icon {
     }
 }
 
+fn notification_toolbar(ui: &Ui, paint: Paint) -> El {
+    let days = ui.snap.settings.notification_retention_days;
+    let retention = if days == 0 {
+        "No age limit".to_owned()
+    } else {
+        format!("Keep {days} days")
+    };
+    row()
+        .key("notification-toolbar")
+        .w_full()
+        .center_y()
+        .gap(8.0)
+        .child(
+            text(format!("{} notifications", ui.snap.notifications.len()))
+                .grow(1.0)
+                .min_w(0.0)
+                .font(rune::TextStyle::new(12.0, 500.0))
+                .color(paint.subdued)
+                .truncate(),
+        )
+        .child(button(
+            "notification-retention",
+            retention,
+            paint,
+            false,
+            |ui| ui.navigate(Page::Settings),
+        ))
+        .child(button(
+            "clear-notifications",
+            if ui.confirm == Some("notifications") {
+                "Confirm clear"
+            } else {
+                "Clear history"
+            },
+            paint,
+            ui.confirm == Some("notifications"),
+            |ui| {
+                if ui.confirm_action("notifications") {
+                    ui.operation("Clearing notifications", || {
+                        bridge::clear_history("notifications")
+                    });
+                }
+            },
+        ))
+}
+
+fn notification_app_icon(ui: &Ui, notification: &bridge::Notification, paint: Paint) -> El {
+    let container = el()
+        .key(format!("notification-icon-{}", notification.id))
+        .size(34.0, 34.0)
+        .min_w(34.0)
+        .radius(9.0)
+        .role("image")
+        .label(format!("{} app icon", notification.app))
+        .center();
+    if let Some((_, image)) = ui.notification_icons.get(&notification.package) {
+        if let Some(pixels) = image.pixels() {
+            return container.pixels_fit(pixels, SurfaceFit::Fit);
+        }
+    }
+    // A missing cache entry has an honest app initial, never an unrelated logo.
+    let initial = notification
+        .app
+        .chars()
+        .find(|c| !c.is_whitespace())
+        .unwrap_or('?')
+        .to_uppercase()
+        .to_string();
+    container.fill(paint.accent.alpha(0.09)).child(
+        text(initial)
+            .font(rune::TextStyle::new(16.0, 600.0))
+            .color(paint.accent),
+    )
+}
+
 fn notifications(ui: &Ui, paint: Paint) -> El {
-    let mut list = col().gap(3.0);
     let query = ui.search.text.trim().to_lowercase();
-    let records = ui
+    let records: Vec<_> = ui
         .snap
         .notifications
         .iter()
-        .filter(|notification| {
+        .filter(|record| {
             query.is_empty()
-                || [
-                    notification.app.as_str(),
-                    notification.title.as_str(),
-                    notification.body.as_str(),
-                ]
-                .iter()
-                .any(|field| field.to_lowercase().contains(&query))
+                || [&record.app, &record.title, &record.body]
+                    .iter()
+                    .any(|field| field.to_lowercase().contains(&query))
         })
-        .collect::<Vec<_>>();
+        .collect();
+    let mut list = col().key("notification-timeline").w_full().gap(9.0);
     if records.is_empty() {
-        list = list.child(empty_state(
+        return list.child(empty_state(
             if query.is_empty() {
-                "No notifications"
+                "No notifications yet"
             } else {
                 "No matching notifications"
             },
             if query.is_empty() {
-                "Notifications forwarded from Android appear here."
+                "Your phone's notifications will appear here, with their app icons and time."
             } else {
-                "Try another app or keyword."
+                "Try another app, sender or keyword."
             },
             &icons::BELL,
             paint,
         ));
-    } else {
-        for notification in records {
-            let title = if notification.title.chars().count() > 70 {
-                format!(
-                    "{}…",
-                    notification.title.chars().take(69).collect::<String>()
-                )
-            } else {
-                notification.title.clone()
-            };
-            let body = if notification.body.chars().count() > 132 {
-                format!(
-                    "{}…",
-                    notification.body.chars().take(131).collect::<String>()
-                )
-            } else {
-                notification.body.clone()
-            };
+    }
+    let mut day = String::new();
+    for notification in records {
+        let stamp = notification_time::format(notification.timestamp_ms);
+        if day != stamp.day_key {
+            day = stamp.day_key.clone();
             list = list.child(
                 row()
-                    .key(format!("notification-{}", notification.id))
+                    .key(format!("notification-day-{day}"))
                     .w_full()
-                    .padding(12.0)
+                    .h(28.0)
                     .center_y()
-                    .gap(13.0)
-                    .radius(9.0)
-                    .hover(paint.t.hover)
+                    .gap(12.0)
                     .child(
-                        el().size(36.0, 36.0)
-                            .radius(9.0)
-                            .fill(paint.inset)
-                            .center()
-                            .child(icon(&icons::BELL, 18.0).color(paint.subdued)),
+                        text(stamp.day.clone())
+                            .font(rune::TextStyle::new(11.0, 560.0))
+                            .color(paint.subdued),
                     )
-                    .child(
-                        col()
-                            .grow(1.0)
-                            .min_w(0.0)
-                            .gap(5.0)
-                            .child(
-                                row()
-                                    .center_y()
-                                    .gap(10.0)
-                                    .child(
-                                        text(title)
-                                            .font(rune::TextStyle::new(13.0, 590.0))
-                                            .color(paint.t.text)
-                                            .truncate(),
-                                    )
-                                    .child(
-                                        text(notification.app.as_str())
-                                            .font(rune::TextStyle::new(11.0, 450.0))
-                                            .color(paint.accent)
-                                            .truncate(),
-                                    ),
-                            )
-                            .child(
-                                text(body)
-                                    .font(rune::TextStyle::new(12.0, 440.0))
-                                    .color(paint.subdued)
-                                    .max_lines(2),
-                            ),
-                    ),
+                    .child(el().grow(1.0).h(1.0).fill(paint.line.alpha(0.65))),
             );
         }
-    }
-    card(
-        "notifications",
-        paint,
-        col()
-            .gap(14.0)
+        let expanded = ui.expanded_notification.as_deref() == Some(notification.id.as_str());
+        let mut message = col()
+            .grow(1.0)
+            .min_w(0.0)
+            .gap(6.0)
             .child(
                 row()
-                    .justify_between()
+                    .w_full()
                     .center_y()
-                    .child(section_heading(
-                        &icons::BELL,
-                        "Phone notifications",
-                        "Recent updates from Android",
-                        paint,
-                    ))
-                    .child(button(
-                        "clear-notifications",
-                        if ui.confirm == Some("notifications") {
-                            "Confirm clear"
-                        } else {
-                            "Clear"
-                        },
-                        paint,
-                        ui.confirm == Some("notifications"),
-                        |ui| {
-                            if ui.confirm_action("notifications") {
-                                ui.operation("Clearing notifications", || {
-                                    bridge::clear_history("notifications")
-                                });
-                            }
-                        },
-                    )),
+                    .gap(12.0)
+                    .child(
+                        text(notification.app.clone())
+                            .grow(1.0)
+                            .min_w(0.0)
+                            .font(rune::TextStyle::new(11.0, 550.0))
+                            .color(paint.subdued)
+                            .truncate(),
+                    )
+                    .child(
+                        text(stamp.time.clone())
+                            .key(format!("notification-time-{}", notification.id))
+                            .font(rune::TextStyle::new(11.0, 450.0))
+                            .color(paint.faint)
+                            .label(stamp.full.clone()),
+                    ),
             )
-            .child(el().w_full().h(1.0).fill(paint.line))
-            .child(list),
-    )
+            .child(
+                text(notification.title.clone())
+                    .w_full()
+                    .font(rune::TextStyle::new(13.0, 600.0))
+                    .color(paint.t.text)
+                    .max_lines(if expanded { 4 } else { 2 }),
+            );
+        if !notification.body.is_empty() {
+            message = message.child(
+                text(notification.body.clone())
+                    .w_full()
+                    .font(rune::TextStyle::new(12.0, 450.0))
+                    .color(paint.subdued)
+                    .max_lines(if expanded { 20 } else { 2 }),
+            );
+        }
+        if expanded {
+            message = message.child(
+                text(stamp.full)
+                    .font(rune::TextStyle::new(10.0, 450.0))
+                    .color(paint.faint),
+            );
+        }
+        let id = notification.id.clone();
+        list = list.child(
+            row()
+                .key(format!("notification-{}", notification.id))
+                .w_full()
+                .padding(14.0)
+                .gap(12.0)
+                .radius(11.0)
+                .fill(paint.card)
+                .border(1.0, paint.line.alpha(0.8))
+                .hover(paint.t.hover.alpha(0.65))
+                .focusable(true)
+                .role("button")
+                .label(format!(
+                    "{}, {}, {}",
+                    notification.app, notification.title, stamp.time
+                ))
+                .child(notification_app_icon(ui, notification, paint))
+                .child(message)
+                .on_press(move |ui: &mut Ui| {
+                    ui.expanded_notification =
+                        if ui.expanded_notification.as_deref() == Some(id.as_str()) {
+                            None
+                        } else {
+                            Some(id.clone())
+                        };
+                }),
+        );
+    }
+    list
 }
 
 fn links(ui: &Ui, paint: Paint) -> El {
@@ -1792,37 +1991,226 @@ fn field(label: &str, edit: &TextEdit, paint: Paint, editable: fn(&mut Ui) -> &m
 }
 
 fn relays_field(ui: &Ui, paint: Paint) -> El {
-    col()
-        .gap(7.0)
-        .w_full()
+    let mut modes = row().gap(3.0).padding(3.0).radius(9.0).fill(paint.inset);
+    for (mode, label) in [
+        ("default", "Default nodes"),
+        ("custom", "Custom"),
+        ("off", "Disabled"),
+    ] {
+        modes = modes.child(segment(
+            format!("relay-mode-{mode}"),
+            label,
+            ui.relay_mode == mode,
+            paint,
+            move |ui| {
+                ui.relay_mode = mode.into();
+                if mode == "default" {
+                    ui.relays
+                        .replace_text(bridge::split_relays(bridge::DEFAULT_RELAYS).join("\n"));
+                }
+                ui.settings_dirty = true;
+            },
+        ));
+    }
+    let mut content = col().w_full().gap(9.0).child(
+        row()
+            .w_full()
+            .center_y()
+            .justify_between()
+            .child(text("Relay nodes").font(type_::LABEL).color(paint.subdued))
+            .child(modes),
+    );
+    if ui.relay_mode == "custom" {
+        content = content
+            .child(
+                col()
+                    .w_full()
+                    .min_h(98.0)
+                    .padding(12.0)
+                    .fill(paint.inset)
+                    .radius(8.0)
+                    .border(1.0, paint.line)
+                    .child(
+                        text_input(&ui.relays, type_::BODY)
+                            .key("relay-nodes-editor")
+                            .w_full()
+                            .min_h(74.0)
+                            .color(paint.t.text)
+                            .on_edit(|s: &mut Ui| {
+                                s.settings_dirty = true;
+                                &mut s.relays
+                            })
+                            .on_submit(|s: &mut Ui, _| {
+                                s.relays.insert("\n");
+                                s.settings_dirty = true;
+                            }),
+                    ),
+            )
+            .child(
+                text("One host:port per line. Changes apply when you save.")
+                    .font(rune::TextStyle::new(10.0, 450.0))
+                    .color(paint.faint),
+            );
+    } else if ui.relay_mode == "off" {
+        content = content.child(
+            muted(
+                "Relay is disabled. Use a direct LAN connection to reach your phone.",
+                paint,
+            )
+            .max_lines(2),
+        );
+    } else {
+        let mut nodes = col()
+            .key("default-relay-nodes")
+            .w_full()
+            .gap(9.0)
+            .padding(12.0)
+            .radius(8.0)
+            .fill(paint.inset)
+            .border(1.0, paint.line);
+        for (index, endpoint) in bridge::split_relays(bridge::DEFAULT_RELAYS)
+            .iter()
+            .enumerate()
+        {
+            nodes = nodes.child(
+                row()
+                    .key(format!("default-relay-{index}"))
+                    .gap(9.0)
+                    .center_y()
+                    .child(icon(&icons::LINK, 13.0).color(paint.faint))
+                    .child(
+                        text(endpoint.clone())
+                            .font(rune::TextStyle::new(12.0, 450.0))
+                            .color(paint.t.text),
+                    ),
+            );
+        }
+        content = content.child(nodes).child(
+            text("Built-in fallback nodes; an empty configuration does not disable them.")
+                .font(rune::TextStyle::new(10.0, 450.0))
+                .color(paint.faint)
+                .max_lines(2),
+        );
+    }
+    if ui.snap.settings.relays_source == "environment" {
+        content = content.child(
+            text(format!(
+                "Environment override is active: {}",
+                ui.snap.settings.effective_relays.join(", ")
+            ))
+            .font(rune::TextStyle::new(11.0, 500.0))
+            .color(paint.subdued)
+            .max_lines(3),
+        );
+    }
+    content
+}
+
+fn transparency_at(x: f32, width: f32) -> u8 {
+    if !x.is_finite() || !width.is_finite() || width <= 16.0 {
+        return 0;
+    }
+    (((x - 8.0) / (width - 16.0)).clamp(0.0, 1.0) * 100.0).round() as u8
+}
+
+fn transparency_control(ui: &Ui, paint: Paint) -> El {
+    let slider_width = 216.0;
+    let slider = row()
+        .key("transparency-slider")
+        .size(slider_width, 28.0)
+        .center_y()
+        .role("slider")
+        .label(format!(
+            "Background transparency, {} percent",
+            ui.transparency
+        ))
+        .focusable(true)
         .child(
-            text("Relay nodes (one host:port per line)")
-                .font(type_::LABEL)
-                .color(paint.subdued),
+            el().w((slider_width - 16.0) * f32::from(ui.transparency) / 100.0)
+                .h(4.0)
+                .radius(2.0)
+                .fill(paint.accent),
         )
         .child(
-            col()
-                .w_full()
-                .min_h(98.0)
-                .padding(10.0)
-                .fill(paint.inset)
+            el().size(16.0, 16.0)
                 .radius(8.0)
-                .border(1.0, paint.line)
-                .child(
-                    text_input(&ui.relays, type_::BODY)
-                        .w_full()
-                        .min_h(74.0)
-                        .color(paint.t.text)
-                        .on_edit(|s: &mut Ui| {
-                            s.settings_dirty = true;
-                            &mut s.relays
-                        })
-                        .on_submit(|s: &mut Ui, _| {
-                            s.relays.insert("\n");
-                            s.settings_dirty = true;
-                        }),
-                ),
+                .fill(paint.accent)
+                .border(2.0, paint.card),
         )
+        .child(
+            el().grow(1.0)
+                .min_w(0.0)
+                .h(4.0)
+                .radius(2.0)
+                .fill(paint.line),
+        )
+        .on_drag(|s: &mut Ui, drag, tx| {
+            if drag.phase == rune::Phase::Down {
+                drag.data = f32::from(s.transparency);
+            }
+            let percent = if drag.cancelled() {
+                drag.data as u8
+            } else {
+                transparency_at(drag.x, drag.w)
+            };
+            s.set_transparency(percent, drag.phase == rune::Phase::Up && !drag.cancelled());
+            tx.instant();
+        })
+        .on_step(|s: &mut Ui, delta, tx| {
+            s.set_transparency(
+                (i32::from(s.transparency) + delta).clamp(0, 100) as u8,
+                true,
+            );
+            tx.instant();
+        })
+        .on_step_limit(|s: &mut Ui, maximum, tx| {
+            s.set_transparency(if maximum { 100 } else { 0 }, true);
+            tx.instant();
+        });
+    col().w_full().gap(8.0)
+        .child(row().w_full().center_y().justify_between()
+            .child(heading("Background transparency", paint))
+            .child(text(format!("{}%", ui.transparency)).key("transparency-value")
+                .font(rune::TextStyle::new(13.0, 600.0)).color(paint.t.text)))
+        .child(row().w_full().center_y().gap(16.0)
+            .child(text("One material across the title bar, sidebar and content. Text stays opaque.")
+                .grow(1.0).min_w(0.0).max_lines(2).font(rune::TextStyle::new(10.0, 450.0)).color(paint.faint))
+            .child(slider))
+}
+
+fn notification_history_settings(ui: &Ui, paint: Paint) -> El {
+    let mut presets = row().gap(3.0).padding(3.0).radius(9.0).fill(paint.inset);
+    for (days, label) in [
+        ("7", "7 days"),
+        ("30", "30 days"),
+        ("90", "90 days"),
+        ("0", "Off"),
+    ] {
+        presets = presets.child(segment(
+            format!("retention-{days}"),
+            label,
+            ui.notification_retention.text.trim() == days,
+            paint,
+            move |s| {
+                s.notification_retention.replace_text(days);
+                s.settings_dirty = true;
+            },
+        ));
+    }
+    card("settings-notification-history", paint, col().w_full().gap(13.0)
+        .child(heading("Notification history", paint))
+        .child(muted("Automatically delete desktop records older than the chosen number of days.", paint).max_lines(2))
+        .child(row().w_full().center_y().gap(10.0)
+            .child(text("Keep for").font(type_::BODY).color(paint.subdued))
+            .child(row().w(74.0).h(36.0).px(10.0).center_y().fill(paint.inset).radius(8.0).border(1.0, paint.line)
+                .child(text_input(&ui.notification_retention, type_::BODY).key("notification-retention-days")
+                    .w_full().single_line().color(paint.t.text).label("Notification history retention in days")
+                    .on_edit(|s: &mut Ui| { s.settings_dirty = true; &mut s.notification_retention })))
+            .child(text("days").font(type_::BODY).color(paint.subdued))
+            .child(el().grow(1.0)))
+        .child(row().child(presets))
+        .child(text("0 disables age-based cleanup. Saving applies the rule immediately. Phone notifications are not deleted.")
+            .font(rune::TextStyle::new(10.0, 450.0)).color(paint.faint).max_lines(3)))
 }
 
 fn settings(ui: &Ui, paint: Paint) -> El {
@@ -1857,10 +2245,15 @@ fn settings(ui: &Ui, paint: Paint) -> El {
                     ui.backdrop_active = window_material::apply(ui.material, mode);
                     #[cfg(windows)]
                     if let Err(error) = window_icon::update_appearance(mode) {
-                        ui.notice = Some(format!("Could not update window appearance: {error}"));
+                        ui.show_notice(
+                            format!("Could not update window appearance: {error}"),
+                            NoticeKind::Error,
+                        );
                     }
                 }
-                Err(error) => ui.notice = Some(error),
+                Err(error) => {
+                    ui.show_notice(error, NoticeKind::Error);
+                }
             },
         ));
     }
@@ -1920,6 +2313,8 @@ fn settings(ui: &Ui, paint: Paint) -> El {
                     )
                     .child(materials),
             )
+            .child(el().w_full().h(1.0).fill(paint.line))
+            .child(transparency_control(ui, paint))
             .child(el().w_full().h(1.0).fill(paint.line))
             .child(
                 row()
@@ -2017,6 +2412,7 @@ fn settings(ui: &Ui, paint: Paint) -> El {
         .w_full()
         .gap(14.0)
         .child(appearance_card)
+        .child(notification_history_settings(ui, paint))
         .child(card("settings", paint, connection))
         .child(files_card)
         .child(
@@ -2248,7 +2644,7 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
         "dark" => true,
         _ => cx.system_dark(),
     };
-    let paint = Paint::new(dark).with_backdrop(ui.backdrop_active, dark);
+    let paint = Paint::new(dark).with_backdrop(ui.backdrop_active, ui.transparency);
     let searchable = matches!(ui.page, Page::Transfers | Page::Notifications | Page::Links);
     let mut right = row().gap(10.0).center_y();
     if searchable && !compact {
@@ -2288,8 +2684,8 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
         .min_w(0.0)
         .h_full()
         .padding(if compact { 20.0 } else { 26.0 })
-        .fill(paint.surface)
-        .gap(22.0)
+        .fill(Color::TRANSPARENT)
+        .gap(16.0)
         .child(
             row()
                 .key("page-header")
@@ -2303,15 +2699,46 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
     if searchable && compact {
         body = body.child(row().child(search_field(ui, paint)));
     }
+    if ui.page == Page::Notifications {
+        body = body.child(notification_toolbar(ui, paint));
+    }
     if let Some(notice) = &ui.notice {
+        let tint = if notice.kind == NoticeKind::Error {
+            paint.danger
+        } else {
+            paint.accent
+        };
         body = body.child(
             row()
                 .key("notice")
                 .w_full()
-                .padding(10.0)
+                .padding(8.0)
+                .center_y()
+                .gap(10.0)
                 .radius(8.0)
-                .fill(paint.accent.alpha(0.1))
-                .child(muted(notice.clone(), paint).max_lines(3)),
+                .fill(tint.alpha(0.1))
+                .child(
+                    muted(notice.message.clone(), paint)
+                        .grow(1.0)
+                        .min_w(0.0)
+                        .max_lines(3),
+                )
+                .child(
+                    el().key("dismiss-notice")
+                        .size(28.0, 28.0)
+                        .center()
+                        .radius(6.0)
+                        .role("button")
+                        .label("Dismiss message")
+                        .focusable(true)
+                        .hover(paint.t.hover)
+                        .child(
+                            text("×")
+                                .font(rune::TextStyle::new(18.0, 450.0))
+                                .color(paint.subdued),
+                        )
+                        .on_press(|ui: &mut Ui| ui.dismiss_notice()),
+                ),
         );
     }
     let scroll_key = format!("page-scroll-{}", ui.page.name());
@@ -2335,11 +2762,7 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
         .role("window")
         .w_full()
         .h_full()
-        .fill(if ui.backdrop_active {
-            Color::TRANSPARENT
-        } else {
-            paint.surface
-        })
+        .fill(paint.surface)
         .child(sidebar(ui, paint, compact))
         .child(el().w(1.0).h_full().fill(paint.line.alpha(0.65)))
         .child(body);
@@ -2354,7 +2777,7 @@ fn on_key(ui: &mut Ui, event: &KeyEvent, _: &mut Tx) -> bool {
     match event.key {
         Key::Escape => {
             ui.confirm = None;
-            ui.notice = None;
+            ui.dismiss_notice();
             true
         }
         Key::Command('1') => {
@@ -2440,6 +2863,13 @@ fn qa_overview(ui: &mut Ui) {
     ui.snap = bridge::Snapshot::default();
     ui.page = Page::Overview;
     ui.notice = None;
+    ui.notification_icons.clear();
+    ui.wallpaper = None;
+    ui.relay_mode = "default".into();
+    ui.relays.replace_text("relay.example.org:41113");
+    ui.notification_retention.replace_text("30");
+    ui.snap.settings.notification_retention_days = 30;
+    ui.expanded_notification = None;
     ui.appearance = "system".into();
     connected_scene(ui);
     ui.snap.connection.device = "Android phone".into();
@@ -2491,6 +2921,8 @@ fn qa_overview(ui: &mut Ui) {
     });
     ui.snap.notifications = vec![bridge::Notification {
         id: "qa-notification".into(),
+        timestamp_ms: 1_793_888_400_000,
+        package: "example.messages".into(),
         app: "Messages".into(),
         title: "Project update".into(),
         body: "The review notes are ready to read.".into(),
@@ -2509,6 +2941,23 @@ fn qa_transfers(ui: &mut Ui) {
 fn qa_notifications(ui: &mut Ui) {
     qa_overview(ui);
     ui.page = Page::Notifications;
+    ui.snap.notifications.extend([
+        bridge::Notification {
+            id: "qa-calendar".into(), timestamp_ms: 1_793_887_200_000,
+            package: "example.calendar".into(), app: "Calendar".into(),
+            title: "Design review".into(), body: "The team meeting starts in 15 minutes. Room 4 or join online.".into(),
+        },
+        bridge::Notification {
+            id: "qa-mail".into(), timestamp_ms: 1_793_883_600_000,
+            package: "example.mail".into(), app: "Mail".into(),
+            title: "Weekly project notes".into(), body: "The latest project notes are ready. Review the changes and share your feedback before the next planning session.".into(),
+        },
+        bridge::Notification {
+            id: "qa-message-previous".into(), timestamp_ms: 1_793_802_000_000,
+            package: "example.messages".into(), app: "Messages".into(),
+            title: "Avery".into(), body: "Thanks for sending the files. Everything arrived safely.".into(),
+        },
+    ]);
 }
 fn qa_links(ui: &mut Ui) {
     qa_overview(ui);
@@ -2528,6 +2977,11 @@ fn qa_pairing(ui: &mut Ui) {
 fn qa_settings(ui: &mut Ui) {
     qa_overview(ui);
     ui.page = Page::Settings;
+    ui.relay_mode = "custom".into();
+    ui.snap.settings.relay_mode = "custom".into();
+    ui.snap.settings.relays = vec!["relay.example.org:41113".into()];
+    ui.snap.settings.effective_relays = ui.snap.settings.relays.clone();
+    ui.snap.settings.relays_source = "config".into();
 }
 fn qa_offline(ui: &mut Ui) {
     qa_overview(ui);
@@ -2548,23 +3002,36 @@ fn setup_watcher(handle: AppHandle<Ui>) {
             Ok(watcher) => watcher,
             Err(_) => return,
         };
-        if watcher.watch(&dir, RecursiveMode::NonRecursive).is_err() {
+        // Icons can arrive just after the TSV write on the notifier thread.
+        // Observe their real file events too; never fetch or poll artwork.
+        if watcher.watch(&dir, RecursiveMode::Recursive).is_err() {
             return;
         }
         for message in take_launch_notices() {
             handle.update(move |ui, _| {
                 ui.page = Page::Transfers;
-                ui.notice = Some(message);
+                ui.show_notice(message, NoticeKind::Error);
             });
         }
         while let Ok(event) = rx.recv() {
             let Ok(event) = event else { continue };
+            if matches!(event.kind, notify::EventKind::Access(_)) {
+                continue;
+            }
             if event.paths.iter().any(|path| {
                 path.file_name()
                     .and_then(|name| name.to_str())
                     .is_some_and(|name| name.eq_ignore_ascii_case("wallpaper.jpg"))
             }) {
                 handle.update(|ui, _| ui.refresh_wallpaper());
+            }
+            if event.paths.iter().any(|path| {
+                path.parent()
+                    .and_then(|parent| parent.file_name())
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.eq_ignore_ascii_case("icons"))
+            }) {
+                handle.update(|ui, _| ui.refresh_notification_icons());
             }
             if event.paths.iter().any(|path| {
                 path.file_name()
@@ -2576,7 +3043,7 @@ fn setup_watcher(handle: AppHandle<Ui>) {
                 for message in take_launch_notices() {
                     handle.update(move |ui, _| {
                         ui.page = Page::Transfers;
-                        ui.notice = Some(message);
+                        ui.show_notice(message, NoticeKind::Error);
                     });
                 }
             }
@@ -2608,6 +3075,23 @@ fn initialize_images(ui: &mut Ui, wake: Waker) {
     ui.image_cache = Some(cache);
     ui.refresh_wallpaper();
     ui.refresh_pairing_qr();
+    ui.refresh_notification_icons();
+}
+
+fn poll_ui(ui: &mut Ui, now: f64, tx: &mut Tx) -> bool {
+    let Some(notice) = &mut ui.notice else {
+        return false;
+    };
+    let tick = notice.tick(now);
+    if let Some(delay) = tick.wake_after {
+        tx.wake_after(delay);
+    }
+    if tick.expired {
+        ui.dismiss_notice();
+        tx.instant();
+        return true;
+    }
+    false
 }
 
 #[cfg(windows)]
@@ -2675,6 +3159,7 @@ fn main() {
         ],
         on_key: Some(on_key),
         setup: Some(initialize_images),
+        poll: Some(poll_ui),
         min_size: Some((760.0, 510.0)),
         ..AppSpec::new(window_title(), (1020.0, 605.0), Ui::init, view)
     })
@@ -2706,7 +3191,7 @@ fn main() {
             handle.update(move |ui, _| {
                 ui.sync(next);
                 if let Some(error) = error {
-                    ui.notice = Some(error);
+                    ui.show_notice(error, NoticeKind::Error);
                 }
             });
         });
@@ -2719,6 +3204,61 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn operation_success_expires_and_navigation_cannot_revive_a_stale_banner() {
+        let mut ui = Ui::init();
+        qa_overview(&mut ui);
+        let old = ui.show_notice("Starting pairing", NoticeKind::Progress);
+        ui.navigate(Page::Notifications);
+        ui.complete_notice(old, Ok(()), "Starting pairing completed");
+        assert!(ui.notice.is_none());
+        ui.show_notice("Settings saved", NoticeKind::Success);
+        assert!(!poll_ui(&mut ui, 10.0, &mut Tx::default()));
+        assert!(!poll_ui(&mut ui, 14.9, &mut Tx::default()));
+        assert!(poll_ui(&mut ui, 15.0, &mut Tx::default()));
+        assert!(ui.notice.is_none());
+    }
+
+    #[test]
+    fn notification_cards_have_app_identity_time_and_searchable_content() {
+        let mut ui = Ui::init();
+        qa_notifications(&mut ui);
+        let mut rt = Runtime::new(ui, view, (1020.0, 720.0), Env::new(false, 1.0));
+        rt.frame(0.0);
+        for key in [
+            "notification-toolbar",
+            "notification-timeline",
+            "notification-icon-qa-notification",
+            "notification-time-qa-notification",
+        ] {
+            assert!(rt.find(key).is_some(), "missing {key}");
+        }
+        rt.update(|s, tx| {
+            s.search.replace_text("Calendar");
+            tx.instant();
+        });
+        rt.frame(1.0 / 60.0);
+        assert!(rt.find("notification-qa-calendar").is_some());
+        assert!(rt.find("notification-qa-notification").is_none());
+    }
+
+    #[test]
+    fn transparency_is_bounded_and_uses_one_background_tint() {
+        assert_eq!(transparency_at(8.0, 216.0), 0);
+        assert_eq!(transparency_at(108.0, 216.0), 50);
+        assert_eq!(transparency_at(208.0, 216.0), 100);
+        assert_eq!(transparency_at(999.0, 216.0), 100);
+        assert_eq!(transparency_at(f32::NAN, 216.0), 0);
+        for dark in [false, true] {
+            for percent in [0, 25, 60, 100] {
+                let palette = Paint::new(dark).with_backdrop(true, percent);
+                assert_eq!(palette.surface, palette.sidebar);
+                assert!((palette.surface.a - (1.0 - f32::from(percent) / 100.0)).abs() < 0.001);
+                assert_eq!(palette.t.text.a, 1.0);
+            }
+        }
+    }
 
     #[test]
     fn paused_connection_has_reconnect_without_losing_pairing_controls() {

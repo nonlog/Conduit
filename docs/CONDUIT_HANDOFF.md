@@ -1,5 +1,26 @@
 # Conduit handoff
 
+## Active follow-up: eight reported desktop/mobile defects
+
+- Continue PR #27 on `codex/conduit-multipeer-20261104`. Latest published release remains
+  v0.1.16 at `0cc13c0`; the working checkout was clean and fast-forwarded before edits.
+- User requests: notification app icons/times/age retention and better layout; visible Relay
+  defaults; adjustable transparency; expiring pairing notices; phone wallpaper; unified
+  titlebar/sidebar/content material; Android QR scan crash; daemon tray Exit really exiting.
+- Rune source now retains notification timestamp/package identity, reads the daemon's cached
+  app PNGs, groups cards by local date, exposes retention and Relay modes, and adds a background
+  transparency slider. Success notices use a single finite Rune wake and are cleared on navigation.
+  Native chrome, daemon APIs and Android fixes are being integrated; no completion is implied.
+- Important API contract under construction: daemon `notifications clear`/`prune`, config
+  `notification_retention_days` (0 disables age cleanup; default 30), and public effective Relay
+  settings. Do not deploy the UI until the matching daemon and CI are verified.
+- Core local workspace tools work; Windows-log returned a connection error. Wi-Fi ADB currently
+  reports the phone unauthorized. The user was asked to allow debugging; do not clear app data,
+  rotate identities, repeat the prior signing migration, or switch the phone's network.
+- All formal compilation/tests remain in GitHub Actions. Local formatting and dependency-lock
+  resolution are not build/test evidence. Release/Scoop publication is part of this task, after
+  verification; v0.1.16 must never be rewritten.
+
 ## Live continuation: five experience changes installed and physically verified
 
 - Continue PR #27 and `codex/conduit-multipeer-20261104`; do not create another branch.
