@@ -1,5 +1,58 @@
 # Conduit handoff
 
+## Final installed release: v0.1.17 and Scoop update completed
+
+- Published stable release: `v0.1.17`, runtime source
+  `77414cb33b84d3315db1be6247980e24f42604dd`, annotated tag object
+  `593e4efc5bac3370ba79fa7cf35b242cc9b68ef4`. Full tagged Actions run `41999114384`
+  passed Windows, fixed-signer Android, Relay and GitHub Release; assets are uploaded.
+  No source build was run on the user's PC or VPS. PR #27 remains the existing draft;
+  this release does not claim a merge or new two-physical-PC acceptance.
+- `nonlog/scoop-www` master commit `f9eadfff566b8c50914761c5b3055c81944c11db` updates
+  `bucket/conduit.json` to 0.1.17. Author and committer are Codex. Windows release SHA-256:
+  `13dd9de789d3dd4f041a7647c33a01fb667b47e5829fe892d9b27fcc3e196bb1`.
+  Manifest URL/hash, published asset digest and the actual Scoop-downloaded archive agree.
+- Log's real Scoop installation is now **0.1.17 from bucket www**, not a 0.1.15 candidate
+  overlay. `current` points to `D:\Programs\Scoop\apps\conduit\0.1.17`; its data junction
+  still points to the original persisted store. Core identity/pairing/config hashes match.
+  Share Target and scoped LAN firewall report ready; autostart and Explorer choices were kept.
+  Installed Rune, daemon and send-helper bytes were checked against the official release ZIP.
+  Rune SHA-256: `39d079f1b0c0ba8f9288c84ff0827eba83c7d8b7ede72878e6da332b16fc9e5d`.
+  Daemon SHA-256: `8fda6700e445ea8f6ca31a410b0cdfb416add831586c3de6fcbdcde46a91931a`.
+- Phone is also on the exact published **0.1.17 / versionCode 19** APK, SHA-256
+  `5bf61a3eddb9ad3430b51a0f9905c1a7778c4498ee9d54b2f6ce8427dad77d12`. Its fixed certificate
+  was verified before in-place installation; all five original identity/pairing files matched
+  afterward. No uninstall, data clear, signing migration, new phone permission or network change.
+- Official installed daemon tray Exit was tested again: normal exit in 20 ms, port 41112
+  released, core state unchanged, no forced process kill. It was restarted and the existing
+  phone reconnected over Relay. The initial UI-close preflight rejected safely; a subsequent
+  normal close completed and the successful Scoop upgrade did not need its UI-only kill fallback.
+- Acceptance evidence: 43 native tests, 28 rendered scenes, 24 Android interaction tests,
+  optimized scanner/LSPosed entry points, actual app icons/time rendered from an isolated real
+  history copy, saved transparency slider at 70%, native caption/resize/Snap/minimize/maximize,
+  and real notification prune/clear plus tray-exit process regression on CI. The private history
+  fixture and its screenshot were removed after inspection; do not recreate or publish them.
+- Eight-fix behavior: notification cards use real cached app icons, local date/time and date
+  groups; retention is configurable (default 30 days, 0 disables age pruning, 100-record capacity
+  remains). Settings distinguish built-in/custom/disabled Relay nodes. Background transparency
+  is 0-100% with one root material behind titlebar/sidebar/body and opaque text. Success notices
+  expire after 5 seconds and navigation invalidates them. Android uses an offline scanner rather
+  than the crashing Google initialization path. Tray shutdown is bounded and releases sockets.
+- Wallpaper is not silently bypassed: the new phone **Settings -> Device wallpaper preview**
+  row explains the required optional access and refreshes connected desktops after approval.
+  All-files access remains denied/default; a new PC without an old cache needs that explicit
+  approval before a new thumbnail can arrive. Existing cached images remain available.
+- Physical QA boundaries remain explicit: the phone is keyguard-locked, so no real optical QR
+  scan was performed this round; actual scanner start/cancel runs passed on the CI Android 16
+  emulator. Current desktop capture/foreground access is unavailable; native window operations
+  and rendering were tested, but a fresh real-time DWM pixel inspection was not claimed.
+- Final reports and package evidence are in `Artifacts/Conduit/release-0.1.17`. A restricted
+  original-state backup remains in `D:\Workspace\Private\ConduitRelease-0.1.17-ecd355e07716472194f15bdb0da01be5`.
+  Never upload private backups or notification content. Other PCs update with `scoop update`
+  followed by `scoop update conduit`; no re-pair is required for a normal persisted upgrade.
+
+## Previous verification checkpoint (superseded by the installed release above)
+
 ## Release checkpoint: eight fixes verified, v0.1.17 tag created
 
 - Runtime source is `77414cb33b84d3315db1be6247980e24f42604dd` on the existing
