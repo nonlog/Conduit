@@ -670,38 +670,28 @@ struct Paint {
 impl Paint {
     fn new(dark: bool) -> Self {
         let color = |hex| rune::color::hex(hex).expect("valid Conduit design token");
-        if dark {
-            Paint {
-                t: tok::theme(true),
-                accent: color("#82a9ff"),
-                primary_fill: color("#315fbd"),
-                surface: color("#12161b"),
-                sidebar: color("#12161b"),
-                card: color("#1b2128"),
-                inset: color("#171c22"),
-                line: color("#2a333e"),
-                subdued: color("#abb3c0"),
-                faint: color("#788390"),
-                green: color("#66cfa9"),
-                danger: color("#f38b8b"),
-                selected: color("#202a37"),
-            }
-        } else {
-            Paint {
-                t: tok::theme(false),
-                accent: color("#2d6fdb"),
-                primary_fill: color("#2d6fdb"),
-                surface: color("#e6ebf1"),
-                sidebar: color("#e6ebf1"),
-                card: color("#eef2f6"),
-                inset: color("#dce3eb"),
-                line: color("#d1d9e4"),
-                subdued: color("#536276"),
-                faint: color("#77879c"),
-                green: color("#137b55"),
-                danger: color("#c43d4b"),
-                selected: color("#e0e8f6"),
-            }
+        let t = tok::theme(dark);
+        // Keep every neutral surface derived from Rune's semantic theme. The small
+        // light-mode mix is intentional: Rune's reference card is pure white, while
+        // Conduit needs a quieter elevated surface so cards do not flash against the
+        // page when the Windows theme changes.
+        let card = t.bg.mix(t.card, if dark { 0.82 } else { 0.20 });
+        let inset = t.bg.mix(t.card, if dark { 0.42 } else { 0.10 });
+        let selected = t.bg.mix(t.card, if dark { 0.58 } else { 0.34 });
+        Paint {
+            t,
+            accent: if dark { color("#82a9ff") } else { color("#2d6fdb") },
+            primary_fill: if dark { color("#315fbd") } else { color("#2d6fdb") },
+            surface: t.bg,
+            sidebar: t.bg,
+            card,
+            inset,
+            line: t.card_border,
+            subdued: t.text_secondary,
+            faint: t.text_secondary.alpha(0.70),
+            green: if dark { color("#66cfa9") } else { color("#137b55") },
+            danger: if dark { color("#f38b8b") } else { color("#c43d4b") },
+            selected,
         }
     }
 }
