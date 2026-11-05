@@ -201,7 +201,7 @@ mod native {
                 }
                 Ok(())
             })
-            .unwrap_or_else(|| Err("Native window is not ready".into()))
+            .unwrap_or_else(|_| Err("Native window is not ready".into()))
     }
 
     pub fn minimize() {
