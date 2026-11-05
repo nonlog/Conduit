@@ -1,5 +1,5 @@
 //! Client-drawn caption over the same single material as the sidebar and body.
-//! Keep the native overlapped-window styles so resize, system menu and snapping
+//! Keep native resize/minimize/maximize styles so resize, system menu and snapping
 //! remain Windows operations, not a borderless-window imitation.
 
 pub const CAPTION_HEIGHT: f32 = 36.0;
@@ -188,6 +188,13 @@ mod native {
                     if SetWindowSubclass(hwnd, Some(procedure), SUBCLASS, 0) == 0 {
                         return Err("Could not install native caption".into());
                     }
+                    // The client now paints the caption. Keeping WS_CAPTION makes
+                    // DWM draw a second, faint set of native buttons over ours even
+                    // though WM_NCCALCSIZE extends the client across that region.
+                    // Retain THICKFRAME/SYSMENU/MINIMIZEBOX/MAXIMIZEBOX for native
+                    // resize, taskbar, system-menu and Snap behavior.
+                    let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+                    SetWindowLongPtrW(hwnd, GWL_STYLE, style & !(WS_CAPTION as isize));
                     WINDOW.store(hwnd as isize, Ordering::Release);
                     SetWindowPos(
                         hwnd,
