@@ -341,6 +341,24 @@ pub fn refresh_app_identity(root: &Path) -> Result<()> {
     register_aumid(&identity_icon)
 }
 
+/// History needs the app art even when Windows toast registration is unavailable.
+pub fn cache_history_icon(root: &Path, package: &str, bytes: &[u8]) -> Result<()> {
+    if bytes.is_empty() {
+        return Ok(());
+    }
+    anyhow::ensure!(
+        bytes.len() <= 256 * 1024 && bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "invalid app icon"
+    );
+    let directory = root.join("icons");
+    std::fs::create_dir_all(&directory)?;
+    let path = directory.join(format!("{}.png", digest(package.as_bytes())));
+    let temporary = path.with_extension("png.tmp");
+    std::fs::write(&temporary, bytes)?;
+    std::fs::rename(temporary, path)?;
+    Ok(())
+}
+
 pub struct Notifier {
     /// `Option` so [`Drop`] can close the channel before joining; the closed channel is
     /// what makes the thread's `recv` return and the join finish.
@@ -415,7 +433,7 @@ impl Drop for Notifier {
     fn drop(&mut self) {
         drop(self.tx.take());
         if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+            crate::shutdown::join_native(thread, "toast");
         }
         info!("toast notifier down");
     }

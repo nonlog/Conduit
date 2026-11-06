@@ -29,7 +29,11 @@ const RELOAD_COMMAND: &str = "\0reload\0";
 const PAIR_START_COMMAND: &str = "\0pair-start\0";
 const PAIR_CANCEL_COMMAND: &str = "\0pair-cancel\0";
 const PAIR_FORGET_COMMAND: &str = "\0pair-forget\0";
+const LINK_PAUSE_COMMAND: &str = "\0link-disconnect\0";
+const LINK_RESUME_COMMAND: &str = "\0link-connect\0";
 const TRANSFER_CANCEL_COMMAND: &str = "\0transfer-cancel\0";
+const NOTIFICATIONS_CLEAR_COMMAND: &str = "\0notifications-clear\0";
+const NOTIFICATIONS_PRUNE_COMMAND: &str = "\0notifications-prune\0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TransferProgress {
@@ -62,6 +66,8 @@ pub enum PairAction {
     Start,
     Cancel,
     Forget,
+    Disconnect,
+    Connect,
 }
 
 pub struct PairRequest {
@@ -76,6 +82,7 @@ pub async fn serve(
     reload_tx: mpsc::Sender<ReloadRequest>,
     pair_tx: mpsc::Sender<PairRequest>,
     transfers: std::sync::Arc<crate::transfer::Transfers>,
+    history: std::sync::Arc<crate::notification_history::History>,
 ) -> Result<()> {
     let clients = std::sync::Arc::new(tokio::sync::Semaphore::new(64));
     loop {
@@ -95,9 +102,10 @@ pub async fn serve(
         let reload_tx = reload_tx.clone();
         let pair_tx = pair_tx.clone();
         let transfers = transfers.clone();
+        let history = history.clone();
         tokio::spawn(async move {
             let _permit = permit;
-            if let Err(e) = handle(pipe, send_tx, reload_tx, pair_tx, transfers).await {
+            if let Err(e) = handle(pipe, send_tx, reload_tx, pair_tx, transfers, history).await {
                 warn!(error = %e, "local control request failed");
             }
         });
@@ -110,10 +118,25 @@ async fn handle(
     reload_tx: mpsc::Sender<ReloadRequest>,
     pair_tx: mpsc::Sender<PairRequest>,
     transfers: std::sync::Arc<crate::transfer::Transfers>,
+    history: std::sync::Arc<crate::notification_history::History>,
 ) -> Result<()> {
     let request = tokio::time::timeout(LOCAL_RESULT_TIMEOUT, read_request(&mut pipe))
         .await
         .context("local client did not complete its bounded request")??;
+    if request == NOTIFICATIONS_CLEAR_COMMAND || request == NOTIFICATIONS_PRUNE_COMMAND {
+        let result = if request == NOTIFICATIONS_CLEAR_COMMAND {
+            history.clear()
+        } else {
+            history.prune().map(|_| ())
+        };
+        let response = match result {
+            Ok(()) => "OK\n".to_owned(),
+            Err(error) => format!("ERR {error:#}\n"),
+        };
+        tokio::time::timeout(LOCAL_RESULT_TIMEOUT, pipe.write_all(response.as_bytes())).await??;
+        let _ = pipe.shutdown().await;
+        return Ok(());
+    }
     if let Some(id) = request.strip_prefix(TRANSFER_CANCEL_COMMAND) {
         let result = crate::transfer::parse_id(id).and_then(|id| transfers.cancel(&id));
         let reply = match result {
@@ -153,6 +176,8 @@ async fn handle(
         PAIR_START_COMMAND => Some(PairAction::Start),
         PAIR_CANCEL_COMMAND => Some(PairAction::Cancel),
         PAIR_FORGET_COMMAND => Some(PairAction::Forget),
+        LINK_PAUSE_COMMAND => Some(PairAction::Disconnect),
+        LINK_RESUME_COMMAND => Some(PairAction::Connect),
         _ => None,
     };
     if let Some(action) = pair_action {
@@ -329,6 +354,18 @@ pub async fn reload() -> Result<()> {
     simple_command(RELOAD_COMMAND, "Conduit settings to apply").await
 }
 
+pub async fn notifications(clear: bool) -> Result<()> {
+    simple_command(
+        if clear {
+            NOTIFICATIONS_CLEAR_COMMAND
+        } else {
+            NOTIFICATIONS_PRUNE_COMMAND
+        },
+        "notification history update",
+    )
+    .await
+}
+
 pub async fn cancel(id: &str) -> Result<()> {
     crate::transfer::parse_id(id)?;
     simple_command(
@@ -343,6 +380,8 @@ pub async fn pair(action: PairAction) -> Result<()> {
         PairAction::Start => PAIR_START_COMMAND,
         PairAction::Cancel => PAIR_CANCEL_COMMAND,
         PairAction::Forget => PAIR_FORGET_COMMAND,
+        PairAction::Disconnect => LINK_PAUSE_COMMAND,
+        PairAction::Connect => LINK_RESUME_COMMAND,
     };
     simple_command(command, "Conduit pairing state to update").await
 }

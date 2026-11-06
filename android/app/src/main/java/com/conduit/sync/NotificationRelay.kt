@@ -170,7 +170,8 @@ class NotificationRelay : NotificationListenerService() {
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
-        val link = SyncService.activeLink ?: return
+        val targets = SyncService.connectedLinks()
+        if (targets.isEmpty()) return
         val ranking = ranking(sbn)
         if (!worthMirroring(sbn, ranking)) return
 
@@ -219,7 +220,7 @@ class NotificationRelay : NotificationListenerService() {
         // Keep the platform callback short. PackageManager/Icon loading and PNG encoding can
         // block while the phone is dozing, and NotificationListenerService callbacks run on the
         // main thread. Link builds this payload on its existing serialized sender thread.
-        link.send(Kind.NOTIF_NEW, "notif") {
+        for ((desktopId, link) in targets) link.send(Kind.NOTIF_NEW, "notif") {
             val new = NotifNew.newBuilder()
                 .setKey(key)
                 .setPackage(packageName)
@@ -240,7 +241,7 @@ class NotificationRelay : NotificationListenerService() {
             // Marked sent even when the rasterise fails: the same package will fail the same
             // way, and retrying it on every notification buys nothing but the work.
             val firstIcon = synchronized(iconSent) {
-                iconSent.put(packageName, true) == null
+                iconSent.put(desktopId + "|" + packageName, true) == null
             }
             if (firstIcon) {
                 appIcon(packageName)?.let { new.appIconPng = ByteString.copyFrom(it) }
@@ -253,10 +254,11 @@ class NotificationRelay : NotificationListenerService() {
         // Removed unconditionally: a key we never posted is absent anyway, and letting
         // the desktop hide a toast it does not have is harmless.
         posted.remove(sbn.key)
-        val link = SyncService.activeLink ?: return
+        val targets = SyncService.connectedLinks()
+        if (targets.isEmpty()) return
         val remove = NotifRemove.newBuilder()
             .setKey(sbn.key).setTag(sbn.tag.orEmpty()).setPackage(sbn.packageName).build()
-        link.send(Kind.NOTIF_REMOVE, remove.toByteArray(), "notif remove")
+        targets.forEach { (_, link) -> link.send(Kind.NOTIF_REMOVE, remove.toByteArray(), "notif remove") }
     }
 
     override fun onDestroy() {

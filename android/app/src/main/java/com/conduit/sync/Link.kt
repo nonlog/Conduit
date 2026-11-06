@@ -589,9 +589,21 @@ class Link(
         }
     }
 
-    fun forgetPeer() {
-        val owner = current ?: return
-        control(owner, priority = true) { live ->
+    /**
+     * A local unpair must flush the authenticated revoke frame before the caller
+     * closes this Link. In multi-PC mode closing a companion's scheduler immediately
+     * after queueing this control would silently drop the revoke.
+     *
+     * [after] is invoked on the sender thread, once the frame has been attempted
+     * or admission has failed. Callers should post state mutations to the main thread.
+     */
+    fun forgetPeer(after: () -> Unit = {}) {
+        val owner = current
+        if (owner == null) {
+            after()
+            return
+        }
+        control(owner, priority = true, after = after) { live ->
             try { live.send(Kind.PAIR_RESPONSE, PairResponse.newBuilder().setAccept(false).build().toByteArray()) }
             finally { stop(owner) }
         }

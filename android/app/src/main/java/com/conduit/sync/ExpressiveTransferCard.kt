@@ -16,6 +16,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.snap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -34,6 +38,8 @@ internal fun ExpressiveTransferCard(
     onCancel: (String) -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
+    val displayedProgress by animateFloatAsState(transfer.fraction,
+        animationSpec = if (LocalConduitMotion.current) tween(180) else snap(), label = "Transfer progress")
     val peer = peerName ?: "desktop"
     val label = when (transfer.direction) {
         FileTransferDirection.ToDesktop -> "To " + peer
@@ -90,7 +96,7 @@ internal fun ExpressiveTransferCard(
                 )
             }
             LinearProgressIndicator(
-                progress = { transfer.fraction },
+                progress = { displayedProgress },
                 modifier = Modifier.fillMaxWidth(),
                 color = colors.primary,
                 trackColor = colors.surfaceContainerHighest,

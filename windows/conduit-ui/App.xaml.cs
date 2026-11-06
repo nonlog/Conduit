@@ -31,16 +31,18 @@ public partial class App : Application
         IActivatedEventArgs? activation = null;
         try { activation = Windows.ApplicationModel.AppInstance.GetActivatedEventArgs(); } catch { }
 
-        // Keep this mature WinUI process as the sparse MSIX Share Target host
-        // and an explicit emergency rollback UI. Ordinary Conduit.exe launches
-        // from old Scoop shims now open Rune (or Nova when not yet installed), while --legacy-ui and actual
-        // ShareTarget activations remain on WinUI. If Nova is missing or cannot
-        // start, retain the working control surface rather than closing it.
-        if (activation?.Kind != ActivationKind.ShareTarget &&
-            !Environment.GetCommandLineArgs().Any(value => value == "--legacy-ui") &&
-            TryLaunchPrimaryDesktop())
+        // WinUI is a compatibility host for Windows Share Target only.
+        // Ordinary legacy shortcuts redirect to Rune, never to another frontend.
+        if (activation?.Kind != ActivationKind.ShareTarget)
         {
-            Environment.Exit(0);
+            var started = TryLaunchPrimaryDesktop();
+            if (!started)
+            {
+                ShowNativeDesktopError(IntPtr.Zero,
+                    "The Rust/Rune desktop is missing or could not start. Repair the Conduit installation.",
+                    "Conduit", 0x10);
+            }
+            Environment.Exit(started ? 0 : 1);
             return;
         }
 
@@ -102,27 +104,23 @@ public partial class App : Application
         MainWindow.DispatcherQueue.TryEnqueue(() => ApplyWindowTheme(mainPage.ActualTheme));
     }
 
+    [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "MessageBoxW", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern int ShowNativeDesktopError(IntPtr owner, string message, string title, uint flags);
+
     private static bool TryLaunchPrimaryDesktop()
     {
-        // Keep the Windows Share Target activation attached to this WinUI
-        // process. Ordinary launches prefer the native Rune desktop with a
-        // Nova fallback, without spawning cmd.exe or another console.
-        foreach (var name in new[] { "conduit-rune.exe", "conduit-nova.exe" })
+        try
         {
-            try
+            var installed = Path.Combine(AppContext.BaseDirectory, "conduit-rune.exe");
+            if (!File.Exists(installed)) return false;
+            return Process.Start(new ProcessStartInfo(installed)
             {
-                var installed = Path.Combine(AppContext.BaseDirectory, name);
-                if (!File.Exists(installed)) continue;
-                if (Process.Start(new ProcessStartInfo(installed)
-                {
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    WorkingDirectory = AppContext.BaseDirectory,
-                }) is not null) return true;
-            }
-            catch { /* Try the next installed desktop before using WinUI. */ }
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WorkingDirectory = AppContext.BaseDirectory,
+            }) is not null;
         }
-        return false;
+        catch { return false; }
     }
 
     private bool TryOwnControlWindow()

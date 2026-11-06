@@ -46,7 +46,7 @@ class ClipboardChangeActivity : Activity() {
         super.onWindowFocusChanged(hasFocus)
         if (!hasFocus || handedOff) return
         handedOff = true
-        if (LinkStatus.state == LinkState.Connected) {
+        if (SyncService.connectedLinks().isNotEmpty()) {
             val clip = getSystemService(ClipboardManager::class.java).primaryClip
             if (clip != null && clip.itemCount > 0) {
                 startService(

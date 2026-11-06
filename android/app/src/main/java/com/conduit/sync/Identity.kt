@@ -60,36 +60,30 @@ object Identity {
      * has no relay path.
      */
     fun rememberPeer(dir: File, deviceId: String) {
-        File(dir, PEER_FILE).writeText(deviceId)
+        PairedDesktops.remember(dir, deviceId)
     }
 
-    /**
-     * The remembered desktop, or null if this phone has never paired.
-     *
-     * Length-checked, because the relay preamble is a fixed 47 bytes: a truncated file
-     * would produce a rendezvous the relay refuses, which is far harder to read in a log
-     * than "never paired".
-     */
+    /** Compatibility pointer to the main Link; all trusted computers are in [PairedDesktops]. */
     fun peer(dir: File): String? = runCatching { File(dir, PEER_FILE).readText().trim() }
         .getOrNull()
         ?.takeIf { it.length == ID_LEN }
 
-    /** Forget only the paired desktop. The phone's own identity deliberately survives. */
+    fun peers(dir: File): List<PairedDesktop> = PairedDesktops.list(dir)
+
+    /** Forget the current desktop, never every trusted device on the phone. */
     fun forgetPeer(dir: File) {
-        runCatching { File(dir, PEER_FILE).delete() }
-        runCatching { File(dir, PEER_NAME_FILE).delete() }
+        peer(dir)?.let { PairedDesktops.remove(dir, it) }
     }
 
-    /** Best effort: a name that will not store costs a share-sheet label, nothing more. */
     fun rememberPeerName(dir: File, name: String) {
-        runCatching { File(dir, PEER_NAME_FILE).writeText(name) }
+        peer(dir)?.let { PairedDesktops.rename(dir, it, name) }
     }
 
-    /** The remembered desktop's name, or null if it has never announced one. */
     fun peerName(dir: File): String? =
-        runCatching { File(dir, PEER_NAME_FILE).readText().trim() }
-            .getOrNull()
+        peer(dir)?.let { current -> PairedDesktops.list(dir).firstOrNull { it.id == current }?.name }
             ?.takeIf { it.isNotEmpty() }
+            ?: runCatching { File(dir, PEER_NAME_FILE).readText().trim() }
+                .getOrNull()?.takeIf { it.isNotEmpty() }
 }
 
 /** BASE64URL of a SHA-256 digest, unpadded, is always this long. */

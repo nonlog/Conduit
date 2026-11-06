@@ -179,6 +179,7 @@ internal fun shouldRecoverEstablishedLinkImmediately(
 
 /** Sent by the UI. A disconnect has to be remembered, or START_STICKY undoes the user's tap. */
 const val ACTION_CONNECT = "com.conduit.sync.CONNECT"
+const val ACTION_REFRESH_WALLPAPER = "com.conduit.sync.REFRESH_WALLPAPER"
 const val ACTION_BOOT_CONNECT = "com.conduit.sync.BOOT_CONNECT"
 const val ACTION_DISCONNECT = "com.conduit.sync.DISCONNECT"
 const val ACTION_PAIR = "com.conduit.sync.PAIR"
@@ -192,7 +193,10 @@ private const val PAIRING_RETRY_MS = 2_000L
 /** Sent by [ShareActivity]: URIs in the intent's ClipData, or text in EXTRA_TEXT. */
 const val ACTION_SHARE = "com.conduit.sync.SHARE"
 const val ACTION_CANCEL_TRANSFER = "com.conduit.sync.CANCEL_TRANSFER"
+const val ACTION_SELECT_DEVICE = "com.conduit.sync.SELECT_DEVICE"
+const val ACTION_FORGET_DEVICE = "com.conduit.sync.FORGET_DEVICE"
 const val EXTRA_TRANSFER_ID = "transfer_id"
+const val EXTRA_PEER_ID = "peer_id"
 
 internal fun serviceStartMayRedial(action: String?, connected: Boolean): Boolean =
     !connected && action != ACTION_SHARE && action != ACTION_CANCEL_TRANSFER && action != ACTION_ACCESSIBILITY_CLIP
@@ -223,8 +227,15 @@ class SyncService : Service() {
         @Volatile
         var activeLink: Link? = null
             private set
+
+        @Volatile private var connectedSnapshot: List<Pair<String, Link>> = emptyList()
+
+        /** Immutable snapshot: one authenticated transport per simultaneously linked computer. */
+        fun connectedLinks(): List<Pair<String, Link>> = connectedSnapshot
     }
 
+    private lateinit var phonePrivateKey: ByteArray
+    private lateinit var companions: CompanionLinks
     private lateinit var link: Link
     private lateinit var discovery: Discovery
     private lateinit var photos: Photos
@@ -274,8 +285,67 @@ class SyncService : Service() {
     /** The desktop we are paired with, so the relay rendezvous survives a restart. */
     @Volatile private var knownPeer: String? = null
 
-    /** Its name, so republishing the share-sheet shortcut happens on a rename and not per session. */
+    /** The primary Link's name. Other computers have independent name/session state. */
     @Volatile private var knownPeerName: String? = null
+
+    /** User-selected destination for explicit shares and files; other links remain connected. */
+    private fun selectedLink(targetId: String? = null): Link? {
+        val selected = targetId ?: PairedDesktops.selected(filesDir)
+        if (selected == null) return connectedSnapshot.firstOrNull()?.second
+        val candidate = if (selected == knownPeer) link else if (::companions.isInitialized) {
+            companions.linkFor(selected)
+        } else null
+        // An explicit target must remain exact for Direct Share and revoke actions.
+        if (targetId != null) return candidate
+        if (connectedSnapshot.any { it.first == selected }) return candidate
+        // The durable selection can be stale after another computer reconnects.
+        // Prefer an already authenticated link and persist that active destination so
+        // clipboard, files and links all agree with the status shown on screen.
+        val fallback = connectedSnapshot.firstOrNull() ?: return candidate
+        runCatching { PairedDesktops.choose(filesDir, fallback.first) }
+        LinkStatus.selectedDeviceId = fallback.first
+        return fallback.second
+    }
+
+    private fun publishPeerConnections() {
+        if (!::link.isInitialized || destroyed) return
+        val previouslyConnected = connectedSnapshot.isNotEmpty()
+        val secondary = if (::companions.isInitialized) companions.states().associateBy { it.id }
+            else emptyMap()
+        LinkStatus.devices = PairedDesktops.list(filesDir).map { peer ->
+            val isPrimary = peer.id == knownPeer
+            val extra = secondary[peer.id]
+            ConnectedDevice(
+                id = peer.id,
+                name = peer.name,
+                state = if (isPrimary) LinkStatus.state else extra?.status ?: LinkState.Idle,
+                path = if (isPrimary) LinkStatus.path.orEmpty() else extra?.path.orEmpty(),
+            )
+        }
+        val connected = ArrayList<Pair<String, Link>>()
+        if (LinkStatus.state == LinkState.Connected && knownPeer != null) {
+            connected.add(knownPeer!! to link)
+        }
+        if (::companions.isInitialized) connected.addAll(companions.liveLinks())
+        connectedSnapshot = connected.toList()
+        // The primary link may have gone offline while a companion remains live.
+        // Keep the legacy tile/notification reference useful without changing the
+        // independent multi-link snapshot used by clipboard and shares.
+        activeLink = connected.firstOrNull()?.second
+        val selected = PairedDesktops.selected(filesDir)
+        val activeSelection = selected?.takeIf { id -> connected.any { it.first == id } }
+            ?: connected.firstOrNull()?.first
+            ?: selected
+        if (activeSelection != null && activeSelection != selected) {
+            runCatching { PairedDesktops.choose(filesDir, activeSelection) }
+        }
+        LinkStatus.selectedDeviceId = activeSelection
+        ClipboardAccessibilityService.setLinkActive(connected.isNotEmpty())
+        setSyncObserversActive(connected.isNotEmpty())
+        if (connected.isNotEmpty()) showLinkedNotification()
+        else if (previouslyConnected && !pairingActive()) showPairingOrHideOfflineNotification()
+        LinkTileService.refresh(this)
+    }
 
     /** Explicit, user-opened LAN pairing window. Uptime excludes deep sleep and never wakes it. */
     @Volatile private var pairingUntilUptimeMs = 0L
@@ -287,7 +357,8 @@ class SyncService : Service() {
         LinkStatus.pairing = false
         Log.i(TAG, "pairing window expired")
         if (knownPeer != null && Settings.linkWanted && networkUp) {
-            hideLinkNotification()
+            // A different already linked PC must keep its foreground notification.
+            showPairingOrHideOfflineNotification()
             redial()
         } else if (knownPeer == null) {
             Settings.linkWanted = false
@@ -321,7 +392,7 @@ class SyncService : Service() {
     private var offlineDemoteScheduled = false
     private val offlineDemote = Runnable {
         offlineDemoteScheduled = false
-        if (destroyed || !Settings.linkWanted || pairingActive() || LinkStatus.state == LinkState.Connected) {
+        if (destroyed || !Settings.linkWanted || pairingActive() || connectedLinks().isNotEmpty()) {
             return@Runnable
         }
         Log.i(TAG, "transient reconnect grace expired; entering notification-free offline mode")
@@ -347,8 +418,11 @@ class SyncService : Service() {
 
     /** Wallpaper updates are pushed by Android itself; this one delayed refresh is not polling. */
     private val wallpaperRefresh = Runnable {
-        if (destroyed || LinkStatus.state != LinkState.Connected) return@Runnable
-        link.sendWallpaperPreview(ByteArray(0)) { Wallpapers.preview(this, force = true) }
+        if (destroyed || connectedLinks().isEmpty()) return@Runnable
+        connectedLinks().forEach { (_, session) ->
+            // The event already invalidated the cache. Encode once, reuse for every desktop.
+            session.sendWallpaperPreview(ByteArray(0)) { Wallpapers.preview(this) }
+        }
     }
     private val wallpaperListener = WallpaperManager.OnColorsChangedListener { _, which ->
         if ((which and WallpaperManager.FLAG_SYSTEM) != 0) {
@@ -395,6 +469,11 @@ class SyncService : Service() {
                 } else if (LinkStatus.state == LinkState.Connected) {
                     maybeRecheckLanAfterRelay(net)
                 } else if (pairingActive()) retryPairing(net) else redial(net)
+                if (::companions.isInitialized) companions.onDefaultChanged(
+                    previousDefault != null && previousDefault != net,
+                    caps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true,
+                    net,
+                )
             }
         }
 
@@ -413,6 +492,12 @@ class SyncService : Service() {
                     main.removeCallbacks(retry)
                     link.disconnect()
                 }
+                if (::companions.isInitialized) companions.onDefaultChanged(
+                    true,
+                    defaultNetwork?.let { connectivity.getNetworkCapabilities(it) }
+                        ?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true,
+                    defaultNetwork,
+                )
             }
         }
     }
@@ -445,6 +530,7 @@ class SyncService : Service() {
                     Log.i(TAG, "network $net owned the last active route; reconnecting")
                     link.disconnect()
                 }
+                if (::companions.isInitialized) companions.onPhysicalLanLost(net)
             }
         }
     }
@@ -471,6 +557,7 @@ class SyncService : Service() {
                         Log.i(TAG, "physical LAN lost its IPv4 address; reconnecting")
                         link.disconnect()
                     }
+                    if (::companions.isInitialized) companions.onPhysicalLanLost(net)
                 }
                 return@post
             }
@@ -496,12 +583,14 @@ class SyncService : Service() {
             } else if (LinkStatus.state != LinkState.Connected) {
                 if (pairingActive()) retryPairing(net) else redial(net)
             }
+            if (::companions.isInitialized) companions.onPhysicalLanReady(net, previousAddresses != null)
         }
     }
 
     override fun onCreate() {
         super.onCreate()
         val identity = Identity.loadOrCreate(filesDir)
+        phonePrivateKey = identity.private
         localDeviceId = Identity.deviceId(identity.public)
         LinkStatus.fingerprint = Identity.fingerprint(identity.public)
         Log.i(TAG, "identity $localDeviceId")
@@ -512,11 +601,15 @@ class SyncService : Service() {
         knownPeer = Identity.peer(filesDir)
         knownPeerName = Identity.peerName(filesDir)
         LinkStatus.pairedDeviceId = knownPeer
+        LinkStatus.selectedDeviceId = PairedDesktops.selected(filesDir)
+        LinkStatus.devices = Identity.peers(filesDir).map { peer ->
+            ConnectedDevice(peer.id, peer.name, LinkState.Idle, "")
+        }
         LinkStatus.peerName = knownPeerName
         LinkStatus.pairing = false
         // Refresh the shortcut once per service process so an app update can change its icon even
         // when the paired desktop name did not change.
-        knownPeerName?.let { ShareTarget.publish(this, it) }
+        ShareTarget.publishAll(this, Identity.peers(filesDir))
         // Both stores, because this service can be the first component the system starts —
         // under START_STICKY it is started with no activity involved at all — and the
         // remembered disconnect it is about to read lives in one of them.
@@ -542,12 +635,11 @@ class SyncService : Service() {
                     LinkStatus.state = state
                     LinkStatus.peer = peer
                     val linked = state == LinkState.Connected
-                    ClipboardAccessibilityService.setLinkActive(linked)
-                    // NotificationListenerService is system-owned and cannot be unregistered cheaply,
-                    // so make its hot path a single null check while the desktop is offline.
-                    activeLink = if (linked) link else null
+                    // The aggregate publish below owns the legacy activeLink reference too;
+                    // updating it here would create a brief null window while a companion
+                    // connection is still authenticated.
                     main.post {
-                        if (!destroyed) setSyncObserversActive(linked)
+                        if (!destroyed) publishPeerConnections()
                     }
                     LinkTileService.refresh(this@SyncService)
                     when (state) {
@@ -594,6 +686,10 @@ class SyncService : Service() {
                                     Log.d(TAG, "ignoring delayed Idle from superseded session $eventGeneration")
                                     return@post
                                 }
+                                // The explicit unpair closes this transport on purpose. Its
+                                // old Idle event must not start an unwanted reconnect to the
+                                // peer whose trust is being removed.
+                                if (eventGeneration == revokingPrimaryGeneration) return@post
                                 if (pairingActive()) {
                                     showPairingNotification()
                                     if (pairingRendezvous != null && endpoint != null) {
@@ -719,10 +815,10 @@ class SyncService : Service() {
                     }
                 }
 
-                override fun onText(text: String) = onRemoteText(text)
+                override fun onText(text: String) = onRemoteText(text, knownPeer)
 
                 override fun onImage(png: ByteArray, photo: Boolean, screenshot: Boolean) =
-                    onRemoteImage(png, photo, screenshot)
+                    onRemoteImage(png, photo, screenshot, knownPeer)
 
                 override fun onTransfer(transfer: FileTransfer) {
                     main.post {
@@ -767,6 +863,13 @@ class SyncService : Service() {
                     remotePairing: Boolean,
                 ): Boolean {
                     if (pairingActive()) {
+                        val trusted = PairedDesktops.list(filesDir)
+                        if (trusted.size >= PairedDesktops.MAX_PEERS &&
+                            trusted.none { it.id == deviceId }
+                        ) {
+                            Log.w(TAG, "rejecting an additional desktop: trusted device registry full")
+                            return false
+                        }
                         // Pairing/replacement is mutual. With a human pairing code, the temporary
                         // rendezvous deliberately uses Relay; without one, mDNS/LAN is used. The
                         // ordinary remembered-peer Relay cannot consume a Pair-new window because
@@ -835,9 +938,44 @@ class SyncService : Service() {
         // These observers are intentionally constructed now but registered only after Noise is up.
         // A parked Relay socket therefore does not make clipboard, MediaStore or wallpaper changes
         // wake Conduit while the desktop is offline.
-        photos = Photos(this, link)
-        screenshots = Screenshots(this, link)
+        photos = Photos(this) { connectedLinks().map { it.second } }
+        screenshots = Screenshots(this) { connectedLinks().map { it.second } }
         activeLink = null
+        companions = CompanionLinks(
+            context = this,
+            privateKey = phonePrivateKey,
+            localId = localDeviceId,
+            localName = localDeviceName,
+            lanNetwork = { physicalLanNetwork() },
+            relayEndpoints = { relayEndpoints },
+            networkAvailable = { networkUp },
+            onChange = { publishPeerConnections() },
+            onIncomingText = { id, text -> onRemoteText(text, id) },
+            onIncomingImage = { id, png, photo, screenshot ->
+                onRemoteImage(png, photo, screenshot, id)
+            },
+            onTransferEvent = { transfer ->
+                main.post {
+                    if (!destroyed) {
+                        FileTransfers.update(transfer)
+                        if (FileTransfers.entries.any { it == transfer }) showTransferNotification(transfer)
+                    }
+                }
+            },
+            onError = { reason ->
+                main.post {
+                    if (!destroyed) android.widget.Toast.makeText(
+                        this, reason, android.widget.Toast.LENGTH_SHORT,
+                    ).show()
+                }
+            },
+            onAction = { action -> main.post { NotificationRelay.perform(action) } },
+            onForgotten = { id -> forgetDevice(id, remote = true) },
+            onWallpaper = { peerLink, hash ->
+                peerLink.sendWallpaperPreview(hash) { Wallpapers.preview(this) }
+            },
+        )
+        companions.reconcile(knownPeer)
 
         // The default network drives overall online/offline state. A second system callback only
         // observes physical non-VPN LAN arrival so Relay can upgrade without polling.
@@ -850,12 +988,23 @@ class SyncService : Service() {
                 .build(),
             physicalLanNetworks,
         )
+        if (Settings.linkWanted) companions.reconnectAll()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
+            ACTION_REFRESH_WALLPAPER -> {
+                Wallpapers.invalidate()
+                main.removeCallbacks(wallpaperRefresh)
+                if (connectedLinks().isNotEmpty()) main.post(wallpaperRefresh)
+                // Never turn a concurrent reconnect off just because this refresh raced it.
+                return if (Settings.linkWanted) START_STICKY else START_NOT_STICKY
+            }
             ACTION_CANCEL_TRANSFER -> {
-                intent.getStringExtra(EXTRA_TRANSFER_ID)?.let(link::cancelTransfer)
+                intent.getStringExtra(EXTRA_TRANSFER_ID)?.let { id ->
+                    link.cancelTransfer(id)
+                    companions.cancelTransfer(id)
+                }
                 return START_STICKY
             }
             ACTION_DISCONNECT -> {
@@ -868,6 +1017,20 @@ class SyncService : Service() {
             }
             ACTION_CANCEL_PAIR -> {
                 cancelPairing(resumeOldPeer = true)
+                return START_STICKY
+            }
+            ACTION_SELECT_DEVICE -> {
+                intent.getStringExtra(EXTRA_PEER_ID)?.let { id ->
+                    runCatching { PairedDesktops.choose(filesDir, id) }
+                        .onSuccess { publishPeerConnections() }
+                        .onFailure { Log.w(TAG, "cannot select desktop", it) }
+                }
+                return START_STICKY
+            }
+            ACTION_FORGET_DEVICE -> {
+                intent.getStringExtra(EXTRA_PEER_ID)?.let { id ->
+                    if (PairedDesktops.list(filesDir).any { it.id == id }) forgetDevice(id, remote = false)
+                }
                 return START_STICKY
             }
         }
@@ -918,6 +1081,7 @@ class SyncService : Service() {
                 stopSelf(startId)
             }
         }
+        if (Settings.linkWanted) companions.reconnectAll()
         return START_STICKY
     }
 
@@ -935,6 +1099,8 @@ class SyncService : Service() {
         // Cleared next, so the notification relay stops handing frames to a link that
         // is being torn down.
         activeLink = null
+        connectedSnapshot = emptyList()
+        companions.close()
         ClipboardAccessibilityService.setLinkActive(false)
         setSyncObserversActive(false)
         runCatching { connectivity.unregisterNetworkCallback(network) }
@@ -1026,6 +1192,7 @@ class SyncService : Service() {
         discovery.stop()
         clearRelayPlan()
         link.disconnect()
+        if (::companions.isInitialized) companions.stopSockets()
         hideAllTransferNotifications()
         FileTransfers.failActive("Link stopped")
         deferredLanHandoff = null
@@ -1227,6 +1394,13 @@ class SyncService : Service() {
         pairingUntilUptimeMs > SystemClock.uptimeMillis()
 
     private fun beginPairing(rawCode: String?) {
+        if (PairedDesktops.list(filesDir).size >= PairedDesktops.MAX_PEERS) {
+            android.widget.Toast.makeText(
+                this, "Maximum ${PairedDesktops.MAX_PEERS} computers paired; forget one to add another",
+                android.widget.Toast.LENGTH_LONG,
+            ).show()
+            return
+        }
         val normalized = rawCode?.let(PairingCode::normalize).orEmpty()
         if (normalized.isNotEmpty() && !PairingCode.isValid(normalized)) {
             Log.w(TAG, "refusing malformed pairing code")
@@ -1297,14 +1471,56 @@ class SyncService : Service() {
         main.removeCallbacks(pairingTimeout)
         main.removeCallbacks(pairingRetry)
         discovery.stop()
-        if (LinkStatus.state != LinkState.Connected) hideLinkNotification()
+        if (connectedLinks().isEmpty()) hideLinkNotification()
         if (resumeOldPeer && knownPeer != null && Settings.linkWanted && networkUp) {
             redial()
         }
     }
 
     private fun forgetPeer(remote: Boolean) {
-        Log.i(TAG, if (remote) "desktop requested unpair" else "user forgot the paired desktop")
+        knownPeer?.let { forgetDevice(it, remote) }
+    }
+
+    /** No duplicate revocation tasks for the same Noise identity. Main-thread owned. */
+    private val revokingPeers = mutableSetOf<String>()
+    private var revokingPrimaryGeneration: Long? = null
+
+    /** Unpair only the chosen authenticated computer; other connections and trust survive. */
+    private fun forgetDevice(id: String, remote: Boolean) {
+        if (PairedDesktops.list(filesDir).none { it.id == id }) return
+        if (!remote) {
+            // The old implementation removed the companion (and closed its writer)
+            // immediately after enqueueing PAIR_RESPONSE(false). That often dropped
+            // the revoke and left the desktop trusting this phone indefinitely.
+            if (!revokingPeers.add(id)) return
+            val target = selectedLink(id)
+            if (target === link) revokingPrimaryGeneration = link.sessionGeneration
+            if (target != null) {
+                target.forgetPeer {
+                    main.post {
+                        revokingPeers.remove(id)
+                        if (!destroyed) completeForgetDevice(id, remote = false)
+                        else PairedDesktops.remove(filesDir, id)
+                    }
+                }
+                return
+            }
+            revokingPeers.remove(id)
+        }
+        completeForgetDevice(id, remote)
+    }
+
+    private fun completeForgetDevice(id: String, remote: Boolean) {
+        if (PairedDesktops.list(filesDir).none { it.id == id }) return
+        val primary = id == knownPeer
+        Log.i(TAG, "forgetting one desktop: " + id.take(8))
+        PairedDesktops.remove(filesDir, id)
+        ShareTarget.publishAll(this, PairedDesktops.list(filesDir))
+        if (!primary) {
+            companions.reconcile(knownPeer)
+            publishPeerConnections()
+            return
+        }
         pairingUntilUptimeMs = 0L
         pairingRendezvous = null
         LinkStatus.pairing = false
@@ -1313,23 +1529,25 @@ class SyncService : Service() {
         main.removeCallbacks(retry)
         discovery.stop()
         clearRelayPlan()
-        Settings.linkWanted = false
-        knownPeer = null
-        knownPeerName = null
-        Identity.forgetPeer(filesDir)
-        ShareTarget.clear(this)
-        LinkStatus.pairedDeviceId = null
-        LinkStatus.peerName = null
+        knownPeer = Identity.peer(filesDir)
+        knownPeerName = Identity.peerName(filesDir)
+        LinkStatus.pairedDeviceId = knownPeer
+        LinkStatus.peerName = knownPeerName
         LinkStatus.peer = null
         LinkStatus.state = LinkState.Idle
         LinkStatus.path = null
-        hideAllTransferNotifications()
-        FileTransfers.failActive("Link stopped")
-        deferredLanHandoff = null
-        hideLinkNotification()
-        if (!remote) link.forgetPeer()
+        companions.reconcile(knownPeer)
+        if (remote) link.disconnect()
+        publishPeerConnections()
+        if (knownPeer == null) {
+            // No remaining trusted desktop: preserve the explicit off behaviour.
+            stopLink()
+        } else {
+            // The old owner closes after its unpair frame; its Idle callback and the
+            // existing redial policy establish the promoted primary independently.
+            main.postDelayed({ if (!destroyed && Settings.linkWanted) redial() }, 300L)
+        }
         LinkTileService.refresh(this)
-        stopSelf()
     }
 
     /** Persists a peer only after the desktop returned its authenticated pairing hello. */
@@ -1338,16 +1556,36 @@ class SyncService : Service() {
         val completedViaRelay = completedPairing && pairingRendezvous != null
         val completedRelayId = relayAttempt?.id
         val changed = deviceId != knownPeer
-        knownPeer = deviceId
-        LinkStatus.pairedDeviceId = deviceId
         if (changed) {
+            // Authenticated does not mean durable: a full disk or failed write must
+            // not displace the working primary in memory and leave the phone with
+            // a phantom pairing that disappears on restart.
             runCatching { Identity.rememberPeer(filesDir, deviceId) }
                 .onSuccess { Log.i(TAG, "paired with $deviceId, relay rendezvous stored") }
-                .onFailure { Log.w(TAG, "could not store the peer id; relay stays unavailable", it) }
+                .onFailure { cause ->
+                    Log.e(TAG, "could not persist new desktop trust; rejecting session", cause)
+                    main.post {
+                        if (!destroyed) android.widget.Toast.makeText(
+                            this, "Cannot save computer pairing; check available storage",
+                            android.widget.Toast.LENGTH_LONG,
+                        ).show()
+                    }
+                    throw IllegalStateException("Pairing could not be saved", cause)
+                }
         }
+        knownPeer = deviceId
+        LinkStatus.pairedDeviceId = deviceId
         if (completedPairing) {
             cancelPairing(resumeOldPeer = false)
             LinkStatus.path = completedPairingPath(completedViaRelay, completedRelayId)
+        }
+        // The previously trusted computer becomes an independent companion session.
+        main.post {
+            if (!destroyed && ::companions.isInitialized) {
+                companions.reconcile(knownPeer)
+                ShareTarget.publishAll(this, Identity.peers(filesDir))
+                publishPeerConnections()
+            }
         }
     }
 
@@ -1364,7 +1602,8 @@ class SyncService : Service() {
             knownPeerName = name
             Log.i(TAG, "the desktop calls itself '$name'")
             Identity.rememberPeerName(filesDir, name)
-            ShareTarget.publish(this, name)
+            ShareTarget.publishAll(this, Identity.peers(filesDir))
+            main.post { publishPeerConnections() }
         }
         main.post { refreshLinkedNotification() }
         LinkTileService.refresh(this)
@@ -1379,11 +1618,22 @@ class SyncService : Service() {
      * grant this intent carried has to still be readable.
      */
     private fun onShare(intent: Intent) {
+        val requestedId = intent.getStringExtra(EXTRA_PEER_ID)
+        val destination = selectedLink(requestedId)
+        if (destination == null) {
+            Log.w(TAG, "No selected trusted desktop is available for this share")
+            return
+        }
+        if (requestedId != null && connectedSnapshot.none { it.first == requestedId }) {
+            Log.w(TAG, "Selected desktop is trusted but offline; share not queued: ${requestedId.take(8)}")
+            android.widget.Toast.makeText(this, "That desktop is offline", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
         intent.getStringExtra(Intent.EXTRA_TEXT)?.takeIf { it.isNotBlank() }?.let { shared ->
             sharedWebUrl(shared)?.let { url ->
                 val title = intent.getStringExtra(Intent.EXTRA_TITLE)?.trim().orEmpty()
                 Log.i(TAG, "sharing web page $url")
-                link.sendSharedUrl(url, title, localDeviceName)
+                destination.sendSharedUrl(url, title, localDeviceName)
                 return
             }
             val text = shared.replace("\r\n", "\n")
@@ -1394,7 +1644,7 @@ class SyncService : Service() {
             // Recorded as our own write, so the copy the desktop makes does not come back.
             lastText = text
             History.record(Direction.Sent, text)
-            link.sendText(text)
+            destination.sendText(text)
             return
         }
         val clip = intent.clipData
@@ -1411,20 +1661,20 @@ class SyncService : Service() {
         }
         for (uri in uris) {
             Log.i(TAG, "sharing $uri")
-            link.sendFile(uri.lastPathSegment?.take(200) ?: "Shared file") { Files.open(this, uri) }
+            destination.sendFile(uri.lastPathSegment?.take(200) ?: "Shared file") { Files.open(this, uri) }
         }
     }
 
     /** Receives ClipData while [ClipboardChangeActivity] still owns foreground clipboard access. */
     private fun onAccessibilityClip(intent: Intent) {
-        if (LinkStatus.state != LinkState.Connected) return
+        if (connectedLinks().isEmpty()) return
         sendLocalClip(intent.clipData, "accessibility")
     }
 
     private fun onLocalClip() {
         // unregisterContentObserver/listener callbacks can already be queued when a session drops.
         // Never read the clipboard after the authenticated desktop is gone.
-        if (LinkStatus.state != LinkState.Connected) return
+        if (connectedLinks().isEmpty()) return
         sendLocalClip(clipboard.primaryClip, "listener")
     }
 
@@ -1471,7 +1721,7 @@ class SyncService : Service() {
         }
         lastText = text
         History.record(Direction.Sent, text)
-        link.sendText(text)
+        connectedLinks().forEach { (_, destination) -> destination.sendText(text) }
     }
 
     /**
@@ -1490,10 +1740,15 @@ class SyncService : Service() {
         // Reading happens on the sender thread: opening the URI is a binder call into
         // whichever app owns it, and this listener is on the main thread.
         History.record(Direction.Sent, "Image", image = true)
-        link.sendImage("clip image") { Images.fromClipboard(this, clip) }
+        val payload = lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+            Images.fromClipboard(this, clip)
+        }
+        connectedLinks().forEach { (_, destination) ->
+            destination.sendImage("clip image") { payload.value }
+        }
     }
 
-    private fun onRemoteImage(png: ByteArray, photo: Boolean, screenshot: Boolean) {
+    private fun onRemoteImage(png: ByteArray, photo: Boolean, screenshot: Boolean, origin: String?) {
         if (photo || screenshot) {
             // Capture images only ever travel phone -> desktop. The compatibility photo bit
             // is also set on screenshots, so either marker means "never touch clipboard".
@@ -1503,12 +1758,17 @@ class SyncService : Service() {
         }
         Log.i(TAG, "clip image in: ${png.size} B")
         History.record(Direction.Received, "Image, ${png.size / 1024} kB", image = true)
+        connectedLinks().forEach { (id, destination) ->
+            if (id != origin) destination.sendImage("clipboard image") {
+                Images.Payload(png, "image/png")
+            }
+        }
         // The write itself is cheap, but it must happen where the clipboard expects to
         // be touched, and the listener it triggers arrives on the main thread too.
         main.post { Images.toClipboard(this, clipboard, png) }
     }
 
-    private fun onRemoteText(text: String) {
+    private fun onRemoteText(text: String, origin: String?) {
         val normalised = text.replace("\r\n", "\n")
         if (normalised == lastText) return
         Log.i(TAG, "clip text in: ${normalised.length} chars")
@@ -1516,13 +1776,18 @@ class SyncService : Service() {
         // may observe the change before setPrimaryClip has returned here.
         lastText = normalised
         History.record(Direction.Received, normalised)
+        // Relay a change arriving from one trusted computer to the other
+        // simultaneously connected computers, but never echo it to its origin.
+        connectedLinks().forEach { (id, destination) ->
+            if (id != origin) destination.sendText(normalised)
+        }
         main.post {
             clipboard.setPrimaryClip(ClipData.newPlainText("Conduit", normalised))
         }
     }
 
     private fun ensureStartupForeground() {
-        if (LinkStatus.state == LinkState.Connected) {
+        if (connectedLinks().isNotEmpty()) {
             showLinkedNotification()
         } else {
             showConnectingNotification()
@@ -1530,7 +1795,7 @@ class SyncService : Service() {
     }
 
     private fun showConnectingNotification() {
-        if (LinkStatus.state == LinkState.Connected) return
+        if (connectedLinks().isNotEmpty()) return
         val peer = knownPeerName ?: LinkStatus.peerName ?: "desktop"
         showLinkNotification("Connecting to $peer")
     }
@@ -1542,7 +1807,9 @@ class SyncService : Service() {
     }
 
     private fun showPairingOrHideOfflineNotification() {
-        if (pairingActive()) {
+        if (connectedLinks().isNotEmpty()) {
+            showLinkedNotification()
+        } else if (pairingActive()) {
             showPairingNotification()
         } else {
             // A foreground-service notification cannot be hidden while the service remains
@@ -1553,10 +1820,14 @@ class SyncService : Service() {
     }
 
     private fun showLinkedNotification() {
-        if (LinkStatus.state != LinkState.Connected) return
+        val live = connectedLinks()
+        if (live.isEmpty()) return
         cancelOfflineDemotion()
-        val peer = knownPeerName ?: LinkStatus.peerName ?: "desktop"
-        showLinkNotification("Linked to $peer")
+        val label = if (live.size > 1) "Linked to ${live.size} computers" else {
+            PairedDesktops.list(filesDir).firstOrNull { it.id == live.first().first }?.name
+                ?.ifBlank { "desktop" } ?: "desktop"
+        }
+        showLinkNotification(if (live.size > 1) label else "Linked to $label")
     }
 
     private fun showLinkNotification(content: String) {
@@ -1588,12 +1859,12 @@ class SyncService : Service() {
     }
 
     private fun refreshLinkedNotification() {
-        if (LinkStatus.state == LinkState.Connected) showLinkedNotification()
+        if (connectedLinks().isNotEmpty()) showLinkedNotification()
     }
 
     private fun scheduleOfflineDemotion() {
         if (offlineDemoteScheduled || !foregroundVisible || pairingActive() ||
-            LinkStatus.state == LinkState.Connected
+            connectedLinks().isNotEmpty()
         ) {
             return
         }

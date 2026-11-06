@@ -1,6 +1,339 @@
 # Conduit handoff
 
-## Transfer/LAN reliability repair in progress
+## v0.1.18 release in progress — 2026-11-06
+
+- The user confirmed notification synchronization works on IOTFRESH and explicitly requested
+  merging PR #27, building, and publishing a new release. Release candidate versions are 0.1.18;
+  Android `versionCode` is 20. The latest published release remains v0.1.17 until the tagged
+  GitHub Actions release succeeds and its assets are verified.
+- Since v0.1.17 this branch includes Android multi-PC routing and sharing fixes and Rune theme,
+  hover, and window-chrome fixes. The IOTFRESH notification repair below changed device settings,
+  not application source; do not claim that upgrading alone changes those Windows/Android settings.
+- Build and test on GitHub Actions, merge the verified PR without rewriting commit attribution,
+  then tag the merged commit and verify the signed Android, Windows, Relay, checksums and Scoop
+  update. Two simultaneous physical-PC acceptance remains unverified.
+
+## IOTFRESH notification repair — 2026-11-06
+
+- The Android notification listener was enabled and the phone was linked, but Windows showed no
+  notification banners. Conduit's Windows AUMID (`Conduit.Desktop`) and Start-menu shortcut were
+  registered; the current user's global Windows `ToastEnabled` setting was `0`.
+- Restored `HKCU:\Software\Microsoft\Windows\CurrentVersion\PushNotifications\ToastEnabled`
+  to `1` and restarted the installed daemon with its existing data. This global setting also
+  enables Windows notifications from other applications; the lock-screen setting was not changed.
+- A separate Android setting, `RECEIVE_SENSITIVE_NOTIFICATIONS`, was `ignore`, causing Android to
+  redact some notification content. On this rooted test phone it was changed to `allow` with
+  `adb shell su -c "cmd appops set com.conduit.sync RECEIVE_SENSITIVE_NOTIFICATIONS allow"`.
+  Check this AppOp after an APK reinstall or update and re-enable it if necessary.
+- A shell-generated Android notification reached Conduit's Windows notification history, and
+  Windows created a `Conduit.Desktop` notification record. The user subsequently confirmed that
+  notification synchronization works. No Conduit source, identity, or pairing data was changed.
+- The latest development work is on the existing `codex/conduit-multipeer-20261104` branch and
+  draft PR #27. This checkout started at the older `master` release (`v0.1.15`) and was switched
+  to that branch before recording this checkpoint.
+
+## Final installed release: v0.1.17 and Scoop update completed
+
+- Published stable release: `v0.1.17`, runtime source
+  `77414cb33b84d3315db1be6247980e24f42604dd`, annotated tag object
+  `593e4efc5bac3370ba79fa7cf35b242cc9b68ef4`. Full tagged Actions run `41999114384`
+  passed Windows, fixed-signer Android, Relay and GitHub Release; assets are uploaded.
+  No source build was run on the user's PC or VPS. PR #27 remains the existing draft;
+  this release does not claim a merge or new two-physical-PC acceptance.
+- `nonlog/scoop-www` master commit `f9eadfff566b8c50914761c5b3055c81944c11db` updates
+  `bucket/conduit.json` to 0.1.17. Author and committer are Codex. Windows release SHA-256:
+  `13dd9de789d3dd4f041a7647c33a01fb667b47e5829fe892d9b27fcc3e196bb1`.
+  Manifest URL/hash, published asset digest and the actual Scoop-downloaded archive agree.
+- Log's real Scoop installation is now **0.1.17 from bucket www**, not a 0.1.15 candidate
+  overlay. `current` points to `D:\Programs\Scoop\apps\conduit\0.1.17`; its data junction
+  still points to the original persisted store. Core identity/pairing/config hashes match.
+  Share Target and scoped LAN firewall report ready; autostart and Explorer choices were kept.
+  Installed Rune, daemon and send-helper bytes were checked against the official release ZIP.
+  Rune SHA-256: `39d079f1b0c0ba8f9288c84ff0827eba83c7d8b7ede72878e6da332b16fc9e5d`.
+  Daemon SHA-256: `8fda6700e445ea8f6ca31a410b0cdfb416add831586c3de6fcbdcde46a91931a`.
+- Phone is also on the exact published **0.1.17 / versionCode 19** APK, SHA-256
+  `5bf61a3eddb9ad3430b51a0f9905c1a7778c4498ee9d54b2f6ce8427dad77d12`. Its fixed certificate
+  was verified before in-place installation; all five original identity/pairing files matched
+  afterward. No uninstall, data clear, signing migration, new phone permission or network change.
+- Official installed daemon tray Exit was tested again: normal exit in 20 ms, port 41112
+  released, core state unchanged, no forced process kill. It was restarted and the existing
+  phone reconnected over Relay. The initial UI-close preflight rejected safely; a subsequent
+  normal close completed and the successful Scoop upgrade did not need its UI-only kill fallback.
+- Acceptance evidence: 43 native tests, 28 rendered scenes, 24 Android interaction tests,
+  optimized scanner/LSPosed entry points, actual app icons/time rendered from an isolated real
+  history copy, saved transparency slider at 70%, native caption/resize/Snap/minimize/maximize,
+  and real notification prune/clear plus tray-exit process regression on CI. The private history
+  fixture and its screenshot were removed after inspection; do not recreate or publish them.
+- Eight-fix behavior: notification cards use real cached app icons, local date/time and date
+  groups; retention is configurable (default 30 days, 0 disables age pruning, 100-record capacity
+  remains). Settings distinguish built-in/custom/disabled Relay nodes. Background transparency
+  is 0-100% with one root material behind titlebar/sidebar/body and opaque text. Success notices
+  expire after 5 seconds and navigation invalidates them. Android uses an offline scanner rather
+  than the crashing Google initialization path. Tray shutdown is bounded and releases sockets.
+- Wallpaper is not silently bypassed: the new phone **Settings -> Device wallpaper preview**
+  row explains the required optional access and refreshes connected desktops after approval.
+  All-files access remains denied/default; a new PC without an old cache needs that explicit
+  approval before a new thumbnail can arrive. Existing cached images remain available.
+- Physical QA boundaries remain explicit: the phone is keyguard-locked, so no real optical QR
+  scan was performed this round; actual scanner start/cancel runs passed on the CI Android 16
+  emulator. Current desktop capture/foreground access is unavailable; native window operations
+  and rendering were tested, but a fresh real-time DWM pixel inspection was not claimed.
+- Final reports and package evidence are in `Artifacts/Conduit/release-0.1.17`. A restricted
+  original-state backup remains in `D:\Workspace\Private\ConduitRelease-0.1.17-ecd355e07716472194f15bdb0da01be5`.
+  Never upload private backups or notification content. Other PCs update with `scoop update`
+  followed by `scoop update conduit`; no re-pair is required for a normal persisted upgrade.
+
+## Previous verification checkpoint (superseded by the installed release above)
+
+## Release checkpoint: eight fixes verified, v0.1.17 tag created
+
+- Runtime source is `77414cb33b84d3315db1be6247980e24f42604dd` on the existing
+  `codex/conduit-multipeer-20261104` / PR #27. The working tree was clean before this
+  documentation update. Do not return to the old frontend or create another branch.
+- All eight reported defects have corresponding source changes. Native CI `41995538429`
+  passes 43 tests and 28 rendered scenes. Full Build `41995538358` passes Windows, Android,
+  Relay, installation/uninstallation and real tray-exit process regression. Explicit signed
+  Android workflow `41996884568` passes 24 Android 16 UI tests, actual scanner Activity start
+  and cancellation, certificate/update rehearsal, optimized APK scanner/LSPosed entry-point
+  checks, and the existing fixed signing identity. No project was compiled on the user's PC.
+- The native UI from that verified run is installed as an overlay over full candidate
+  `999c670` (Build `41990771559`). Installed Rune SHA-256 is
+  `7be6d39f4aa4c93217267633341ba73b426072ff3556fce1b95fec62bb9a90e1`.
+  `native-ui-build.json` now records the actual base package, not a hardcoded older revision.
+  Installing the overlay left the daemon, pairing and configuration unchanged.
+- The real desktop tray Exit route was exercised while linked, with no file transfer active.
+  WM_COMMAND/MENU_EXIT ended the daemon normally in 24 ms, released port 41112, removed the
+  tray window and preserved identity, peer, peer-name and configuration hashes. No process kill
+  was used. The daemon was restarted through Explorer and reconnected to the existing phone.
+- Native caption hit testing, full-client bounds, minimize and maximize passed on the installed
+  binary. WS_CAPTION is absent and native resize/Snap/system-menu styles remain. Current screen
+  capture fails with an invalid desktop handle, so do not claim a new live DWM pixel inspection.
+  A one-shot render of the installed binary against an isolated copy of real notification rows
+  and cached PNGs verified actual app icons, local date/time and card layout. This private QA
+  fixture contains notification content, not device keys; never publish it or its screenshot.
+- Phone is now updated IN PLACE to the optimized `77414cb` APK, 0.1.17 / versionCode 19.
+  APK SHA-256 is `45b5be7d3f78eff94a314e2de5b5ac21b924742e02c495e59a8e602113053603`.
+  Both installed-old and new certificate fingerprints matched the committed fixed signer.
+  Five original identity/pairing files remained hash-identical after `adb install -r`.
+  No uninstall, data clear, signature migration, network change or new permission grant occurred.
+  Rollback APK and hash-only verification are under `Artifacts/Conduit/eight-fixes/android-77414cb`.
+- Phone ADB is `192.168.110.93:5555`. Camera permission was already granted, but the phone is
+  keyguard-locked; one ordinary wake did not expose the app. Physical optical QR scanning was
+  not performed. Scanner startup/cancellation is verified by the real CI emulator, not a mock.
+  Do not remove the lock or keep waking it. Keep the original trust identities intact.
+- Wallpaper absence on a new PC is an explicit Android permission boundary. All-files access
+  remains denied/default; the original PC has an older cached JPEG. The phone's new Device
+  wallpaper preview row explains the permission and refreshes all connected peers after approval.
+  Do not silently grant that broad permission, copy a private wallpaper across machines, or claim
+  fresh wallpaper delivery without the user's approval. Existing cached previews still render.
+- Annotated `v0.1.17` was created at the verified runtime commit; tagger is Codex. All project
+  versions are 0.1.17 (Android code 19). Await the tagged full Actions release, then verify assets,
+  update `nonlog/scoop-www/bucket/conduit.json`, and upgrade the local Scoop installation so its
+  package metadata no longer says 0.1.15 while running candidate overlays. Never rewrite v0.1.16.
+- Current PC helpers use Chat On Steroids Core: Windows-log returned an account-connection error.
+  QA evidence is `Artifacts/Conduit/native-77414cb/runtime-qa`. Preserve rollback/private backups;
+  remove temporary staging and the private notification fixture after final verification.
+
+## Earlier implementation checkpoint (superseded by verified state above)
+
+## Active follow-up: eight reported desktop/mobile defects
+
+- Continue PR #27 on `codex/conduit-multipeer-20261104`. Latest published release remains
+  v0.1.16 at `0cc13c0`; the working checkout was clean and fast-forwarded before edits.
+- User requests: notification app icons/times/age retention and better layout; visible Relay
+  defaults; adjustable transparency; expiring pairing notices; phone wallpaper; unified
+  titlebar/sidebar/content material; Android QR scan crash; daemon tray Exit really exiting.
+- Rune source now retains notification timestamp/package identity, reads the daemon's cached
+  app PNGs, groups cards by local date, exposes retention and Relay modes, and adds a background
+  transparency slider. Success notices use a single finite Rune wake and are cleared on navigation.
+  Native chrome, daemon APIs and Android fixes are being integrated; no completion is implied.
+- Important API contract under construction: daemon `notifications clear`/`prune`, config
+  `notification_retention_days` (0 disables age cleanup; default 30), and public effective Relay
+  settings. Do not deploy the UI until the matching daemon and CI are verified.
+- Core local workspace tools work; Windows-log still returns a connection error. Wi-Fi ADB
+  is authorized at 192.168.110.93:5555. Never clear data, rotate identities, repeat signing
+  migration or switch the phone's network. Phone currently runs signed 0.1.15 / code 17.
+- All formal compilation/tests remain in GitHub Actions. Local formatting and dependency-lock
+  resolution are not build/test evidence. Release/Scoop publication is part of this task, after
+  verification; v0.1.16 must never be rewritten.
+- Daemon changes at 0942bda serialize history operations, validate 0..3650-day retention,
+  schedule the nearest expiry without polling, publish effective Relay settings, and explicitly
+  stop all Relay/control tasks before bounded native-thread and runtime shutdown. A disposable
+  Windows Actions regression sends the real tray Exit menu command and tests restart/port release.
+- ADB's actual release crash matches R8 map dec724a7: Google code-scanner zzny constructor
+  dereferences a null SharedPrefManager returned by MlKitContext. The SDK registry cause is not
+  proven, so do not claim missing R8 keep rules. Replace the Google scanner with offline ZXing
+  ScanContract and a private CaptureActivity. Camera permission is optional and requested only
+  after Scan QR; no background camera, saved frames or downloaded Google module. Manual pairing
+  survives permission denial/cancellation. Add decoder roundtrip and ActivityResult/manifest tests.
+- Actual wallpaper permission is denied, and the original migration backup already recorded
+  allFiles=false. The old PC had a cached JPEG, whereas a newly paired PC cannot fetch new pixels.
+  Add an explicit explanatory Device wallpaper preview permission row and immediate event-driven
+  refresh for all connected peers after approval. Never silently grant broad storage permission.
+- Native caption is client-drawn over the same root tint as sidebar/body, with native hit testing
+  for drag/resize/maximize/Snap; backgrounds use one 0..100-percent transparency value, not HWND
+  global opacity. These additional dirty source changes still require CI and real-window QA.
+
+## Live continuation: five experience changes installed and physically verified
+
+- Continue PR #27 and `codex/conduit-multipeer-20261104`; do not create another branch.
+  User grants push/CI/deployment authority. Installed native UI is `9cace1f` (complete per-pixel
+  DWM composition); Android source is unchanged from `5e2f4e3` (stable signing and migration).
+- The PC now has the complete CI-built `1abf396` Windows candidate, verified by Build
+  `41853681032`; its Windows source is identical to `5e2f4e3`. Scoop persist remains a junction.
+  A full runtime rollback and ACL-protected private state backup are retained locally.
+  The UI-only overlay from successful Rune run `41870326709` is tracked separately in
+  `native-ui-build.json`; native EXE SHA-256 is
+  `dd676d6a44fbba9fee421bc0b5128700acfd84814a4179041c5e6a020dfa672a`.
+  Its install did not restart the daemon or modify identity, pairing or configuration.
+- The OnePlus phone is upgraded from code 13 to the optimized code 17 / 0.1.15 APK at
+  `5e2f4e3`, built by trusted Android workflow `41857249743`. APK SHA-256:
+  `11442edb40ad1b5559711ac2bd7523e6719ef4dab68dd9dd2e109ebffbc93cee`.
+  Stable signer SHA-256: `41407a095b8f8dbe0cbf63084d1f7ca9ff1f35efad07d716fd95d64c8791d2ae`.
+- The one-time certificate migration verified a root-only phone archive and a separate local
+  DPAPI-protected archive plus the original APK before replacement. Every restored state file
+  matched before service startup; the Noise identity also matched after restoring permissions.
+  Notification/accessibility/media permissions and prior battery exemptions were restored.
+  Private backups must never be uploaded. Future updates must retain this stable signer.
+- Physical runtime tests passed: desktop Disconnect closes every established TCP connection;
+  pause survives daemon restart; Connect restores the authenticated Relay path without unpairing.
+  Identity, pairing, configuration and transfer history hashes were unchanged by that test.
+  A subsequent 8192-byte real file round-trip (PC -> phone -> PC) completed in both directions
+  with identical SHA-256, adding two QA records to the preserved history.
+  Actual Rune Disconnect/Connect buttons were also exercised, not only the daemon CLI.
+  When this OnePlus was Dozing, its pending discovery timeout did not run until a one-time screen
+  wake; then it reconnected automatically without another Connect action. Do not claim instant
+  sleep-state reconnection or solve this by adding periodic wakeups. No network was switched.
+- Actual Acrylic now passes: the installed EXE cold-starts with real blurred red/blue backdrop
+  pixels from a temporary verification window (no injected composition changes in the test).
+  Mica, Solid, Light and System were exercised; physical resizing down to 1000x700 and restoring
+  the original bounds left no opaque edges. Final preferences are System + Acrylic, smooth wheel On.
+  Evidence is local under `Artifacts/Conduit/native-9cace1f/runtime-qa`.
+- Root cause: Vulkan's inherited alpha needs explicit DwmEnableBlurBehindWindow per-pixel opt-in,
+  plus zeroed native backing RGB/alpha. DWM backdrop type success alone is NOT proof of real blur.
+  `window_material.rs` now installs an idempotent native subclass, clears on erase/resize/DPI and
+  backdrop changes only, and frees native regions. It does not poll, screenshot the background,
+  perform GDI work per animation frame, or remove Vulkan's redirection bitmap.
+  The earlier `d90392a` NOREDIRECTIONBITMAP experiment is superseded; never deploy that approach.
+  Static GetWindowSubclass was also removed: some comctl32 versions lack its named export.
+- Android CI: 22 UI/motion tests and full certificate-change + same-signer-upgrade rehearsal passed.
+  Rune at `9cace1f`: 28 tests and 28 headless scenes passed in `41870326709`, including a native
+  RGB/alpha erase test and finite wheel-scroll tests. Android `41870326642` also passes.
+  Full packaging run `41870326730` also passed Windows x64, Android and Relay, including native
+  package verification, Share Target registration and installation/uninstallation smoke tests.
+  Its Release job was skipped because no stable tag was created.
+  No project compilation was run locally. WinUI remains only a Windows Share Target host; Nova is absent.
+- Local migration helper was repaired to resolve `adb.exe` explicitly (PowerShell names are
+  case-insensitive), quote the entire remote `su -c` command, and verify restored bytes BEFORE
+  re-enabling services (AndroidX profile caches legitimately change at startup).
+- Mobile launcher/adaptive/monochrome/tile/notification/in-app/Direct Share vectors now share the
+  desktop link mark. Finite page/nav/connection/progress/disclosure/dialog motion is installed
+  in the signed phone APK and respects disabled system animations; see `android/MOTION.md`.
+- This is an installed candidate, not a stable tag or completed two-physical-PC acceptance.
+  Keep the original phone/work-PC identities and Wi-Fi ADB intact. Do not rebuild or repeat the
+  one-time signing migration. Future phone updates use the same stable signer in place.
+
+## Historical checkpoints below (superseded by the installed outcome above)
+
+## Earlier checkpoint: native-only desktop revision
+
+### Active follow-up: materials, connection control and Android motion
+
+- User explicitly keeps Rust/Rune and requests real Mica/Acrylic, smooth wheel scrolling,
+  desktop disconnect/reconnect without unpair, unified Android icons and FlClash-inspired motion.
+- Work stays on the same branch/PR. The first follow-up adds DWM native material selection with
+  opaque/high-contrast fallback, bounded notched-wheel glides (precise trackpads unchanged), and
+  persistent link-intent control. Pause blocks admission and Relay parking, keeps trust, refuses
+  active transfers, and survives daemon restarts. No installed binaries changed yet this round.
+- Windows-log is currently unavailable (account connection error); Core is the working PC fallback.
+  Browser workers failed to start and local Codex workers hit usage limits; neither changed source.
+- ADB was reconnected to the known Wi-Fi device. Do not switch its network during remote work.
+  Android icon/motion work and safe signing upgrade are still pending in this checkpoint.
+- All new formal tests/builds must run in Actions. Local rustfmt is not execution evidence.
+- Implemented finite mobile page/nav/state/disclosure/dialog/progress transitions and generated
+  launcher, monochrome, notification/tile and share vectors from the desktop's single SVG source.
+  Android versionCode is 17. First CI app compilation/lint passed; instrumentation API fixes and
+  real intermediate-frame tests are in progress. Native desktop tests passed on db65e2a.
+- Prepared a persistent encrypted private Android release signer in GitHub encrypted repository
+  secrets; only its public fingerprint is committed at android/signing-cert.sha256. No private
+  material is in source, logs or downloadable build artifacts. Tagged releases must verify it.
+- Original phone signer differs. A narrowly scoped root data backup/restore helper and disposable
+  emulator certificate-migration rehearsal must pass before a one-time live migration. Do not
+  uninstall a real app until verified backup, original APK and restore/rollback are available.
+
+- Continue the existing `codex/conduit-multipeer-20261104` branch and PR #27.
+  Base implementation is `7df8535`; do not reopen an old worktree or create another feature branch.
+- Latest user requirement supersedes the old fallback plan: retire Nova/Tauri, develop the
+  desktop in Rust/Rune, and replace the oversized dashboard layout. The connected ADB path is
+  Wi-Fi, not USB; do not switch Wi-Fi/cellular during remote control.
+- Current source removes the Nova frontend, its independent workflow and Bun/Tauri build steps;
+  native launchers and Explorer now select Rune only. The WinUI executable is retained only for
+  native Windows Share Target compatibility and redirects ordinary launches to Rune.
+- Install preflight requires the native executable before changing a running installation.
+  In-place upgrades remove only the exact retired executable names, never data or pairing files.
+- Rune now uses a compact device strip, a single page heading, smaller neutral navigation and
+  readable transfer rows; dashboard statistics and alternative desktop buttons are removed.
+  Active QR and manual code now sit side by side, with Cancel visible in the minimum window.
+  Transfer cancellation is independent of the long-running send operation's busy flag.
+- Added native-source and stale-upgrade regression gates. Added deterministic headless scenes
+  and a GitHub Actions-only 28-image visual acceptance matrix (7 scenes, 2 themes, 2 sizes).
+- Runtime source is pushed at `2448911c8a23ac161be0e0dc7381c57a5dff4f73`.
+  Rune Actions `41833926848` passed all 21 native tests, release compilation, PE GUI checks and all
+  28 native screenshots. The screenshots were inspected; no generated mockup is an app asset.
+  The first visual review caught SVG group-style inheritance unsupported by Rune's icon parser;
+  the final mark uses explicit per-path strokes with a hollow-interior pixel regression.
+- The existing parent `7df8535` has green Actions: Build `41821414907`, Android Expressive
+  `41821414917`, Rune preview `41821414936`. Those runs DO NOT verify this new desktop revision.
+  Parent dual-peer instrumentation checks independent Noise text and authenticated revoke;
+  it does not prove two physical computers or targeted real-file transfers.
+- The phone is reachable and still runs 0.1.12. Its installed APK signer differs from the local
+  default debug keystore. Do not uninstall, clear data, replace an identity or bypass signature
+  verification to force an update. Durable signing and a tested preservation/migration path
+  remain Issue #23. The package version is still 0.1.15; this is a verified desktop candidate,
+  not a tagged stable release or a completed physical dual-PC acceptance.
+- The installed Scoop `conduit-nova.exe` was removed after a verified local binary backup
+  in `D:\Workspace\Artifacts\Conduit\retired-nova`. The daemon PID stayed unchanged;
+  identity, peer and config hashes were verified unchanged. The full native Windows package from
+  Actions `41833926838` is now installed in the existing Scoop location. The stale Conduit
+  Preview uninstall registration pointed to a nonexistent directory and was removed with a
+  local registry export beside the binary backup. No release or merge.
+  The current request authorizes retiring Nova, not rotating the original PC/phone identity.
+- User has explicitly granted full execution permission for this change, including push,
+  CI and deployment. Do not request duplicate authorization. No image-generation mockups:
+  the deliverable is working native source and installed binaries.
+- This revision replaces the orange-arrow bitmap identity with one themeable connection glyph
+  shared by Rune, Windows executable icons, system tray and Explorer. It adds actual transfer
+  filters and file-type glyphs, semantic failed/completed states and bounded error details.
+- Design reference: interface-design skill (Dammyjay93) and Linear's calmer-interface design
+  notes. No third-party artwork, wallpapers or generated mockup assets enter the product.
+- Full Windows Actions `41833926838` passed daemon/Rune verification, packaging, native installer,
+  stale-Nova removal and Windows Share Target installation/uninstallation checks. Its inner package
+  SHA-256 is `95505a91c21202c98d3bcb3d199e38a70e86c0138537ab46c2226e9ae6d32669`.
+- Installed `conduit-rune.exe` SHA-256 is
+  `87471eaec54c4ca504daf47e5859ee8de999c5b1c8ad6b89e775d5224af930d2`;
+  `conduit-daemon.exe` is `28407106bb8b65a2812398a5935dc92dec5d18cff4803e9aaebe95c080ae46bc`.
+  `native-build.json` records the runtime source commit and Actions run beside the installed binaries.
+  The earlier UI-only candidate was superseded by this consistent full-package installation.
+- Actual window captures and rollback files are in `D:\Workspace\Artifacts\Conduit\native-2448911`.
+  The daemon restarted and established a fresh authenticated link to the existing OnePlus phone.
+  Identity, peer, peer-name and config hashes remain unchanged; all 21 transfer records remain.
+  The Scoop data junction is intact. No phone APK replacement or pairing reset was performed.
+- Real-machine launch checks passed: Start-menu shortcut targets Rune, repeat launch reuses its PID,
+  and ordinary `Conduit.exe` launch redirects to the same Rune window and exits. Windows Share Target
+  is registered as `Conduit.Desktop.ShareTarget` version `0.1.15.0`, status OK.
+- `rollback` holds the prior runtime; `ui-rollback` holds the original UI. `private-state-backup`
+  contains sensitive app identity material and has a protected current-user/SYSTEM-only ACL.
+  Never publish or upload the whole artifact directory. The original Nova backup remains separate.
+- Windows-log began returning HTTP 502 during launch confirmation; Chat On Steroids Core
+  was used as fallback. Launch the verified native UI through Explorer's Shell.Application
+  ShellExecute so its lifetime is independent of a bounded command-tool session.
+- Desktop work is installed and verified. Next remaining project gates are Android durable signing
+  and data-preserving APK upgrade (Issue #23), then physical dual-PC QA. PR #27 stays draft for those
+  broader gates; no stable tag or merge was created. Do not mistake this candidate for a new release.
+
+## Historical checkpoints below (superseded where they conflict)
+
+## Historical transfer/LAN reliability repair
 
 Continue `codex/transfer-lan-reliability` in the Conduit-reliability worktree,
 based on released master f2528aa (v0.1.6). Preserve the latest WinUI/Mica layout
@@ -944,3 +1277,32 @@ Follow `docs/development.md` for Scoop-first tool installation and safe Android 
 - **Version 0.1.1 tag & release:** Bumped version to `0.1.1` in `Cargo.toml`, `android/app/build.gradle.kts` and `Conduit.csproj`. Pushed tag `v0.1.1` to GitHub, successfully triggering the GitHub Actions build and release workflow.
 - **Excavator workflow & www bucket update:** Triggered the `Excavator` workflow in `nonlog/scoop-www` via workflow dispatch. It autoupdated `bucket/conduit.json` to version `0.1.1` with SHA-256 `37e45a021f356ef1b0ac9977d12d74a59e01a833efa00386df0ddc162a9dd71c`.
 - **Desktop client deployment:** Upgraded the installed desktop companion via `scoop update conduit` to `0.1.1`. The new resident daemon (PID 7236) is running and the tray tooltip displays "Conduit" cleanly.
+
+## Regression correction checkpoint: system theme, multi-PC routing and FlClash-style Android surfaces
+
+- The user reported a real regression after v0.1.17: Windows System dark mode could still render a light Rune content palette; the Android UI could keep showing a disconnected IOTFRESH peer while Log was authenticated; clipboard and ordinary system-share routing then stopped; and the Android cards/colors did not meet the requested FlClash-inspired compact surface language.
+- Root cause on Windows was two theme authorities: the custom Rune view used `Cx::system_dark()`, while native material/caption code used the Windows AppsUseLightTheme registry value. The content palette could therefore disagree with the titlebar/DWM result. `window_material::effective_dark("system")` is now the shared resolver for the view, material and icon path. Rune semantic theme tokens now drive the desktop surfaces, borders and secondary text; light mode no longer uses pure-white implementation cards and dark mode no longer uses pure-black blocks.
+- Root cause on Android was treating the selected/primary peer as the global connection. When IOTFRESH went offline and Log remained authenticated as a companion, clipboard accessibility and share code saw the stale primary state and stopped. `SyncService.connectedLinks()` now aggregates authenticated primary and companion sessions; peer selection falls back to a live authenticated peer; the UI, clipboard, share target and foreground notification use the same snapshot. Explicitly chosen offline peers still fail clearly instead of silently sending to another computer.
+- Android surfaces were refactored toward the requested FlClash-like language: neutral Material surface levels in both themes, compact rounded containers, smaller action controls, no giant blob/clover decoration, a compact bottom dock and finite page/settings transitions. The implementation keeps event-driven behavior and does not add an idle animation loop or polling timer.
+- Source commits on `codex/conduit-multipeer-20261104`: `9959b92` (system theme and active multi-peer routing), `5d53b3c` (clipboard through any live desktop), `72c766b`, `647612f`, `a8923ce`, `1f7b8ea`, and `c40f3c2` (authenticated peer snapshot for sharing). Branch is clean and synchronized with origin; PR #27 remains draft/open/unmerged.
+- PR CI for `c40f3c2f25829bbe721ecd162a61aaa8ffd95eaa` passed: Rune `42033068938`, Android Expressive `42033068906`, and full Build `42033068980` (Windows, Android, Relay; the designed Android UI job remains skipped for PR builds). A separately dispatched signed Android workflow `42037485869` also passed.
+- The signed candidate from that workflow was installed in place on the existing CPH2573 phone without uninstalling, clearing data, changing the network, changing the production signer, or re-pairing. It remains versionName `0.1.17`, versionCode `19`; APK SHA-256 `E4E4E82C1096A12661231E7783B854B069C228377EC1D96B880E051903AFCF83`; signer SHA-256 `41407a095b8f8dbe0cbf63084d1f7ca9ff1f35efad07d716fd95d64c8791d2ae`. The foreground service is running and the device notification reads `Linked to Log`.
+- This is a candidate verification of the already published v0.1.17 source line, not a new public release or tag. The official release remains v0.1.17. Physical clipboard text transfer, external-link share action and simultaneous two-PC transfer/cancellation still need a direct user-driven test; this round proves the routing and UI fixes in CI and proves the phone service has an authenticated Log link. No fresh DWM composited-pixel screenshot was obtained, and no optical QR scan was claimed while the phone remained keyguard-constrained.
+
+## Candidate installation checkpoint: Windows desktop regression fixes now running
+
+- The successful full Build `42033068980` Windows artifact `conduit-windows-x64` was downloaded from GitHub Actions artifact `13418742582` (artifact digest `sha256:5f4a46f94e0def04495236b9710b9d8fecba5b493c6a886c4c7fa6c9beacf999`); downloaded ZIP SHA-256 is `7FDA4E47B079BADBA6545F821DC01524EDE3F6C1F9C19D62471A769B07257421`.
+- Its packaged `tools/install-windows.ps1` was run with the existing Scoop `current` directory as the target. The complete published UI payload and Rust binaries were copied; the data junction remained `D:\Programs\Scoop\persist\conduit\data`; Share Target registration, LAN firewall, autostart and Explorer integration all reported ready/preserved.
+- Candidate installed hashes match the downloaded package exactly: `conduit-daemon.exe` `86FE3912A64531FBF7D50DF2B6A8B4A132F73B0FF6EE3CB0BBFE3A48BF8F7351`, `conduit-rune.exe` `9C43A50270970FB95AFDB39576DA533DD1CF137D83E1B1A49D36FF7D6359AAEA`, and `conduit-send.exe` `F1DD13CCD171A5F6FE70E82DD36CE52D8C87DDBAA881AA68D25C3EDC6CC1503E`.
+- Protected `identity.bin`, `pairing-v2`, `config.txt`, `peer.txt`, `peer-name.txt` and `link-intent.txt` SHA-256 values were identical before and after the overlay. The daemon restarted as PID 20864, Rune is running as PID 18152, and persisted status is `state=linked`, `path=relay`, `link_enabled=true`.
+- This is an in-place candidate overlay from PR commit `c40f3c2` over the versioned Scoop folder still labeled `0.1.17`; it is not a new public release and does not change the official v0.1.17 tag. Future Scoop upgrades may replace the overlay with the official archive, so the candidate overlay must be treated as QA state until the PR is reviewed/merged and a release is published.
+
+## Final desktop hover and inactive-titlebar regression checkpoint
+
+- The user supplied live Conduit dark-mode screenshots showing an unreadable light-gray notification row on hover and a classic gray Windows nonclient caption appearing after the Rune window lost focus. These were concrete regressions in the installed candidate, not a request for mockups.
+- Source fix `1b5568404a51ab04e46d60196f86b252a673b558` updates the Rune palette to use low-alpha `hover_wash`/`press_wash` compositing rather than Rune's bright stock hover over dark cards, applies the wash consistently to related interactive controls, and reduces excessive divider contrast. The Windows subclass acknowledges `WM_NCACTIVATE` and `WM_NCPAINT` without invoking the classic caption painter while the custom caption is visible; minimized windows retain system handling. Regression tests cover the wash bounds and nonclient message handling.
+- For that source commit, GitHub Actions `42043827184` (Rune native desktop 59), `42043827191` (Android Expressive 74) and `42043827218` (full Build 246) completed successfully. Full Build verified Windows package, isolated install/uninstall, Share Target and actual tray Exit; Android and Relay jobs also succeeded. Rune native visual workflow rendered 28 dark/light/size screenshots.
+- Downloaded full Build 246 `conduit-windows-x64` artifact `13425285326`; internal `Conduit-windows-x64.zip` SHA-256 `A1E7DD0BC49151B80755924CFF6999D2C958EB2A6B36AD1E7792F1201F9EC488`. Installed with the packaged `tools/install-windows.ps1` into the existing Scoop `current` junction, without data deletion, re-pairing or updating the public release.
+- After installation, source/package hashes matched installed `conduit-rune.exe` (`2F82E5B4D6DF546339CE31AC84FC1D3A98E2B4F3038A58523C5FEC29B72D34B3`), `conduit-daemon.exe` (`FE904E309B7C105B54C14CFC626489116415590CDD7ECA97A686AAEC33A2E677`) and `conduit-send.exe` (`8DBDCB23E9B0566835ABBA8EE970B0B1EA646E9BFDE8DA1DA61A308C803664A5`). Identity, pairing, configuration and link-intent file SHA-256 values matched before and after. Persist junction, Share Target, LAN firewall, autostart, and Explorer integration were preserved. Daemon and Rune restarted successfully; persisted link remained `linked` over Relay to OnePlus 12.
+- **Physical Windows acceptance on the complete Build 246 package:** on the actual Conduit notifications page, pointing at a row yielded only a subtle neutral-gray hover overlay and retained legible text. Focusing Chrome and inspecting the *unfocused* Conduit HWND showed the same dark client-drawn caption without a classic gray title bar. The app remained interactive and online. Personal notification screenshots were observed only in the live local desktop session, not uploaded as CI artifacts, saved to a public path, or copied into repository fixtures.
+- The existing Scoop manifest still says `0.1.17`; the actual binaries in its versioned directory are a **QA candidate overlay** from PR #27, not the official v0.1.17 release. PR #27 remains draft and unmerged; do not retag v0.1.17. Earlier physical acceptance limitations (two independent physical PCs, actual optical QR, fresh wallpaper without optional permission) remain separate from these two fixed desktop regressions.

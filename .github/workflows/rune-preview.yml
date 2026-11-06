@@ -1,11 +1,23 @@
-name: Rune desktop preview
+name: Rune native desktop
 
 on:
   pull_request:
     paths:
       - "windows/conduit-rune/**"
+      - "windows/conduit-daemon/assets/conduit-mark.fragment.svg"
+      - "windows/conduit-daemon/tools/icon-render/**"
       - ".github/workflows/rune-preview.yml"
+      - "scripts/snapshot-rune-desktop.ps1"
   workflow_dispatch:
+    inputs:
+      runner:
+        description: Official hosted Windows image (alternate capacity during queue delays)
+        type: choice
+        default: windows-latest
+        options:
+          - windows-latest
+          - windows-2022
+          - windows-2025
 
 permissions:
   contents: read
@@ -17,7 +29,7 @@ concurrency:
 jobs:
   rune-windows:
     name: Rune native UI / Windows x64
-    runs-on: windows-latest
+    runs-on: ${{ inputs.runner || 'windows-latest' }}
     timeout-minutes: 100
     steps:
       - uses: actions/checkout@v7
@@ -33,6 +45,14 @@ jobs:
         with:
           workspaces: windows/conduit-rune
           key: conduit-rune-preview
+
+      - name: Render native app identity
+        shell: pwsh
+        run: |
+          npm ci --prefix windows/conduit-daemon/tools/icon-render
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node windows/conduit-daemon/tools/icon-render/render-icons.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Check formatting
         shell: pwsh
@@ -61,6 +81,19 @@ jobs:
             throw "Windows GUI subsystem must be 2, got $subsystem"
           }
           Write-Output 'Rune executable is a native GUI process (PE subsystem 2).'
+
+      - name: Render native desktop acceptance scenes
+        shell: pwsh
+        timeout-minutes: 10
+        run: ./scripts/snapshot-rune-desktop.ps1 -Executable windows/conduit-rune/target/release/conduit-rune-preview.exe -OutputDir artifacts/rune-visual
+
+      - name: Upload native visual acceptance images
+        uses: actions/upload-artifact@v7
+        with:
+          name: conduit-rune-native-visual
+          path: artifacts/rune-visual/*.png
+          retention-days: 3
+          if-no-files-found: error
 
       - name: Package independent Rune preview
         shell: pwsh

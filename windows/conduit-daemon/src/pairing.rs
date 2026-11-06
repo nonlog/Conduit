@@ -304,6 +304,76 @@ fn now_ms() -> u128 {
         .as_millis()
 }
 
+/// Explicit, offline-only repair for a second PC created by copying an existing
+/// Conduit data directory. Never invoked automatically; only the copied
+/// installation should be re-keyed. Pairing and identity files are backed up
+/// beside the data directory before the new Noise static key is generated.
+/// Transfers, clipboard history, settings and the original PC are untouched.
+pub struct CloneRepair {
+    pub backup_dir: PathBuf,
+    pub new_device_id: String,
+    pub new_fingerprint: String,
+}
+
+pub fn repair_cloned_identity(dir: &Path) -> Result<CloneRepair> {
+    use crate::wire;
+    let identity = dir.join("identity.bin");
+    let old = std::fs::read(&identity)
+        .with_context(|| format!("reading existing identity {}", identity.display()))?;
+    if old.len() != 64 {
+        bail!("existing Noise identity is not 64 bytes; refusing replacement");
+    }
+    let original_id = wire::device_id(&old[32..]);
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let backup = dir.join(format!(
+        "pre-clone-repair-backup-{}-{}",
+        std::process::id(),
+        unique
+    ));
+    std::fs::create_dir(&backup)
+        .with_context(|| format!("creating identity backup {}", backup.display()))?;
+    for file in [PEER_FILE, PEER_NAME_FILE, PAIRING_FILE, PAIRING_MODEL_FILE] {
+        let source = dir.join(file);
+        if source.is_file() {
+            std::fs::copy(&source, backup.join(file))
+                .with_context(|| format!("backing up {}", file))?;
+        }
+    }
+    std::fs::rename(&identity, backup.join("identity.bin"))
+        .with_context(|| "moving imported Noise identity to local backup")?;
+    let result = (|| -> Result<(String, String)> {
+        let fresh = wire::load_or_create_identity(&identity)?;
+        let new_id = wire::device_id(&fresh.public);
+        if new_id == original_id {
+            bail!("identity regeneration unexpectedly produced the same public key");
+        }
+        forget(dir)?;
+        Ok((new_id, wire::fingerprint(&fresh.public)))
+    })();
+    match result {
+        Ok((new_device_id, new_fingerprint)) => Ok(CloneRepair {
+            backup_dir: backup,
+            new_device_id,
+            new_fingerprint,
+        }),
+        Err(error) => {
+            let _ = std::fs::remove_file(&identity);
+            std::fs::rename(backup.join("identity.bin"), &identity)
+                .with_context(|| "restoring original Noise identity after failed repair")?;
+            for file in [PEER_FILE, PEER_NAME_FILE, PAIRING_FILE, PAIRING_MODEL_FILE] {
+                let original = backup.join(file);
+                if original.is_file() {
+                    std::fs::copy(original, dir.join(file))?;
+                }
+            }
+            Err(error)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -369,6 +439,38 @@ mod tests {
         assert!(peer_id(&dir).is_none());
         confirm(&dir, &id, authorization, "Phone").unwrap();
         assert_eq!(peer_id(&dir).as_deref(), Some(id.as_str()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cloned_workstation_identity_rekey_preserves_backup_and_history() {
+        let dir = temp("clone-repair");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let original = crate::wire::load_or_create_identity(&dir.join("identity.bin")).unwrap();
+        let id = crate::wire::device_id(&original.public);
+        let bytes = std::fs::read(dir.join("identity.bin")).unwrap();
+        std::fs::write(dir.join(PEER_FILE), "trusted-phone").unwrap();
+        std::fs::write(dir.join(PEER_NAME_FILE), "My phone").unwrap();
+        std::fs::write(
+            dir.join("transfers.tsv"),
+            "transfer history must not change",
+        )
+        .unwrap();
+        let fixed = repair_cloned_identity(&dir).unwrap();
+        assert_ne!(fixed.new_device_id, id);
+        assert_eq!(
+            std::fs::read(fixed.backup_dir.join("identity.bin")).unwrap(),
+            bytes
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("transfers.tsv")).unwrap(),
+            "transfer history must not change"
+        );
+        assert!(!dir.join(PEER_FILE).exists());
+        assert!(dir.join(PAIRING_MODEL_FILE).exists());
+        let rotated = crate::wire::load_or_create_identity(&dir.join("identity.bin")).unwrap();
+        assert_eq!(fixed.new_device_id, crate::wire::device_id(&rotated.public));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

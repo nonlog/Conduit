@@ -12,8 +12,8 @@ android {
         applicationId = "com.conduit.sync"
         minSdk = 29
         targetSdk = 36
-        versionCode = 16
-        versionName = "0.1.15"
+        versionCode = 20
+        versionName = "0.1.18"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -21,8 +21,22 @@ android {
         compose = true
     }
 
+    // Private persistent signing is injected only by the trusted release/dispatch job.
+    // Pull-request/emulator debug builds never need or contain the release key.
+    val privateKeyStore = System.getenv("CONDUIT_ANDROID_KEYSTORE")?.takeIf { it.isNotBlank() }
+    if (privateKeyStore != null) {
+        signingConfigs.create("privateRelease") {
+            storeFile = file(privateKeyStore)
+            storeType = "PKCS12"
+            storePassword = requireNotNull(System.getenv("CONDUIT_ANDROID_KEYSTORE_PASSWORD")) { "Release signing password is missing" }
+            keyAlias = "conduit-release"
+            keyPassword = storePassword
+        }
+    }
+
     buildTypes {
         release {
+            if (privateKeyStore != null) signingConfig = signingConfigs.getByName("privateRelease")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
@@ -79,13 +93,14 @@ dependencies {
     implementation(platform("androidx.compose:compose-bom:2026.09.00"))
     implementation("androidx.compose.material3:material3:1.5.0-beta01")
     implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.animation:animation")
     implementation("androidx.activity:activity-compose:1.13.0")
-    // Code Scanner brings an obsolete Fragment transitively; align ActivityResult support.
+    // Keep ActivityResult support aligned for the on-demand scanner Activity.
     implementation("androidx.fragment:fragment:1.9.1")
 
-    // On-demand QR pairing. Google Code Scanner delegates camera access and image processing to
-    // Play services, so Conduit itself needs no CAMERA permission and no resident camera pipeline.
-    implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
+    // Offline QR pairing: no Play-services component registry or downloaded module.
+    // Camera permission and lifetime belong only to the explicitly launched scanner Activity.
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 
     // Reading the clipboard from the background is impossible on stock Android 10+, so
     // ClipboardHook lifts the check inside system_server. compileOnly: LSPosed supplies

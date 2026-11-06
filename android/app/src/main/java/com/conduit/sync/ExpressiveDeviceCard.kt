@@ -8,6 +8,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -47,11 +56,8 @@ internal fun ExpressiveDeviceCard(
     }
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         ExpressiveCard(Modifier.fillMaxWidth()) {
-            Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(28.dp))) {
-                // Real Material Expressive shape API. Static decoration, no background renderer.
-                Box(Modifier.align(Alignment.TopEnd).offset(x = 72.dp, y = (-26).dp)
-                    .size(204.dp).background(c.surfaceContainer, MaterialShapes.Cookie9Sided.toShape()))
-                Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+            Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp))) {
+                Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
                         Icon(painterResource(R.drawable.ic_connection_status), null, Modifier.size(20.dp), tint = c.onSurfaceVariant)
                         Text("Connection", style = MaterialTheme.typography.titleMedium)
@@ -61,7 +67,7 @@ internal fun ExpressiveDeviceCard(
                         horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(9.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                Box(Modifier.size(44.dp).background(c.surfaceContainerHighest, MaterialShapes.Clover4Leaf.toShape()),
+                                Box(Modifier.size(44.dp).background(c.surfaceContainerHighest, RoundedCornerShape(14.dp)),
                                     contentAlignment = Alignment.Center) {
                                     Icon(painterResource(R.drawable.ic_desktop), null, Modifier.size(23.dp), tint = c.onSurfaceVariant)
                                 }
@@ -85,17 +91,20 @@ internal fun ExpressiveDeviceCard(
                         FilledIconButton(
                             onClick = { when { pairing -> onCancelPair(); !paired -> onPair(); requested -> onDisconnect(); else -> onConnect() } },
                             shapes = IconButtonDefaults.shapes(shape = CircleShape, pressedShape = RoundedCornerShape(26.dp)),
-                            modifier = Modifier.size(82.dp).semantics { contentDescription = description },
+                            modifier = Modifier.size(64.dp).semantics { contentDescription = description },
                             colors = IconButtonDefaults.filledIconButtonColors(containerColor = c.primary, contentColor = c.onPrimary),
                         ) {
-                            Icon(painterResource(when { pairing -> R.drawable.ic_close; !paired -> R.drawable.ic_add; requested -> R.drawable.ic_pause; else -> R.drawable.ic_play }),
-                                contentDescription = null, modifier = Modifier.size(32.dp))
+                            Crossfade(
+                                targetState = when { pairing -> R.drawable.ic_close; !paired -> R.drawable.ic_add; requested -> R.drawable.ic_pause; else -> R.drawable.ic_play },
+                                animationSpec = if (LocalConduitMotion.current) tween(ConduitMotion.feedbackMillis) else snap(),
+                                label = "Connect control",
+                            ) { glyph -> Icon(painterResource(glyph), contentDescription = null, modifier = Modifier.size(26.dp)) }
                         }
                     }
                 }
             }
         }
-        if (linked) {
+        MotionReveal(visible = linked) {
             ExpressiveCard(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
@@ -124,11 +133,17 @@ internal fun ExpressiveDeviceCard(
 @Composable
 internal fun StatusPill(text: String, active: Boolean = false) {
     val c = MaterialTheme.colorScheme
-    Surface(shape = CircleShape, color = if (active) c.primaryContainer else c.surfaceContainer) {
-        Text(text, Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+    val motion = LocalConduitMotion.current
+    val color by animateColorAsState(if (active) c.primaryContainer else c.surfaceContainer,
+        animationSpec = if (motion) tween(200) else snap(), label = "Connection status color")
+    Surface(shape = CircleShape, color = color) {
+        AnimatedContent(targetState = text, label = "Connection status", transitionSpec = {
+            fadeIn(tween(if (motion) 180 else 0)) togetherWith fadeOut(tween(if (motion) 120 else 0))
+        }) { label -> Text(label, Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
             style = MaterialTheme.typography.labelMedium,
             color = if (active) c.primary else c.onSurfaceVariant,
             maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
     }
 }
 

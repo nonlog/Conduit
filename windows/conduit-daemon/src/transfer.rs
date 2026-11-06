@@ -151,6 +151,7 @@ fn terminal(state: &str) -> bool {
 #[derive(Default)]
 struct State {
     live: Option<(String, bool)>,
+    paused: bool,
     rows: VecDeque<Row>,
 }
 
@@ -233,7 +234,11 @@ impl Transfers {
         let (changed, mut rx) = watch::channel(0u64);
         let (sessions, _) = watch::channel(None);
         let this = Arc::new(Self {
-            state: Mutex::new(State { live: None, rows }),
+            state: Mutex::new(State {
+                live: None,
+                rows,
+                paused: false,
+            }),
             changed,
             sessions,
             wake: Notify::new(),
@@ -307,6 +312,9 @@ impl Transfers {
         let owner = hex(&new_id()?);
         {
             let mut state = self.state.lock().unwrap();
+            if state.paused {
+                bail!("Connection paused by user");
+            }
             state.live = Some((owner.clone(), capable));
             self.sessions.send_replace(Some(owner.clone()));
         }
@@ -348,6 +356,33 @@ impl Transfers {
                 .iter()
                 .any(|row| &row.owner == owner && !terminal(row.state))
         })
+    }
+
+    /// Serialize pause against both local send admission and remote offers. Persistence
+    /// must succeed before the old owner is invalidated, so a failed disk write is harmless.
+    pub fn set_link_enabled(
+        &self,
+        enabled: bool,
+        persist: impl FnOnce() -> Result<()>,
+    ) -> Result<()> {
+        let mut state = self.state.lock().unwrap();
+        if !enabled
+            && state.live.as_ref().is_some_and(|(owner, _)| {
+                state
+                    .rows
+                    .iter()
+                    .any(|row| &row.owner == owner && !terminal(row.state))
+            })
+        {
+            bail!("Transfers are active. Cancel them or wait for completion before disconnecting.");
+        }
+        persist()?;
+        state.paused = !enabled;
+        if !enabled {
+            state.live = None;
+            self.sessions.send_replace(None);
+        }
+        Ok(())
     }
     pub fn session_changes(&self) -> watch::Receiver<Option<String>> {
         self.sessions.subscribe()
@@ -397,6 +432,9 @@ impl Transfers {
             bail!("invalid transfer id");
         }
         let mut s = self.state.lock().unwrap();
+        if s.paused || s.live.as_ref().is_none_or(|(live, _)| live != owner) {
+            bail!("incoming transfer belongs to a disconnected session");
+        }
         Self::add(
             &mut s,
             Row {
@@ -761,6 +799,50 @@ mod tests {
             transfer_id: vec![id; 16],
             timestamp_ms: 0,
         }
+    }
+
+    #[test]
+    fn pause_blocks_new_admission_but_keeps_history_and_can_resume() -> Result<()> {
+        let registry = registry();
+        let old = registry.session(true)?;
+        let history = registry.snapshot();
+        registry.set_link_enabled(false, || Ok(()))?;
+        assert!(registry.owner().is_err());
+        assert!(registry.session(true).is_err());
+        assert!(registry
+            .enqueue(&old.owner, Path::new("late.bin"), 4)
+            .is_err());
+        assert!(registry.incoming(&old.owner, &incoming_offer(44)).is_err());
+        assert_eq!(registry.snapshot(), history);
+        registry.set_link_enabled(true, || Ok(()))?;
+        let new = registry.session(true)?;
+        drop(old);
+        assert_eq!(registry.owner()?, new.owner);
+        Ok(())
+    }
+
+    #[test]
+    fn active_transfer_or_failed_persistence_does_not_disconnect() -> Result<()> {
+        let registry = registry();
+        let live = registry.session(true)?;
+        assert!(registry
+            .set_link_enabled(false, || bail!("disk full"))
+            .is_err());
+        assert_eq!(registry.owner()?, live.owner);
+        let (id, _) = registry.enqueue(&live.owner, Path::new("busy.bin"), 4)?;
+        let mut saved = false;
+        assert!(registry
+            .set_link_enabled(false, || {
+                saved = true;
+                Ok(())
+            })
+            .is_err());
+        assert!(!saved);
+        assert_eq!(registry.owner()?, live.owner);
+        registry.update(&live.owner, &id, 4, "completed", "");
+        registry.set_link_enabled(false, || Ok(()))?;
+        assert!(registry.snapshot().contains("completed"));
+        Ok(())
     }
 
     #[test]

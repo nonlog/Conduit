@@ -38,7 +38,7 @@ private const val QUALITY = 85
  * the callback does nothing but hand the work to [Link]'s existing sender thread, where
  * the query, the decode and the JPEG encode all happen. Idle cost is therefore zero.
  */
-class Photos(private val context: Context, private val link: Link) {
+class Photos(private val context: Context, private val links: () -> List<Link>) {
 
     /**
      * Seconds, matching `DATE_ADDED`. The photos already on the phone when the service
@@ -61,7 +61,12 @@ class Photos(private val context: Context, private val link: Link) {
             // too heavy for a callback, and `sendImage` already runs its lambda on the
             // thread dedicated to outbound frames. The notified URI is ignored on purpose:
             // it is not always the item, so the newest row is looked up either way.
-            link.sendImage("photo", photo = true, emptyIsNoop = true) { next() }
+            val recipients = links()
+            if (recipients.isEmpty()) return
+            val payload = lazy(LazyThreadSafetyMode.SYNCHRONIZED) { next() }
+            recipients.forEach { link ->
+                link.sendImage("photo", photo = true, emptyIsNoop = true) { payload.value }
+            }
         }
     }
 

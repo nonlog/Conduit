@@ -1,66 +1,90 @@
-# Conduit / Rune native desktop
+# Conduit / native Rust desktop
 
-This is an actual Rust-native desktop UI built on [anomalyco/rune](https://github.com/anomalyco/rune),
-not React in a WebView and not a screenshot or static mockup.
+The Windows desktop is implemented in Rust with Rune. There is no React,
+Tauri, JavaScript build, WebView frontend, or alternative-desktop launcher.
+Rune remains pinned to the tested upstream Git revision in `Cargo.toml`.
 
-## Architecture and release safeguards
+## Runtime boundary
 
-Rune currently has no stable release, so the dependency is pinned to a tested
-upstream Git commit. The stable Windows artifact packages this native UI as
-`conduit-rune.exe`, selected by the installer, daemon tray and legacy shortcut
-delegation. The existing Tauri Nova desktop (`conduit-nova.exe`) remains an
-explicit rollback; the WinUI `Conduit.exe` keeps the Windows Share Target sparse
-MSIX identity and remains available through `--legacy-ui`.
+`conduit-rune.exe` is the only normal desktop entry point: Start menu, tray,
+legacy shortcuts and Explorer send-error handoff all select it. The resident
+Rust daemon continues to own Noise, LAN/Relay, clipboard and file transfers.
+The on-demand UI watches bounded state files and does not poll in the background
+or create a second identity or transport.
 
-The UI works with an already installed Conduit daemon (including custom
-Scoop roots resolved through the `SCOOP` environment, `PATH`, startup registry
-entry or installed application location). It does not create an independent
-pairing identity; the daemon's existing LAN port is also its single-instance
-gate. Portable builds with a sibling daemon use their own `data/` directory even
-if a separate Scoop installation exists.
+`Conduit.exe` is retained as a **Windows Share Target compatibility host** with
+its sparse MSIX identity. This host is still WinUI/.NET, not Rust; it is not an
+alternative desktop. Normal launches redirect to Rune. Keeping it avoids
+silently removing Windows' native file Share contract before a Rust replacement
+has been implemented and verified.
 
-## Implemented native UI
+Scoop's persisted data directory remains authoritative. Portable installations
+with their own sibling daemon keep their own data directory. The retired standalone
+preview layout is recognized only for preserving/migrating old data, never to
+launch the retired frontend. Installers require Rune before changing a running
+installation and remove only the exact obsolete frontend executable names after
+verifying the new payload. They never delete pairing, identity or history files.
 
-- Overview with bounded phone wallpaper and live LAN/Relay connection state
-- Pair, cancel pairing and confirm unpair
-- File transfer history, cancel active transfers, native file picker and
-  Explorer drag-and-drop send
-- Notifications and shared links, with two-step history clearing
-- Searchable transfer history, notifications and shared links
-- Relay endpoints, proxy mode / SOCKS5, receive folder, tray configuration
-- Native receive-folder picker and independent persistent System/Light/Dark theme
-- Windows autostart and Explorer integration switches
-- About page, native app metadata, open received files and data directory,
-  direct Nova fallback and legacy WinUI rollback
-- Native system dark/light colors, responsive scrollable content, keyboard
-  navigation and one native top-level Rune window
-- Event-driven watch of bounded daemon state files (no background UI polling)
-- Single-instance activation, Explorer send-error forwarding and a native
-  Windows GUI executable (never opens a command-line window)
+## Native interface
 
-The native UI does not duplicate the daemon's Noise/LAN/Relay transport or
-touch `identity.bin`. Nova remains installed as a fallback because Rune is
-pre-release. The daemon protocol, persisted pairing, transfer history and
-Share Target remain unchanged. Notification app-icon parity, advanced transfer
-presentation and real-device long-run checks remain quality improvements.
+The overview has one page title, a compact device strip and recent transfer rows.
+There are no dashboard statistics, repeated marketing headings or fallback-app
+buttons. Navigation uses native vector icons and neutral dark/light surfaces.
+Transfer rows show readable byte sizes and progress; cancellation remains
+available while another send operation is waiting for a receipt.
 
-## Testing
+Native file/folder pickers, drag-and-drop, searchable transfers/notifications/links,
+QR pairing, system/light/dark appearance, relay/proxy settings, autostart and
+Explorer integration are retained. The UI runs only while its window is open.
 
-The **Rune desktop preview** workflow produces an isolated ZIP with
-`conduit-rune-preview.exe`. The main **Build** workflow also compiles Rune and
-bundles it as the primary `conduit-rune.exe` alongside Nova, WinUI, daemon and
-Explorer helper. GUI-subsystem, Rust native tests, packaging, Share Target and
-installer rollback checks run in GitHub Actions.
+## Several computers and copied identities
 
-For local lightweight formatting only:
+The multi-desktop Android revision stores up to eight trusted desktop identities.
+Settings > Devices shows per-PC connection state and an explicit file/share target;
+forgetting a computer removes only that trust relationship. An old APK that has already
+overwritten its single stored pairing cannot recover the previous ID automatically:
+that computer needs to be paired again.
+
+Rune's Pairing > Start pairing displays a locally generated QR and its six-digit
+code for the temporary pairing window. Android Scan QR accepts the matching
+`conduit://pair?code=XXXXXX` payload. Do not copy `identity.bin` between PCs:
+copying the entire persisted data directory makes both installations the same
+cryptographic computer.
+
+For an already-copied installation, compare `conduit-daemon.exe pair status` on
+both PCs. If the public desktop IDs match, stop the daemon on **only the copied
+work PC**, ensure no transfers are running, and use:
 
 ```powershell
-cargo fmt --manifest-path windows/conduit-rune/Cargo.toml --all -- --check
+conduit-daemon.exe pair rekey-imported --confirm
 ```
 
-To restore the previous desktop without downgrading or touching pairing data,
-launch `conduit-nova.exe` directly from the installed Conduit directory.
-`Conduit.exe --legacy-ui` opens the original Windows Share Target host as a UI.
+The command backs up that copied installation's old identity and pairing before
+creating a distinct identity. Restart and pair the work PC again. Never run this
+repair on the original PC. The backup contains private key material: keep it
+local and do not publish it. Updates never invoke this repair automatically.
 
-The original command window flash is also fixed in Nova's retained daemon
-liveness check: it no longer shells out to Windows `tasklist.exe`.
+## Verification and delivery
+
+All formal builds and tests run on GitHub Actions, not a PC or VPS. The Rune
+workflow runs native tests, verifies the PE GUI subsystem and renders 28 synthetic
+acceptance images: seven pages/states, dark/light, and minimum/default window
+sizes. The PNGs use Rune's actual renderer, not browser screenshots or mockups.
+The Build workflow verifies native-only source contracts, full Windows packaging,
+Share Target registration, stale-frontend cleanup and identity preservation on a
+disposable runner. Preview binaries retain a distinct executable name solely for
+isolated acceptance; the production package installs `conduit-rune.exe`.
+
+Local lightweight checks only:
+
+```powershell
+cargo +1.98.0 fmt --manifest-path windows/conduit-rune/Cargo.toml --all -- --check
+./scripts/test-native-only-desktop.ps1
+./scripts/verify-version.ps1 -ExpectedVersion 0.1.15
+```
+
+Passing an earlier commit's CI does not validate a new revision. Review the new
+native screenshots before replacing the installed desktop. Preserve the prior
+verified package and data when preparing a rollback; there is no Nova fallback.
+Real dual-PC acceptance and Android signing/data-preservation remain separate
+release gates. Never uninstall the phone app merely to bypass a signer mismatch.

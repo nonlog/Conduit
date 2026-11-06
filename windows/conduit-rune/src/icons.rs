@@ -4,6 +4,13 @@
 
 use rune::Icon;
 
+/// Shared native brand mark; theme color is supplied by Rune, never a bitmap tile.
+pub static CONDUIT: Icon = Icon {
+    name: "conduit-link-mark",
+    view: 24.0,
+    body: include_str!("../../conduit-daemon/assets/conduit-mark.fragment.svg"),
+};
+
 macro_rules! lucide {
     ($name:ident, $label:literal, $body:literal) => {
         pub static $name: Icon = Icon {
@@ -55,39 +62,14 @@ lucide!(
     r#"<rect x="5" y="2" width="14" height="20" rx="2" fill="none" stroke="currentColor" stroke-width="1.75"/><path d="M11 18h2" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>"#
 );
 lucide!(
-    ACTIVITY,
-    "lucide-chart-no-axes-column",
-    r#"<path d="M4 20v-7M10 20V4M16 20v-11M22 20v-5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>"#
-);
-lucide!(
     SEND,
     "lucide-send",
     r#"<path d="m22 2-7 20-4-9-9-4 20-7ZM22 2 11 13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>"#
 );
 lucide!(
-    CHEVRON_RIGHT,
-    "lucide-chevron-right",
-    r#"<path d="m9 18 6-6-6-6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>"#
-);
-lucide!(
     ARROW_UP_RIGHT,
     "lucide-arrow-up-right",
     r#"<path d="M7 17 17 7M7 7h10v10" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>"#
-);
-lucide!(
-    SHIELD_CHECK,
-    "lucide-shield-check",
-    r#"<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/><path d="m9 12 2 2 4-4" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>"#
-);
-lucide!(
-    ARROWS_LEFT_RIGHT,
-    "lucide-arrow-left-right",
-    r#"<path d="M8 3 4 7l4 4M4 7h16M16 21l4-4-4-4M20 17H4" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>"#
-);
-lucide!(
-    CIRCLE,
-    "lucide-circle",
-    r#"<circle cx="12" cy="12" r="7" fill="currentColor"/>"#
 );
 lucide!(
     CHECK,
@@ -100,13 +82,71 @@ lucide!(
     r#"<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/>"#
 );
 
+lucide!(
+    FILE_IMAGE,
+    "file-image",
+    r#"<rect x="3" y="3" width="18" height="18" rx="3" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="8" cy="8" r="1.5" fill="currentColor"/><path d="m3 16 5-5 4 4 3-3 6 6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>"#
+);
+lucide!(
+    FILE_ARCHIVE,
+    "file-archive",
+    r#"<rect x="4" y="3" width="16" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 3v11m-2 3h4v3h-4zM10 6h4m-4 4h4" fill="none" stroke="currentColor" stroke-width="1.7"/>"#
+);
+lucide!(
+    FILE_VIDEO,
+    "file-video",
+    r#"<rect x="3" y="4" width="18" height="16" rx="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="m10 8 6 4-6 4z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>"#
+);
+lucide!(
+    FILE_AUDIO,
+    "file-audio",
+    r#"<path d="M9 18V5l11-2v13M9 9l11-2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><ellipse cx="6" cy="18" rx="3" ry="3" fill="none" stroke="currentColor" stroke-width="1.7"/><ellipse cx="17" cy="16" rx="3" ry="3" fill="none" stroke="currentColor" stroke-width="1.7"/>"#
+);
+lucide!(
+    FILE_TEXT,
+    "file-text",
+    r#"<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6zm0 0v6h6M8 13h8M8 17h5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#
+);
+lucide!(
+    CLOSE,
+    "close",
+    r#"<path d="m6 6 12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>"#
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn native_brand_mark_keeps_both_link_interiors_hollow() {
+        // Rune's glyph parser does not inherit attributes from SVG groups.
+        // Compare actual coverage inside each loop, not just nonempty pixels.
+        let alpha = rune::text::icon_coverage(&CONDUIT, 48);
+        assert_eq!(alpha.len(), 48 * 48);
+        assert!(alpha.iter().any(|value| *value > 128));
+        for (x, y) in [(32, 14), (16, 34)] {
+            assert!(alpha[y * 48 + x] < 32, "link interior is filled at {x},{y}");
+        }
+    }
+
+    #[test]
     fn every_sidebar_icon_has_visible_strokes() {
-        for icon in [&HOME, &TRANSFER, &BELL, &LINK, &QR_CODE, &SETTINGS, &INFO] {
+        for icon in [
+            &CONDUIT,
+            &HOME,
+            &TRANSFER,
+            &BELL,
+            &LINK,
+            &QR_CODE,
+            &SETTINGS,
+            &INFO,
+            &FILE_IMAGE,
+            &FILE_ARCHIVE,
+            &FILE_VIDEO,
+            &FILE_AUDIO,
+            &FILE_TEXT,
+            &CLOSE,
+        ] {
             assert!(
                 rune::text::icon_coverage(icon, 24)
                     .iter()

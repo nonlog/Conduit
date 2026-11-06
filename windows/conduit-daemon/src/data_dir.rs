@@ -32,8 +32,8 @@ pub fn resolve() -> Result<PathBuf> {
     // The independent Tauri NSIS preview stages this executable under
     // <install>/resources/. Its install directory may be protected and can be
     // replaced during upgrades, so never keep identity, history or config
-    // beside that bundled binary. Match the Tauri bridge's non-Scoop fallback.
-    if tauri_preview_exe(parent).is_some() {
+    // beside that bundled binary. Keep this read-only legacy layout check solely to preserve its data.
+    if legacy_preview_exe(parent).is_some() {
         let local = std::env::var_os("LOCALAPPDATA")
             .filter(|value| !value.is_empty())
             .context("LOCALAPPDATA is required for a standalone Tauri desktop installation")?;
@@ -53,7 +53,7 @@ pub fn resolve() -> Result<PathBuf> {
 /// The bundled daemon and the UI have separate binaries, but must share one
 /// persistent user data directory. Recognize only the explicitly packaged
 /// preview layout; leave ordinary portable and Scoop installations unchanged.
-pub(crate) fn tauri_preview_exe(daemon_dir: &Path) -> Option<PathBuf> {
+fn legacy_preview_exe(daemon_dir: &Path) -> Option<PathBuf> {
     if !component_eq(daemon_dir, "resources") {
         return None;
     }
@@ -195,7 +195,7 @@ mod tests {
     }
 
     #[test]
-    fn bundled_tauri_layout_is_detected_without_touching_user_data() {
+    fn retired_preview_layout_is_detected_only_to_preserve_user_data() {
         let dir = std::env::temp_dir().join(format!(
             "conduit-tauri-layout-{}-{}",
             std::process::id(),
@@ -206,13 +206,13 @@ mod tests {
         ));
         let resources = dir.join("resources");
         std::fs::create_dir_all(&resources).unwrap();
-        assert!(tauri_preview_exe(&resources).is_none());
+        assert!(legacy_preview_exe(&resources).is_none());
         std::fs::write(dir.join("conduit-tauri-preview.exe"), []).unwrap();
         assert_eq!(
-            tauri_preview_exe(&resources),
+            legacy_preview_exe(&resources),
             Some(dir.join("conduit-tauri-preview.exe"))
         );
-        assert!(tauri_preview_exe(&dir).is_none());
+        assert!(legacy_preview_exe(&dir).is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

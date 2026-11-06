@@ -3,6 +3,13 @@
 package com.conduit.sync
 
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.LocalIndication
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.selection.selectable
@@ -12,10 +19,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -26,7 +36,7 @@ import androidx.compose.ui.unit.dp
 
 internal object ExpressiveLayout {
     val pageInset = 16.dp
-    val cardCorner = 28.dp
+    val cardCorner = 20.dp
     val cardSpacing = 10.dp
     val dockHeight = 62.dp
 }
@@ -69,8 +79,8 @@ internal fun ExpressiveSectionTitle(title: String, detail: String? = null) {
 @Composable
 internal fun ExpressiveTopBar(title: String, action: (() -> Unit)? = null, back: (() -> Unit)? = null) {
     Row(
-        Modifier.fillMaxWidth().statusBarsPadding().heightIn(min = 84.dp)
-            .padding(horizontal = 16.dp, vertical = 16.dp),
+        Modifier.fillMaxWidth().statusBarsPadding().heightIn(min = 72.dp)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -110,7 +120,7 @@ internal fun ExpressiveNavigationDock(
     ) {
         Surface(
             modifier = Modifier.widthIn(max = 320.dp).fillMaxWidth(),
-            shape = CircleShape,
+            shape = RoundedCornerShape(24.dp),
             color = MaterialTheme.colorScheme.surfaceContainer,
             shadowElevation = 6.dp,
         ) {
@@ -118,11 +128,11 @@ internal fun ExpressiveNavigationDock(
                 val cell = maxWidth / 4
                 val offset by animateDpAsState(
                     targetValue = cell * selectedIndex,
-                    animationSpec = MaterialTheme.motionScheme.defaultSpatialSpec(),
+                    animationSpec = if (LocalConduitMotion.current) MaterialTheme.motionScheme.defaultSpatialSpec() else snap(),
                     label = "Navigation selection",
                 )
-                Box(Modifier.offset(x = offset).width(cell).fillMaxHeight()
-                    .clip(CircleShape).background(MaterialTheme.colorScheme.surfaceContainerHighest))
+                Box(Modifier.offset(x = offset).testTag("navigation-indicator").width(cell).fillMaxHeight()
+                    .clip(RoundedCornerShape(18.dp)).background(MaterialTheme.colorScheme.surfaceContainerHighest))
                 Row(Modifier.fillMaxSize().selectableGroup()) {
                     DockItem("Home", R.drawable.ic_dashboard, selectedIndex == 0, onHome, Modifier.weight(1f))
                     DockItem("Transfers", R.drawable.ic_transfer, selectedIndex == 1, onTransfers, Modifier.weight(1f))
@@ -136,15 +146,26 @@ internal fun ExpressiveNavigationDock(
 
 @Composable
 private fun DockItem(label: String, icon: Int, selected: Boolean, onClick: () -> Unit, modifier: Modifier) {
-    val color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+    val interactive = remember { MutableInteractionSource() }
+    val pressed by interactive.collectIsPressedAsState()
+    val animated = LocalConduitMotion.current
+    val color by animateColorAsState(
+        if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+        animationSpec = if (animated) tween(ConduitMotion.feedbackMillis) else snap(), label = "Navigation ink",
+    )
+    val scale by animateFloatAsState(
+        if (pressed) 0.88f else if (selected) 1.08f else 1f,
+        animationSpec = if (animated) MaterialTheme.motionScheme.fastSpatialSpec() else snap(), label = "Navigation glyph",
+    )
     Column(
         modifier.fillMaxHeight().clip(CircleShape)
-            .selectable(selected = selected, onClick = onClick, role = Role.Tab)
+            .selectable(selected = selected, onClick = onClick, role = Role.Tab,
+                interactionSource = interactive, indication = LocalIndication.current)
             .semantics(mergeDescendants = true) { contentDescription = label },
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Icon(painterResource(icon), null, Modifier.size(24.dp), tint = color)
+        Icon(painterResource(icon), null, Modifier.size(24.dp).graphicsLayer { scaleX = scale; scaleY = scale }, tint = color)
         Spacer(Modifier.height(2.dp))
         Text(label, style = MaterialTheme.typography.labelMedium, color = color,
             fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)

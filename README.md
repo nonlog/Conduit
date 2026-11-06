@@ -36,7 +36,7 @@ So the hard requirements are non-functional:
 | Component | Language | Runs on |
 |---|---|---|
 | `android/` | Kotlin | phone |
-| `windows/` | Rust daemon + Tauri 2/React Nova; retained Uno/WinUI | Windows (light resident daemon, on-demand Nova desktop; native WinUI Share Target and rollback host) |
+| `windows/` | Rust daemon + native Rust/Rune desktop | Windows (light resident daemon, on-demand Rune UI; retained WinUI compatibility host only for Windows Share Target) |
 | `relay/` | Rust | a VPS, for when LAN is unavailable |
 | `proto/` | protobuf | wire contract, single source of truth |
 
@@ -56,12 +56,7 @@ The release has working clipboard, notification, file-transfer, capture-toast, w
 pairing and Relay paths. The remaining evidence gates are deliberately separate from packaging:
 
 The next Windows desktop package selects the native Rune UI (`conduit-rune.exe`)
-for tray and Start-menu launches. The previous Nova UI (`conduit-nova.exe`)
-remains as a direct rollback, and `Conduit.exe` continues to own Windows Share
-Target activation and explicit `--legacy-ui` rollback. The original daemon,
-pairing identity, file history, Explorer helper and sparse MSIX identity remain
-compatible. Rune is pinned to a tested source revision rather than an
-unreleased floating dependency.
+for tray and Start-menu launches. Nova/Tauri is retired: there is no WebView frontend or alternative desktop button.
 
 - M0 still needs a true same-LAN 48-hour endurance run with balanced lifecycle/resource counts.
 - M2 still needs a longer Wi-Fi/cellular/hotspot and Relay re-parking campaign.

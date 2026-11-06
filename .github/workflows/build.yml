@@ -16,7 +16,9 @@ permissions:
 
 concurrency:
   group: conduit-build-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  # Keep an already compiling native package while Android/UI fixes queue the next revision.
+  # GitHub retains only the newest pending run in this group.
+  cancel-in-progress: false
 
 jobs:
   # Only run the emulator-backed visual regression suite when explicitly dispatched
@@ -105,7 +107,39 @@ jobs:
       - name: Test and build Android debug APK
         working-directory: android
         shell: bash
-        run: ./gradlew --no-daemon --stacktrace testDebugUnitTest assembleDebug
+        run: |
+          python3 ../scripts/sync-android-brand.py --check
+          ./gradlew --no-daemon --stacktrace testDebugUnitTest assembleDebug
+
+      - name: Prepare persistent signer for tagged release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          CONDUIT_ANDROID_KEYSTORE_BASE64: ${{ secrets.CONDUIT_ANDROID_KEYSTORE_BASE64 }}
+        run: bash scripts/prepare-android-signing.sh
+
+      - name: Build and verify signed optimized Android release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          CONDUIT_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.CONDUIT_ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          (cd android && ./gradlew --no-daemon --stacktrace assembleRelease)
+          bash scripts/verify-android-signer.sh android/app/build/outputs/apk/release/app-release.apk
+          bash scripts/verify-android-entrypoints.sh android/app/build/outputs/apk/release/app-release.apk
+
+      - name: Remove private runner signing material
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/conduit-release.p12"
+          echo 'CONDUIT_ANDROID_KEYSTORE=' >> "$GITHUB_ENV"
+
+      - name: Upload signed Android release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v7
+        with:
+          name: conduit-android-release
+          path: android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 3
 
       - name: Upload Android artifact
         uses: actions/upload-artifact@v7
@@ -122,6 +156,29 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+
+      - name: Parse Windows release PowerShell scripts before compiling
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($file in @(
+            'scripts/test-stable-desktop-install.ps1',
+            'scripts/test-stable-desktop-package.ps1',
+            'scripts/test-daemon-exit.ps1',
+            'scripts/verify-version.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path -LiteralPath $file).Path,
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error $_.Message }
+              throw "PowerShell syntax error in $file"
+            }
+          }
 
       - name: Set up .NET 10
         uses: actions/setup-dotnet@v6
@@ -164,6 +221,10 @@ jobs:
             Copy-Item "windows/conduit-daemon/assets/$name" "windows/conduit-ui/Assets/$name" -Force
           }
 
+      - name: Verify native-only desktop sources
+        shell: pwsh
+        run: ./scripts/test-native-only-desktop.ps1
+
       - name: Check Rust formatting
         shell: pwsh
         run: cargo fmt --check
@@ -197,61 +258,16 @@ jobs:
             throw 'Conduit Rune must be a Windows GUI process (no console window)'
           }
 
-      - name: Set up Bun for stable Nova desktop
-        uses: oven-sh/setup-bun@v2
-
-      - name: Check Nova desktop and native bridge
-        working-directory: windows/conduit-tauri
-        shell: pwsh
-        run: |
-          bun install --frozen-lockfile
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          bun run check
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          bun run lint
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          bun test
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          bun run smoke
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Stage original daemon and icons for Nova
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $resources = 'windows/conduit-tauri/src-tauri/resources'
-          foreach ($name in @('conduit-daemon.exe', 'conduit-send.exe')) {
-            Copy-Item -LiteralPath (Join-Path 'target/release' $name) -Destination (Join-Path $resources $name)
-          }
-          foreach ($name in @('conduit-explorer-light.ico', 'conduit-explorer-dark.ico', 'conduit-icon-light.ico', 'conduit-icon-dark.ico')) {
-            Copy-Item -LiteralPath (Join-Path 'windows/conduit-daemon/assets' $name) -Destination (Join-Path $resources $name)
-          }
-
-      - name: Verify and build stable Tauri Nova GUI
-        working-directory: windows/conduit-tauri
-        shell: pwsh
-        run: |
-          cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test --manifest-path src-tauri/Cargo.toml --locked
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          bun run tauri build --ci --config src-tauri/tauri.production.conf.json --no-bundle
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $binary = 'src-tauri/target/release/conduit-tauri-preview.exe'
-          if (-not (Test-Path -LiteralPath $binary -PathType Leaf) -or (Get-Item $binary).Length -lt 1MB) {
-            throw 'Stable Nova GUI executable was not built'
-          }
-
       - name: Verify desktop transfer layout does not pin completed history
         shell: pwsh
         run: ./tools/test-desktop-transfer-layout.ps1
 
-      - name: Restore Uno / WinUI desktop
+      - name: Restore Windows Share Target compatibility host
         working-directory: windows/conduit-ui
         shell: pwsh
         run: dotnet restore Conduit.csproj -r win-x64 -p:Configuration=Release -p:PublishReadyToRun=true
 
-      - name: Publish Uno / WinUI desktop
+      - name: Publish Windows Share Target compatibility host
         working-directory: windows/conduit-ui
         shell: pwsh
         run: >-
@@ -281,11 +297,10 @@ jobs:
           -RustReleaseDir ./target/release
           -ShareTargetPackage ./artifacts/Conduit.ShareTarget.msix
           -ShareTargetCertificate ./artifacts/Conduit.ShareTarget.cer
-          -NovaExecutable ./windows/conduit-tauri/src-tauri/target/release/conduit-tauri-preview.exe
           -RuneExecutable ./windows/conduit-rune/target/release/conduit-rune-preview.exe
           -OutputZip ./artifacts/Conduit-windows-x64.zip
 
-      - name: Verify Rune default desktop, Nova fallback and Share Target
+      - name: Verify native Rune desktop and Share Target
         shell: pwsh
         run: ./scripts/test-stable-desktop-package.ps1 -PackageZip ./artifacts/Conduit-windows-x64.zip
 
@@ -293,6 +308,11 @@ jobs:
         shell: pwsh
         timeout-minutes: 10
         run: ./scripts/test-stable-desktop-install.ps1 -PackageZip ./artifacts/Conduit-windows-x64.zip
+
+      - name: Verify actual tray Exit shuts down and releases the daemon
+        shell: pwsh
+        timeout-minutes: 4
+        run: ./scripts/test-daemon-exit.ps1 -PackageZip ./artifacts/Conduit-windows-x64.zip
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v7
@@ -358,7 +378,7 @@ jobs:
       - name: Download Android build
         uses: actions/download-artifact@v8
         with:
-          name: conduit-android-debug
+          name: conduit-android-release
           path: dist/android
 
       - name: Download Windows build
@@ -379,7 +399,7 @@ jobs:
           $version = '${{ github.ref_name }}'.TrimStart('v')
           ./scripts/verify-version.ps1 -ExpectedVersion $version
           New-Item -ItemType Directory -Force -Path dist/release | Out-Null
-          Copy-Item dist/android/app-debug.apk "dist/release/Conduit-$version-android-debug.apk"
+          Copy-Item dist/android/app-release.apk "dist/release/Conduit-$version-android.apk"
           Copy-Item dist/windows/Conduit-windows-x64.zip "dist/release/Conduit-$version-windows-x64.zip"
           Copy-Item dist/relay/conduit-relay-linux-x64 "dist/release/Conduit-$version-relay-linux-x64"
 

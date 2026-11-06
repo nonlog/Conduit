@@ -33,6 +33,9 @@ try {
     [IO.File]::WriteAllBytes($identity, [byte[]](9, 8, 7, 6, 5, 4, 3, 2))
     $before = (Get-FileHash -LiteralPath $identity -Algorithm SHA256).Hash
 
+    # Simulate an in-place upgrade over the retired frontend.
+    $retired = Join-Path $install 'conduit-nova.exe'
+    [IO.File]::WriteAllText($retired, 'retired frontend fixture')
     $installAttempted = $true
     $results = @(& (Join-Path $install 'tools/install-windows.ps1') -SourceDir $install -InstallDir $install -NoStart)
     $result = $results | Where-Object { $_ -is [pscustomobject] } | Select-Object -Last 1
@@ -45,17 +48,27 @@ try {
         throw 'Stable installer modified persisted pairing identity'
     }
 
+    if (Test-Path -LiteralPath $retired) { throw 'In-place upgrade kept the retired Nova executable' }
+
     $shortcutPath = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Microsoft\Windows\Start Menu\Programs\Conduit.lnk'
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut($shortcutPath)
     if (-not $shortcut.TargetPath.EndsWith('conduit-rune.exe', [StringComparison]::OrdinalIgnoreCase)) {
         throw "Stable shortcut did not select Rune: $($shortcut.TargetPath)"
     }
-    $shareVersion = Get-ShareVersion
-    if ($shareVersion -ne '0.1.15.0') {
-        throw "Share Target sparse MSIX registration not upgraded: $shareVersion"
+    # Read the expected version from the checked-in native Share Target manifest.
+    # This assertion must advance with every release; never pin a version literal.
+    $shareManifestPath = Join-Path $PSScriptRoot '..\windows\conduit-ui\ShareTargetPackage\AppxManifest.xml'
+    [xml]$expectedManifest = Get-Content -LiteralPath $shareManifestPath -Raw
+    $expectedShareVersion = [string]$expectedManifest.Package.Identity.Version
+    if ($expectedShareVersion -notmatch '^\d+\.\d+\.\d+\.\d+$') {
+        throw "Invalid expected Share Target package version: $expectedShareVersion"
     }
-    Write-Output 'STABLE_INSTALL_SMOKE_PASSED: Rune shortcut, Nova fallback, Share Target registration, identity preservation, daemon not started'
+    $shareVersion = Get-ShareVersion
+    if ($shareVersion -ne $expectedShareVersion) {
+        throw "Share Target registration mismatch: expected $expectedShareVersion, got $shareVersion"
+    }
+    Write-Output 'STABLE_INSTALL_SMOKE_PASSED: Rune shortcut, retired frontend removed, Share Target registration, identity preservation, daemon not started'
 }
 finally {
     try {

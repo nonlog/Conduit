@@ -59,12 +59,7 @@ $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $aumidKey = 'HKCU:\Software\Classes\AppUserModelId\Conduit.Desktop'
 $explorerVerbKey = 'Registry::HKEY_CURRENT_USER\Software\Classes\*\shell\Conduit.SendToPhone'
 
-$controlSource = @('Conduit.exe', 'conduit-control.exe') |
-    ForEach-Object { Join-Path $source $_ } |
-    Where-Object { Test-Path $_ } |
-    Select-Object -First 1
-if (-not $controlSource) { throw "Missing Conduit.exe/conduit-control.exe in $source" }
-$required = @('conduit-daemon.exe', 'conduit-send.exe')
+$required = @('conduit-rune.exe', 'conduit-daemon.exe', 'conduit-send.exe')
 foreach ($name in $required) {
     if (-not (Test-Path (Join-Path $source $name))) {
         throw "Missing $name in $source"
@@ -85,7 +80,7 @@ foreach ($name in $requiredIconAssets) {
 $hadAutostart = $null -ne (Get-ItemProperty -Path $runKey -Name Conduit -ErrorAction SilentlyContinue).Conduit
 $hadExplorerIntegration = Test-Path -LiteralPath $explorerVerbKey
 
-$running = @(Get-Process conduit-daemon, Conduit, conduit-nova, conduit-rune -ErrorAction SilentlyContinue)
+$running = @(Get-Process conduit-daemon, Conduit, conduit-nova, conduit-tauri-preview, conduit-rune -ErrorAction SilentlyContinue)
 if ($running.Count -gt 0) {
     $running | Stop-Process -Force -ErrorAction SilentlyContinue
     # Stop-Process requests termination but the executable image can stay mapped for a short
@@ -125,9 +120,7 @@ if ($hasPublishedUi) {
             Copy-Item -Force $from $to
         }
     }
-    if (-not [string]::Equals((Resolve-Path $controlSource).Path, (Join-Path $installDir 'Conduit.exe'), [StringComparison]::OrdinalIgnoreCase)) {
-        Copy-Item -Force $controlSource (Join-Path $installDir 'Conduit.exe')
-    }
+
 }
 if ($hasPublishedUi) {
     foreach ($name in @('Conduit.dll', 'Conduit.pri', 'resources.pri')) {
@@ -333,29 +326,24 @@ if (-not ('ConduitShortcut' -as [type])) {
     Add-Type -TypeDefinition $shortcutSource -Language CSharp
 }
 
-$controlExe = Join-Path $installDir 'Conduit.exe'
-$novaExe = Join-Path $installDir 'conduit-nova.exe'
 $runeExe = Join-Path $installDir 'conduit-rune.exe'
-if (Test-Path -LiteralPath $novaExe -PathType Leaf) {
-    # WinUI remains installed for Windows Share Target and rollback, but is no
-    # longer the default Start menu or tray control UI.
-    $controlExe = $novaExe
-    if ($hasPublishedUi -and (Test-Path -LiteralPath (Join-Path $source 'conduit-nova.exe') -PathType Leaf)) {
-        if ((Get-FileHash -LiteralPath (Join-Path $source 'conduit-nova.exe') -Algorithm SHA256).Hash -ne
-            (Get-FileHash -LiteralPath $novaExe -Algorithm SHA256).Hash) {
-            throw 'Nova desktop payload hash mismatch after installation'
-        }
+if (-not (Test-Path -LiteralPath $runeExe -PathType Leaf)) {
+    throw 'Native Rune desktop missing; refusing an incomplete installation'
+}
+$controlExe = $runeExe
+if ($hasPublishedUi -and (Test-Path -LiteralPath (Join-Path $source 'conduit-rune.exe') -PathType Leaf)) {
+    if ((Get-FileHash -LiteralPath (Join-Path $source 'conduit-rune.exe') -Algorithm SHA256).Hash -ne
+        (Get-FileHash -LiteralPath $runeExe -Algorithm SHA256).Hash) {
+        throw 'Rune desktop payload hash mismatch after installation'
     }
 }
-if (Test-Path -LiteralPath $runeExe -PathType Leaf) {
-    # The primary control UI is Rune. Nova remains available for a manual
-    # rollback and WinUI retains the Windows Share Target MSIX identity.
-    $controlExe = $runeExe
-    if ($hasPublishedUi -and (Test-Path -LiteralPath (Join-Path $source 'conduit-rune.exe') -PathType Leaf)) {
-        if ((Get-FileHash -LiteralPath (Join-Path $source 'conduit-rune.exe') -Algorithm SHA256).Hash -ne
-            (Get-FileHash -LiteralPath $runeExe -Algorithm SHA256).Hash) {
-            throw 'Rune desktop payload hash mismatch after installation'
-        }
+# An overlay upgrade does not remove old payload automatically. Only these exact
+# retired executable names are removed; data/, identity, history and the Share
+# Target compatibility host are never part of this cleanup.
+foreach ($retiredName in @('conduit-nova.exe', 'conduit-tauri-preview.exe')) {
+    $retired = Join-Path $installDir $retiredName
+    if (Test-Path -LiteralPath $retired -PathType Leaf) {
+        Remove-Item -LiteralPath $retired -Force
     }
 }
 $daemonExe = Join-Path $installDir 'conduit-daemon.exe'
@@ -428,7 +416,7 @@ if (-not $NoStart) {
     InstallDir = $installDir
     Shortcut = $shortcut
     AppUserModelId = 'Conduit.Desktop'
-    DefaultDesktop = $(if ($controlExe -eq $runeExe) { 'Rune' } elseif ($controlExe -eq $novaExe) { 'Nova' } else { 'WinUI' })
+    DefaultDesktop = 'Rune'
     ShareTargetRegistered = $shareTargetRegistered
     LanFirewallConfigured = $lanFirewallConfigured
     AutostartPreserved = $hadAutostart

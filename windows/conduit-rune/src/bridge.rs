@@ -1,6 +1,7 @@
 //! Boundary between a short-lived native UI and the already-resident Conduit daemon.
 //! Never opens identity.bin for writing, never implements Noise or a second transport.
 
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs::{self, File};
@@ -10,6 +11,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+// Used only before the resident daemon publishes effective-settings.txt. A
+// missing override must never be confused with the explicit `relays=` off switch.
+pub const DEFAULT_RELAYS: &str = "conduit-us.414222.xyz:41113;conduit-wa.414222.xyz:41113;conduit-tyo.414222.xyz:41113;conduit-jp.414222.xyz:41113";
+pub const DEFAULT_RETENTION_DAYS: u32 = 30;
+
 #[derive(Clone, Default, PartialEq, Debug)]
 pub struct Connection {
     pub state: String,
@@ -17,6 +23,7 @@ pub struct Connection {
     pub relay: String,
     pub device: String,
     pub linked: bool,
+    pub paused: bool,
 }
 
 #[derive(Clone, Default, PartialEq, Debug)]
@@ -30,6 +37,10 @@ pub struct Pairing {
 #[derive(Clone, Default, PartialEq, Debug)]
 pub struct Settings {
     pub relays: Vec<String>,
+    pub relay_mode: String,
+    pub effective_relays: Vec<String>,
+    pub relays_source: String,
+    pub notification_retention_days: u32,
     pub proxy_mode: String,
     pub manual_proxy: String,
     pub receive_dir: String,
@@ -41,6 +52,8 @@ pub struct Settings {
 #[derive(Clone, Default, PartialEq, Debug)]
 pub struct Notification {
     pub id: String,
+    pub timestamp_ms: u64,
+    pub package: String,
     pub app: String,
     pub title: String,
     pub body: String,
@@ -86,6 +99,8 @@ pub const OBSERVED_FILES: &[&str] = &[
     "notifications.tsv",
     "shared-links.tsv",
     "transfers.tsv",
+    "link-intent.txt",
+    "effective-settings.txt",
 ];
 
 pub fn wallpaper_bytes() -> Option<Vec<u8>> {
@@ -94,7 +109,117 @@ pub fn wallpaper_bytes() -> Option<Vec<u8>> {
     if len == 0 || len > 1024 * 1024 {
         return None;
     }
-    fs::read(path).ok()
+    let mut bytes = Vec::with_capacity(len as usize);
+    File::open(path)
+        .ok()?
+        .take(1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() <= 1024 * 1024 && bytes.starts_with(&[0xff, 0xd8, 0xff])).then_some(bytes)
+}
+
+pub fn icon_cache_name(package: &str) -> String {
+    // Match toast::digest: eight SHA-256 bytes, not the entire hash and never
+    // the user-supplied package name used as a filesystem path.
+    Sha256::digest(package.as_bytes())[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+        + ".png"
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IconStamp {
+    pub size: u64,
+    pub modified: Option<SystemTime>,
+}
+
+pub fn notification_icon_stamp(package: &str) -> Option<IconStamp> {
+    if package.is_empty() || package.len() > 512 {
+        return None;
+    }
+    let metadata = fs::metadata(data_dir().join("icons").join(icon_cache_name(package))).ok()?;
+    (metadata.is_file() && (33..=256 * 1024).contains(&metadata.len())).then_some(IconStamp {
+        size: metadata.len(),
+        modified: metadata.modified().ok(),
+    })
+}
+
+fn small_png(bytes: &[u8]) -> bool {
+    if bytes.len() < 33 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") || &bytes[12..16] != b"IHDR" {
+        return false;
+    }
+    let width = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
+    let height = u32::from_be_bytes(bytes[20..24].try_into().unwrap());
+    (1..=512).contains(&width) && (1..=512).contains(&height)
+}
+
+pub fn notification_icon_bytes(package: &str) -> Option<Vec<u8>> {
+    let stamp = notification_icon_stamp(package)?;
+    let file = File::open(data_dir().join("icons").join(icon_cache_name(package))).ok()?;
+    let mut bytes = Vec::with_capacity(stamp.size as usize);
+    file.take(256 * 1024 + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() <= 256 * 1024 && small_png(&bytes)).then_some(bytes)
+}
+
+pub fn split_relays(value: &str) -> Vec<String> {
+    value
+        .split([';', '\r', '\n', ','])
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn relay_preferences(config: &BTreeMap<String, String>) -> (Vec<String>, String) {
+    match config.get("relays") {
+        None => (split_relays(DEFAULT_RELAYS), "default".into()),
+        Some(value) if value.trim().is_empty() => (Vec::new(), "off".into()),
+        Some(value) => (split_relays(value), "custom".into()),
+    }
+}
+
+fn parse_notification(line: &str) -> Option<Notification> {
+    let parts: Vec<_> = line.splitn(6, '\t').collect();
+    if parts.len() != 6 {
+        return None;
+    }
+    let timestamp_ms = parts[0].parse::<u64>().ok()?;
+    let digest = Sha256::digest(line.as_bytes());
+    let id = digest[..12]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    Some(Notification {
+        id,
+        timestamp_ms,
+        package: parts[2].to_owned(),
+        app: if parts[3].is_empty() {
+            parts[2]
+        } else {
+            parts[3]
+        }
+        .to_owned(),
+        title: if parts[4].is_empty() {
+            "Notification"
+        } else {
+            parts[4]
+        }
+        .to_owned(),
+        body: parts[5].to_owned(),
+    })
+}
+
+fn parse_notifications(value: &str) -> Vec<Notification> {
+    let mut seen = BTreeSet::new();
+    let mut records: Vec<_> = value
+        .lines()
+        .take(100)
+        .filter_map(parse_notification)
+        .filter(|record| seen.insert(record.id.clone()))
+        .collect();
+    records.sort_by_key(|record| std::cmp::Reverse(record.timestamp_ms));
+    records
 }
 
 fn bounded(path: &Path, max: u64) -> String {
@@ -268,6 +393,53 @@ pub fn save_theme_preference(theme: &str) -> Result<(), String> {
     fs::write(dir.join("rune-theme.txt"), theme).map_err(|e| e.to_string())
 }
 
+pub fn material_preference() -> crate::window_material::Material {
+    crate::window_material::Material::parse(&bounded(&data_dir().join("rune-material.txt"), 32))
+}
+
+fn normalized_transparency(value: &str) -> u8 {
+    value
+        .trim()
+        .parse::<u8>()
+        .ok()
+        .filter(|percent| *percent <= 100)
+        .unwrap_or(30)
+}
+
+pub fn transparency_preference() -> u8 {
+    normalized_transparency(&bounded(&data_dir().join("rune-transparency.txt"), 16))
+}
+
+pub fn save_transparency_preference(percent: u8) -> Result<(), String> {
+    if percent > 100 {
+        return Err("Transparency must be between 0 and 100 percent".into());
+    }
+    let dir = data_dir();
+    fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    fs::write(dir.join("rune-transparency.txt"), percent.to_string())
+        .map_err(|error| error.to_string())
+}
+
+pub fn save_material_preference(material: crate::window_material::Material) -> Result<(), String> {
+    let dir = data_dir();
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    fs::write(dir.join("rune-material.txt"), material.name()).map_err(|e| e.to_string())
+}
+
+pub fn smooth_scroll_preference() -> bool {
+    bounded(&data_dir().join("rune-smooth-scroll.txt"), 16).trim() != "false"
+}
+
+pub fn save_smooth_scroll_preference(enabled: bool) -> Result<(), String> {
+    let dir = data_dir();
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    fs::write(
+        dir.join("rune-smooth-scroll.txt"),
+        if enabled { "true" } else { "false" },
+    )
+    .map_err(|e| e.to_string())
+}
+
 pub fn daemon_path() -> Option<PathBuf> {
     if let Some(path) = env::var_os("CONDUIT_DAEMON_PATH").map(PathBuf::from) {
         if path.is_file() {
@@ -325,6 +497,20 @@ pub fn snapshot() -> Snapshot {
     let dir = data_dir();
     let status = kv(&dir.join("status.txt"));
     let config = kv(&dir.join("config.txt"));
+    let effective = kv(&dir.join("effective-settings.txt"));
+    let (relays, relay_mode) = relay_preferences(&config);
+    let effective_relays = effective
+        .get("relays")
+        .map(|value| split_relays(value))
+        .unwrap_or_else(|| relays.clone());
+    let relays_source = effective.get("relays_source").cloned().unwrap_or_else(|| {
+        if relay_mode == "default" {
+            "default"
+        } else {
+            "config"
+        }
+        .into()
+    });
     let pair = kv(&dir.join("pairing.txt"));
     let device = bounded(&dir.join("peer-name.txt"), 1024).trim().to_string();
     let paired = !bounded(&dir.join("peer.txt"), 512).trim().is_empty();
@@ -336,6 +522,8 @@ pub fn snapshot() -> Snapshot {
     let code = get(&pair, "code");
     let active = expiry > now && code.len() == 6 && code.bytes().all(|b| b.is_ascii_digit());
     let state = get(&status, "state");
+    let paused = get(&status, "link_enabled") == "false"
+        || bounded(&dir.join("link-intent.txt"), 32).trim() == "paused";
     let relay_proxy = get(&config, "relay_proxy");
     let (proxy_mode, manual_proxy) = match relay_proxy.as_str() {
         "system" => ("system", ""),
@@ -360,12 +548,17 @@ pub fn snapshot() -> Snapshot {
     let (autostart, explorer) = (false, false);
     Snapshot {
         connection: Connection {
-            linked: state == "linked",
-            state: match state.as_str() {
-                "linked" => "Connected",
-                "connecting" => "Connecting",
-                "retrying" => "Reconnecting",
-                _ => "Disconnected",
+            linked: !paused && state == "linked",
+            paused,
+            state: if paused {
+                "Paused"
+            } else {
+                match state.as_str() {
+                    "linked" => "Connected",
+                    "connecting" => "Connecting",
+                    "retrying" => "Reconnecting",
+                    _ => "Disconnected",
+                }
             }
             .into(),
             device: {
@@ -388,12 +581,15 @@ pub fn snapshot() -> Snapshot {
             code: if active { code } else { String::new() },
         },
         settings: Settings {
-            relays: get(&config, "relays")
-                .split([';', '\r', '\n', ','])
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned)
-                .collect(),
+            relays,
+            relay_mode,
+            effective_relays,
+            relays_source,
+            notification_retention_days: get(&config, "notification_retention_days")
+                .parse::<u32>()
+                .ok()
+                .filter(|days| *days <= 3650)
+                .unwrap_or(DEFAULT_RETENTION_DAYS),
             proxy_mode: proxy_mode.into(),
             manual_proxy: manual_proxy.into(),
             receive_dir: get(&config, "receive_dir"),
@@ -404,32 +600,10 @@ pub fn snapshot() -> Snapshot {
             autostart,
             explorer,
         },
-        notifications: bounded(&dir.join("notifications.tsv"), 2 * 1024 * 1024)
-            .lines()
-            .take(100)
-            .enumerate()
-            .filter_map(|(index, line)| {
-                let parts: Vec<_> = line.splitn(6, '\t').collect();
-                let timestamp = parts.first()?.parse::<u64>().ok()?;
-                let app = parts
-                    .get(3)
-                    .copied()
-                    .filter(|s| !s.is_empty())
-                    .or_else(|| parts.get(2).copied())
-                    .unwrap_or("Phone");
-                Some(Notification {
-                    id: format!("{timestamp}-{index}"),
-                    app: app.into(),
-                    title: parts
-                        .get(4)
-                        .copied()
-                        .filter(|s| !s.is_empty())
-                        .unwrap_or("Notification")
-                        .into(),
-                    body: parts.get(5).copied().unwrap_or("").into(),
-                })
-            })
-            .collect(),
+        notifications: parse_notifications(&bounded(
+            &dir.join("notifications.tsv"),
+            2 * 1024 * 1024,
+        )),
         links: bounded(&dir.join("shared-links.tsv"), 2 * 1024 * 1024)
             .lines()
             .take(200)
@@ -548,8 +722,12 @@ pub fn cancel_transfer(id: &str) -> Result<(), String> {
 }
 
 pub fn clear_history(kind: &str) -> Result<(), String> {
+    if kind == "notifications" {
+        // Serialize with incoming notifications and retention changes in the
+        // resident process, rather than racing its read/modify/write on disk.
+        return daemon_command(&["notifications", "clear"]).map(|_| ());
+    }
     let filename = match kind {
-        "notifications" => "notifications.tsv",
         "links" => "shared-links.tsv",
         _ => return Err("Invalid history category".into()),
     };
@@ -590,8 +768,15 @@ fn merge_config(original: &str, updates: &[(&str, String)]) -> String {
 fn validate(settings: &Settings) -> Result<(), String> {
     if settings.relays.len() > 12
         || !["system", "direct", "manual"].contains(&settings.proxy_mode.as_str())
+        || !["default", "custom", "off"].contains(&settings.relay_mode.as_str())
     {
         return Err("Invalid number of relays or proxy mode".into());
+    }
+    if settings.notification_retention_days > 3650 {
+        return Err("Notification retention must be between 0 and 3650 days".into());
+    }
+    if settings.relay_mode == "custom" && settings.relays.is_empty() {
+        return Err("Enter a custom Relay node, or explicitly choose Disabled".into());
     }
     if settings.relays.iter().any(|endpoint| {
         endpoint.len() > 255
@@ -626,8 +811,7 @@ pub fn save_settings(settings: Settings) -> Result<(), String> {
     } else {
         String::new()
     };
-    let updates = [
-        ("relays", settings.relays.join(";")),
+    let mut updates = vec![
         (
             "relay_proxy",
             match settings.proxy_mode.as_str() {
@@ -638,7 +822,34 @@ pub fn save_settings(settings: Settings) -> Result<(), String> {
         ),
         ("tray_icon", settings.tray_icon.to_string()),
         ("receive_dir", settings.receive_dir.trim().into()),
+        (
+            "notification_retention_days",
+            settings.notification_retention_days.to_string(),
+        ),
     ];
+    let original = if settings.relay_mode == "default" {
+        // An omitted key restores the daemon's defaults. A present empty value
+        // intentionally disables Relay and is not equivalent.
+        original
+            .lines()
+            .filter(|line| {
+                !line
+                    .split_once('=')
+                    .is_some_and(|(key, _)| key.trim() == "relays")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        updates.push((
+            "relays",
+            if settings.relay_mode == "off" {
+                String::new()
+            } else {
+                settings.relays.join(";")
+            },
+        ));
+        original
+    };
     let merged = merge_config(&original, &updates);
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -713,47 +924,72 @@ pub fn open_folder(kind: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-pub fn open_legacy_ui() -> Result<(), String> {
-    let path = env::current_exe()
-        .map_err(|e| e.to_string())?
-        .with_file_name("Conduit.exe");
-    if !path.is_file() {
-        return Err("The original Windows Share Target host is not installed".into());
-    }
-    let mut command = Command::new(path);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000);
-    }
-    command
-        .arg("--legacy-ui")
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| e.to_string())
-}
-
-pub fn open_nova_ui() -> Result<(), String> {
-    // The production package intentionally retains Nova as a runnable
-    // rollback, even if the Rune framework encounters a platform regression.
-    let path = env::current_exe()
-        .map_err(|e| e.to_string())?
-        .with_file_name("conduit-nova.exe");
-    if !path.is_file() {
-        return Err("Conduit Nova is not installed alongside Rune".into());
-    }
-    let mut command = Command::new(path);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000);
-    }
-    command.spawn().map(|_| ()).map_err(|e| e.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notification_history_preserves_timestamp_package_and_stable_identity() {
+        let old = "1793888400000\tkey1\tcom.example.mail\tMail\tProject update\tReview is ready";
+        let newer = "1793888460000\tkey2\tcom.example.messages\tMessages\tAvery\tThanks";
+        let initial = parse_notifications(old);
+        let next = parse_notifications(&format!("{newer}\n{old}\n{old}\nmalformed"));
+        assert_eq!(next.len(), 2);
+        assert_eq!(next[1].id, initial[0].id);
+        assert_eq!(next[1].timestamp_ms, 1_793_888_400_000);
+        assert_eq!(next[1].package, "com.example.mail");
+        assert_eq!(next[1].app, "Mail");
+        assert!(parse_notification("123\tpartial").is_none());
+    }
+
+    #[test]
+    fn cached_icon_names_match_daemon_and_never_use_untrusted_paths() {
+        assert_eq!(icon_cache_name("abc"), "ba7816bf8f01cfea.png");
+        let unsafe_name = icon_cache_name("../../some/file");
+        assert_eq!(unsafe_name.len(), 20);
+        assert!(!unsafe_name.contains('/'));
+        assert!(!unsafe_name.contains('\\'));
+        assert!(!unsafe_name.contains(".."));
+    }
+
+    #[test]
+    fn cached_images_have_bounded_decode_dimensions() {
+        let mut image = vec![0u8; 33];
+        image[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+        image[12..16].copy_from_slice(b"IHDR");
+        image[16..20].copy_from_slice(&64u32.to_be_bytes());
+        image[20..24].copy_from_slice(&64u32.to_be_bytes());
+        assert!(small_png(&image));
+        image[16..20].copy_from_slice(&65535u32.to_be_bytes());
+        assert!(!small_png(&image));
+        assert!(!small_png(&[]));
+    }
+
+    #[test]
+    fn missing_relays_shows_defaults_but_explicit_empty_is_disabled() {
+        let mut config = BTreeMap::new();
+        let (nodes, mode) = relay_preferences(&config);
+        assert_eq!(mode, "default");
+        assert_eq!(nodes.len(), 4);
+        assert!(nodes[0].starts_with("conduit-us."));
+        config.insert("relays".into(), String::new());
+        assert_eq!(relay_preferences(&config), (vec![], "off".into()));
+        config.insert("relays".into(), "relay.example.org:41113".into());
+        assert_eq!(
+            relay_preferences(&config),
+            (vec!["relay.example.org:41113".into()], "custom".into())
+        );
+    }
+
+    #[test]
+    fn transparency_preferences_preserve_both_endpoints_and_reject_garbage() {
+        assert_eq!(normalized_transparency("0"), 0);
+        assert_eq!(normalized_transparency("100"), 100);
+        assert_eq!(normalized_transparency("42\n"), 42);
+        for invalid in ["", "-1", "101", "9999999", "NaN"] {
+            assert_eq!(normalized_transparency(invalid), 30);
+        }
+    }
 
     #[test]
     fn theme_default_is_dark_without_overriding_user_choice() {

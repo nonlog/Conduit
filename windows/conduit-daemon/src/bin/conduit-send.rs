@@ -162,35 +162,9 @@ fn show_in_control_ui(message: &str) {
 }
 
 fn control_ui_path(helper: &Path) -> PathBuf {
-    let legacy = helper.with_file_name("Conduit.exe");
-    // Explorer errors belong in the active primary GUI, not the WinUI
-    // Share Target compatibility host.
-    let rune = helper.with_file_name("conduit-rune.exe");
-    if rune.is_file() {
-        return rune;
-    }
-    let nova = helper.with_file_name("conduit-nova.exe");
-    if nova.is_file() {
-        return nova;
-    }
-    if legacy.is_file() {
-        return legacy;
-    }
-    let Some(parent) = helper.parent() else {
-        return legacy;
-    };
-    if parent
-        .file_name()
-        .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("resources"))
-    {
-        if let Some(root) = parent.parent() {
-            let preview = root.join("conduit-tauri-preview.exe");
-            if preview.is_file() {
-                return preview;
-            }
-        }
-    }
-    legacy
+    // Explorer errors belong in the native desktop, never in a retired frontend
+    // or the Share Target host. Do not search arbitrary parent directories.
+    helper.with_file_name("conduit-rune.exe")
 }
 
 #[cfg(test)]
@@ -198,53 +172,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn errors_still_use_legacy_control_ui_outside_preview_package() {
+    fn shell_errors_always_target_the_native_sibling() {
         let helper = Path::new(r"C:\Scoop\apps\conduit\current\conduit-send.exe");
         assert_eq!(
             control_ui_path(helper),
-            helper.with_file_name("Conduit.exe")
+            helper.with_file_name("conduit-rune.exe")
         );
     }
 
     #[test]
-    fn standalone_preview_helper_opens_tauri_without_overriding_winui() {
+    fn stale_frontends_cannot_override_the_native_shell_target() {
         let dir = std::env::temp_dir().join(format!(
-            "conduit-preview-send-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let resources = dir.join("resources");
-        std::fs::create_dir_all(&resources).unwrap();
-        let preview = dir.join("conduit-tauri-preview.exe");
-        std::fs::write(&preview, []).unwrap();
-        let helper = resources.join("conduit-send.exe");
-        assert_eq!(control_ui_path(&helper), preview);
-        std::fs::write(resources.join("Conduit.exe"), []).unwrap();
-        assert_eq!(control_ui_path(&helper), resources.join("Conduit.exe"));
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn stable_nova_takes_priority_over_winui_for_shell_send_errors() {
-        let dir = std::env::temp_dir().join(format!("conduit-nova-shell-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let helper = dir.join("conduit-send.exe");
-        let legacy = dir.join("Conduit.exe");
-        let nova = dir.join("conduit-nova.exe");
-        std::fs::write(&legacy, []).unwrap();
-        assert_eq!(control_ui_path(&helper), legacy);
-        std::fs::write(&nova, []).unwrap();
-        assert_eq!(control_ui_path(&helper), nova);
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn stable_rune_takes_priority_over_nova_for_shell_send_errors() {
-        let dir = std::env::temp_dir().join(format!(
-            "conduit-rune-shell-{}-{}",
+            "conduit-native-shell-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -252,13 +191,10 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("conduit-nova.exe"), []).unwrap();
+        std::fs::write(dir.join("Conduit.exe"), []).unwrap();
         let helper = dir.join("conduit-send.exe");
-        let nova = dir.join("conduit-nova.exe");
-        let rune = dir.join("conduit-rune.exe");
-        std::fs::write(&nova, []).unwrap();
-        assert_eq!(control_ui_path(&helper), nova);
-        std::fs::write(&rune, []).unwrap();
-        assert_eq!(control_ui_path(&helper), rune);
+        assert_eq!(control_ui_path(&helper), dir.join("conduit-rune.exe"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

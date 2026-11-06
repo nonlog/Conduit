@@ -16,9 +16,11 @@ mod data_dir;
 mod explorer;
 mod file;
 mod image;
+mod link_intent;
 mod notification_history;
 mod pairing;
 mod shared_links;
+mod shutdown;
 mod status;
 mod toast;
 mod transfer;
@@ -151,8 +153,19 @@ impl Drop for SessionGuard {
     }
 }
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()?;
+    let result = runtime.block_on(run());
+    // Tokio's default destructor waits indefinitely for any blocking shell/file
+    // operation. Network and native workers are explicitly stopped in run().
+    runtime.shutdown_timeout(Duration::from_secs(2));
+    result
+}
+
+async fn run() -> Result<()> {
     // Keep the headless daemon, control surface, Start-menu shortcut and toast identity under one
     // Windows application identity. This must happen before any shell/toast interaction.
     unsafe {
@@ -245,18 +258,60 @@ async fn main() -> Result<()> {
             }
             return Ok(());
         }
+        if command == "link" {
+            let action = args
+                .next()
+                .context("usage: conduit-daemon link <connect|disconnect|status>")?;
+            if args.next().is_some() {
+                bail!("usage: conduit-daemon link <connect|disconnect|status>");
+            }
+            match action.to_string_lossy().as_ref() {
+                "connect" => control::pair(control::PairAction::Connect).await?,
+                "disconnect" => control::pair(control::PairAction::Disconnect).await?,
+                "status" => println!("link_enabled={}", link_intent::load(&config_dir()?)?),
+                _ => bail!("usage: conduit-daemon link <connect|disconnect|status>"),
+            }
+            return Ok(());
+        }
         if command == "pair" {
             let dir = config_dir()?;
             std::fs::create_dir_all(&dir)?;
-            let action = args
-                .next()
-                .context("usage: conduit-daemon pair <status|start|cancel|forget>")?;
-            if args.next().is_some() {
-                bail!("usage: conduit-daemon pair <status|start|cancel|forget>");
+            let action = args.next().context(
+                "usage: conduit-daemon pair <status|start|cancel|forget|rekey-imported --confirm>",
+            )?;
+            let confirmation = args.next();
+            if action == "rekey-imported" {
+                if confirmation.as_deref() != Some(std::ffi::OsStr::new("--confirm"))
+                    || args.next().is_some()
+                {
+                    bail!("The cloned installation must be re-keyed explicitly: pair rekey-imported --confirm");
+                }
+                // No live daemon can use the old key while it is being replaced.
+                // Keep the port reserved until the new identity is on disk.
+                let _offline_guard = std::net::TcpListener::bind(("0.0.0.0", PORT)).context(
+                    "stop Conduit on THIS computer before repairing its imported identity",
+                )?;
+                let repaired = pairing::repair_cloned_identity(&dir)?;
+                println!("New desktop id: {}", repaired.new_device_id);
+                println!("New fingerprint: {}", repaired.new_fingerprint);
+                println!(
+                    "Original identity and pairing backed up in {}",
+                    repaired.backup_dir.display()
+                );
+                println!("Restart Conduit and pair the phone to this computer again.");
+                return Ok(());
+            }
+            if confirmation.is_some() {
+                bail!("usage: conduit-daemon pair <status|start|cancel|forget|rekey-imported --confirm>");
             }
             match action.to_string_lossy().as_ref() {
                 "status" => {
                     let state = pairing::state(&dir);
+                    // Print only the PUBLIC device id so cloned installations can be
+                    // compared safely. No private key material leaves identity.bin.
+                    let own = wire::load_or_create_identity(&dir.join("identity.bin"))?;
+                    println!("desktop_id={}", wire::device_id(&own.public));
+                    println!("desktop_fingerprint={}", wire::fingerprint(&own.public));
                     println!("paired={}", state.device_id.is_some());
                     println!("pairing={}", state.pairing);
                     println!("peer_id={}", state.device_id.as_deref().unwrap_or(""));
@@ -271,6 +326,9 @@ async fn main() -> Result<()> {
                     );
                 }
                 "start" => {
+                    if !link_intent::load(&dir)? {
+                        bail!("Connection is paused. Connect before starting pairing.");
+                    }
                     let running = control::pair(control::PairAction::Start).await.is_ok();
                     let window = if running {
                         pairing::state(&dir)
@@ -315,6 +373,17 @@ async fn main() -> Result<()> {
                 },
                 _ => bail!("usage: conduit-daemon pair <status|start|cancel|forget>"),
             }
+            return Ok(());
+        }
+        if command == "notifications" {
+            let action = args
+                .next()
+                .context("usage: conduit-daemon notifications <clear|prune>")?;
+            let action = action.to_string_lossy();
+            if args.next().is_some() || !matches!(action.as_ref(), "clear" | "prune") {
+                bail!("usage: conduit-daemon notifications <clear|prune>");
+            }
+            control::notifications(action == "clear").await?;
             return Ok(());
         }
         if command == "reload" && args.next().is_none() {
@@ -420,7 +489,15 @@ async fn main() -> Result<()> {
     let dir = config_dir()?;
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let user_config = config::Config::load(&dir)?;
+    let mut link_enabled = link_intent::load(&dir)?;
     let desktop_status = Arc::new(status::StatusFile::new(&dir)?);
+    desktop_status
+        .transfers
+        .set_link_enabled(link_enabled, || Ok(()))?;
+    desktop_status.set_link_enabled(link_enabled);
+    if !link_enabled {
+        pairing::cancel(&dir)?;
+    }
     let identity = wire::load_or_create_identity(&dir.join("identity.bin"))?;
     let device_id = wire::device_id(&identity.public);
     let fingerprint = wire::fingerprint(&identity.public);
@@ -435,6 +512,10 @@ async fn main() -> Result<()> {
             format!("binding Conduit listener on port {PORT}; is another daemon running?")
         })?;
     info!(port = PORT, "listening");
+
+    let history = notification_history::History::new(&dir, user_config.retention_days())?;
+    user_config.publish_effective(&dir, DEFAULT_RELAYS)?;
+    let history_task = tokio::spawn(history.clone().maintain());
 
     // Optional tray icon. It is one blocked Win32 message loop and is not created at all when the
     // setting is off. Failures are non-fatal: transport and clipboard sync remain useful without it.
@@ -480,8 +561,17 @@ async fn main() -> Result<()> {
     let (pair_tx, mut pair_rx) = mpsc::channel::<control::PairRequest>(4);
     let (pair_session_tx, _) = broadcast::channel::<control::PairAction>(4);
     let control_transfers = desktop_status.transfers.clone();
-    tokio::spawn(async move {
-        if let Err(e) = control::serve(outbound_tx, reload_tx, pair_tx, control_transfers).await {
+    let control_history = history.clone();
+    let control_task = tokio::spawn(async move {
+        if let Err(e) = control::serve(
+            outbound_tx,
+            reload_tx,
+            pair_tx,
+            control_transfers,
+            control_history,
+        )
+        .await
+        {
             warn!(error = %e, "local control pipe stopped");
         }
     });
@@ -503,8 +593,11 @@ async fn main() -> Result<()> {
         proxy = relay_proxy.as_deref().unwrap_or("direct"),
         "relay configuration"
     );
-    let (mut relay_tasks, mut relay_rx) =
-        start_relay_workers(&relay_endpoints, &device_id, relay_proxy.clone());
+    let (mut relay_tasks, mut relay_rx) = if link_enabled {
+        start_relay_workers(&relay_endpoints, &device_id, relay_proxy.clone())
+    } else {
+        empty_relay_workers()
+    };
     let initial_pairing = pairing::state(&dir);
     let (mut pairing_relay_tasks, mut pairing_relay_rx) = match (
         initial_pairing.pairing_rendezvous.as_deref(),
@@ -538,6 +631,12 @@ async fn main() -> Result<()> {
                         let new_proxy = new_config.resolved_proxy();
                         let relay_changed = new_relays != relay_endpoints || new_proxy != relay_proxy;
                         let mut apply_error = None;
+                        if let Err(error) = history.configure(new_config.retention_days()) {
+                            apply_error = Some(format!("updating notification retention: {error:#}"));
+                        }
+                        if let Err(error) = new_config.publish_effective(&dir, DEFAULT_RELAYS) {
+                            apply_error = Some(format!("publishing effective settings: {error:#}"));
+                        }
 
                         if wanted_tray != tray.is_some() {
                             if wanted_tray {
@@ -561,8 +660,9 @@ async fn main() -> Result<()> {
                                 task.abort();
                                 let _ = task.await;
                             }
-                            let (tasks, rx) =
-                                start_relay_workers(&new_relays, &device_id, new_proxy.clone());
+                            let (tasks, rx) = if link_enabled {
+                                start_relay_workers(&new_relays, &device_id, new_proxy.clone())
+                            } else { empty_relay_workers() };
                             relay_tasks = tasks;
                             relay_rx = rx;
                             relay_endpoints = new_relays;
@@ -576,7 +676,7 @@ async fn main() -> Result<()> {
                                 pair_state.pairing_rendezvous.as_deref(),
                                 pair_state.pairing_expires_ms,
                             ) {
-                                (Some(rendezvous), Some(expires_ms)) => start_pairing_relay_workers(
+                                (Some(rendezvous), Some(expires_ms)) if link_enabled => start_pairing_relay_workers(
                                     &relay_endpoints,
                                     rendezvous,
                                     relay_proxy.clone(),
@@ -613,6 +713,57 @@ async fn main() -> Result<()> {
             }
             Some(request) = pair_rx.recv() => {
                 let result = match request.action {
+                    control::PairAction::Disconnect => {
+                        let outcome = desktop_status.transfers.set_link_enabled(false, || {
+                            // Never remove peer.txt or identity.bin for a temporary disconnect.
+                            link_intent::save(&dir, false)
+                        });
+                        match outcome {
+                            Err(error) => Err(format!("{error:#}")),
+                            Ok(()) => {
+                                link_enabled = false;
+                                desktop_status.set_link_enabled(false);
+                                admission_generation.invalidate();
+                                candidates.abort_all();
+                                if let Err(error) = pairing::cancel(&dir) {
+                                    warn!(%error, "could not remove pairing window; paused admission still blocks it");
+                                }
+                                for task in relay_tasks.drain(..).chain(pairing_relay_tasks.drain(..)) {
+                                    task.abort();
+                                    let _ = task.await;
+                                }
+                                (relay_tasks, relay_rx) = empty_relay_workers();
+                                (pairing_relay_tasks, pairing_relay_rx) = empty_relay_workers();
+                                if let Some(previous) = active.take() {
+                                    previous.abort();
+                                    let _ = previous.await;
+                                }
+                                active_path = None;
+                                desktop_status.set_link_enabled(false);
+                                Ok(())
+                            }
+                        }
+                    }
+                    control::PairAction::Connect => {
+                        if link_enabled { Ok(()) } else {
+                            // Cancel stale pairing windows before reopening any network path.
+                            let outcome = pairing::cancel(&dir).and_then(|_| {
+                                desktop_status.transfers.set_link_enabled(true, || link_intent::save(&dir, true))
+                            });
+                            match outcome {
+                                Err(error) => Err(format!("{error:#}")),
+                                Ok(()) => {
+                                    link_enabled = true;
+                                    desktop_status.set_link_enabled(true);
+                                    (relay_tasks, relay_rx) = start_relay_workers(&relay_endpoints, &device_id, relay_proxy.clone());
+                                    Ok(())
+                                }
+                            }
+                        }
+                    }
+                    control::PairAction::Start if !link_enabled => {
+                        Err("Connection is paused. Connect before starting pairing.".into())
+                    }
                     control::PairAction::Start => match pairing::start(&dir) {
                         Ok(window) => {
                             for task in pairing_relay_tasks.drain(..) {
@@ -688,6 +839,9 @@ async fn main() -> Result<()> {
                 }
             }
         };
+        if !link_enabled {
+            continue;
+        }
         let candidate = match arrival {
             ConnectionArrival::Socket(mut stream, peer, path, relay_endpoint) => {
                 if candidates.len() >= admission::MAX_PENDING {
@@ -791,6 +945,7 @@ async fn main() -> Result<()> {
         let toast_action_tx = toast_action_tx.clone();
         let pair_session_tx = pair_session_tx.clone();
         let data_dir = dir.clone();
+        let history = history.clone();
         active_path = Some(via);
         active = Some(tokio::spawn(async move {
             let _guard = SessionGuard {
@@ -811,6 +966,7 @@ async fn main() -> Result<()> {
                 &toast_action_tx,
                 &pair_session_tx,
                 &data_dir,
+                &history,
             )
             .await
             {
@@ -819,16 +975,28 @@ async fn main() -> Result<()> {
         }));
     }
 
-    candidates.abort_all();
+    candidates.shutdown().await;
     if let Some(session) = active.take() {
         session.abort();
         let _ = session.await;
     }
-    for task in pairing_relay_tasks.drain(..) {
+    for task in pairing_relay_tasks.drain(..).chain(relay_tasks.drain(..)) {
         task.abort();
         let _ = task.await;
     }
     desktop_status.disconnected();
+    control_task.abort();
+    history_task.abort();
+    let _ = control_task.await;
+    let _ = history_task.await;
+    drop(listener);
+    drop(_advert);
+    // Close channels and native message loops while the runtime is still alive,
+    // rather than leaving their last Arc owners to run inside runtime teardown.
+    drop(toasts);
+    drop(bridge);
+    drop(tray);
+    info!("Conduit daemon shutdown completed");
     Ok(())
 }
 
@@ -1007,6 +1175,7 @@ async fn serve(
     toast_action_tx: &broadcast::Sender<pb::NotifAction>,
     pair_session_tx: &broadcast::Sender<control::PairAction>,
     data_dir: &std::path::Path,
+    history: &notification_history::History,
 ) -> Result<()> {
     let idle_ping = if path.starts_with("relay") {
         RELAY_IDLE_PING
@@ -1500,8 +1669,12 @@ async fn serve(
                 } else {
                     notif.app_name.clone()
                 };
-                if let Err(e) = notification_history::record_new(
-                    data_dir,
+                if let Err(error) =
+                    toast::cache_history_icon(data_dir, &notif.package, &notif.app_icon_png)
+                {
+                    warn!(%error, "could not cache notification app icon");
+                }
+                if let Err(e) = history.record_new(
                     &notif.key,
                     &notif.package,
                     &app,
@@ -1531,12 +1704,7 @@ async fn serve(
                     warn!("malformed notification update dropped");
                     continue;
                 };
-                if let Err(e) = notification_history::record_update(
-                    data_dir,
-                    &notif.key,
-                    &notif.title,
-                    &notif.text,
-                ) {
+                if let Err(e) = history.record_update(&notif.key, &notif.title, &notif.text) {
                     warn!(error = %e, "could not update notification history");
                 }
                 if let Some(toasts) = toasts {
