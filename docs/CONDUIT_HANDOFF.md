@@ -1,17 +1,20 @@
 # Conduit handoff
 
-## v0.1.18 release in progress — 2026-11-06
+## v0.1.18 release completed — 2026-11-06
 
 - The user confirmed notification synchronization works on IOTFRESH and explicitly requested
-  merging PR #27, building, and publishing a new release. Release candidate versions are 0.1.18;
-  Android `versionCode` is 20. The latest published release remains v0.1.17 until the tagged
-  GitHub Actions release succeeds and its assets are verified.
+  merging PR #27, building, and publishing a new release. PR #27 was merged into `master` as
+  `334fa48547b289667c2ce7afdd883c9f4eed8a5d`; Android `versionCode` is 20.
 - Since v0.1.17 this branch includes Android multi-PC routing and sharing fixes and Rune theme,
   hover, and window-chrome fixes. The IOTFRESH notification repair below changed device settings,
   not application source; do not claim that upgrading alone changes those Windows/Android settings.
-- Build and test on GitHub Actions, merge the verified PR without rewriting commit attribution,
-  then tag the merged commit and verify the signed Android, Windows, Relay, checksums and Scoop
-  update. Two simultaneous physical-PC acceptance remains unverified.
+- Tagged GitHub Actions run `42182477783` passed Android, Windows, Relay and GitHub Release. The
+  published release is [`v0.1.18`](https://github.com/nonlog/Conduit/releases/tag/v0.1.18), with
+  signed Android, Windows, Relay and SHA-256 assets. Windows ZIP digest is
+  `d05115742eacf94edc0e18c418af6c12e593c5879ef2027dcfed6fcc0e9572fa`.
+- Scoop manifest update was pushed to `nonlog/scoop-www` as `0b11826a3c4faf6d666a8421053958ec4eed2450`.
+  Two simultaneous physical-PC acceptance remains unverified. The release was published; it was
+  not installed over the already-working IOTFRESH runtime during this pass.
 
 ## IOTFRESH notification repair — 2026-11-06
 
@@ -28,9 +31,8 @@
 - A shell-generated Android notification reached Conduit's Windows notification history, and
   Windows created a `Conduit.Desktop` notification record. The user subsequently confirmed that
   notification synchronization works. No Conduit source, identity, or pairing data was changed.
-- The latest development work is on the existing `codex/conduit-multipeer-20261104` branch and
-  draft PR #27. This checkout started at the older `master` release (`v0.1.15`) and was switched
-  to that branch before recording this checkpoint.
+- This checkout was switched from the older `master` release (`v0.1.15`) to the development branch
+  for the release work, then returned to clean `master` at `v0.1.18` after the merge and tag.
 
 ## Final installed release: v0.1.17 and Scoop update completed
 
