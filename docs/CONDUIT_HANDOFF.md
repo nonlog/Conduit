@@ -1,5 +1,24 @@
 # Conduit handoff
 
+## IOTFRESH notification repair — 2026-11-06
+
+- The Android notification listener was enabled and the phone was linked, but Windows showed no
+  notification banners. Conduit's Windows AUMID (`Conduit.Desktop`) and Start-menu shortcut were
+  registered; the current user's global Windows `ToastEnabled` setting was `0`.
+- Restored `HKCU:\Software\Microsoft\Windows\CurrentVersion\PushNotifications\ToastEnabled`
+  to `1` and restarted the installed daemon with its existing data. This global setting also
+  enables Windows notifications from other applications; the lock-screen setting was not changed.
+- A separate Android setting, `RECEIVE_SENSITIVE_NOTIFICATIONS`, was `ignore`, causing Android to
+  redact some notification content. On this rooted test phone it was changed to `allow` with
+  `adb shell su -c "cmd appops set com.conduit.sync RECEIVE_SENSITIVE_NOTIFICATIONS allow"`.
+  Check this AppOp after an APK reinstall or update and re-enable it if necessary.
+- A shell-generated Android notification reached Conduit's Windows notification history, and
+  Windows created a `Conduit.Desktop` notification record. The user subsequently confirmed that
+  notification synchronization works. No Conduit source, identity, or pairing data was changed.
+- The latest development work is on the existing `codex/conduit-multipeer-20261104` branch and
+  draft PR #27. This checkout started at the older `master` release (`v0.1.15`) and was switched
+  to that branch before recording this checkpoint.
+
 ## Final installed release: v0.1.17 and Scoop update completed
 
 - Published stable release: `v0.1.17`, runtime source
