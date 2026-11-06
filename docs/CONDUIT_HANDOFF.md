@@ -1,5 +1,18 @@
 # Conduit handoff
 
+## v0.1.18 release in progress — 2026-11-06
+
+- The user confirmed notification synchronization works on IOTFRESH and explicitly requested
+  merging PR #27, building, and publishing a new release. Release candidate versions are 0.1.18;
+  Android `versionCode` is 20. The latest published release remains v0.1.17 until the tagged
+  GitHub Actions release succeeds and its assets are verified.
+- Since v0.1.17 this branch includes Android multi-PC routing and sharing fixes and Rune theme,
+  hover, and window-chrome fixes. The IOTFRESH notification repair below changed device settings,
+  not application source; do not claim that upgrading alone changes those Windows/Android settings.
+- Build and test on GitHub Actions, merge the verified PR without rewriting commit attribution,
+  then tag the merged commit and verify the signed Android, Windows, Relay, checksums and Scoop
+  update. Two simultaneous physical-PC acceptance remains unverified.
+
 ## IOTFRESH notification repair — 2026-11-06
 
 - The Android notification listener was enabled and the phone was linked, but Windows showed no
