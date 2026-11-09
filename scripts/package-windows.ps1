@@ -1,8 +1,6 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [string]$UiPublishDir,
-
     [Parameter(Mandatory)]
     [string]$RustReleaseDir,
 
@@ -14,21 +12,23 @@ param(
     [string]$ShareTargetCertificate,
 
     [Parameter(Mandatory)]
+    [string]$ShareTargetExecutable,
+
+    [Parameter(Mandatory)]
     [string]$RuneExecutable
 )
 
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$ui = (Resolve-Path $UiPublishDir).Path
 $rust = (Resolve-Path $RustReleaseDir).Path
+$shareTarget = (Resolve-Path $ShareTargetExecutable).Path
 $output = [IO.Path]::GetFullPath($OutputZip)
 $stage = Join-Path ([IO.Path]::GetDirectoryName($output)) 'windows-package'
 
-$requiredUi = Join-Path $ui 'Conduit.exe'
 $requiredRust = @('conduit-daemon.exe', 'conduit-send.exe')
-if (-not (Test-Path -LiteralPath $requiredUi -PathType Leaf)) {
-    throw "Missing published desktop executable: $requiredUi"
+if (-not (Test-Path -LiteralPath $shareTarget -PathType Leaf)) {
+    throw "Missing Rust Share Target executable: $shareTarget"
 }
 foreach ($name in $requiredRust) {
     if (-not (Test-Path -LiteralPath (Join-Path $rust $name) -PathType Leaf)) {
@@ -41,21 +41,11 @@ if (Test-Path -LiteralPath $stage) {
 }
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
-# The WinUI publish is self-contained, so the whole publish directory is part of the package.
-Copy-Item -Path (Join-Path $ui '*') -Destination $stage -Recurse -Force
-
 # Runtime state is never package payload. If a local/build publish directory happens to contain a
 # data folder, excluding it here prevents an overlay from replacing Scoop's persisted data junction.
 Remove-Item -LiteralPath (Join-Path $stage 'data') -Recurse -Force -ErrorAction SilentlyContinue
 
-# Windows App SDK's MRT resource lookup currently treats a sparse/external-location process as fully
-# packaged and asks for the conventional resources.pri name. Keep Uno's module-named Conduit.pri for
-# normal unpackaged launch, and ship an identical alias so the same executable also starts with the
-# sparse Share Target identity.
-$modulePri = Join-Path $stage 'Conduit.pri'
-if (Test-Path -LiteralPath $modulePri -PathType Leaf) {
-    Copy-Item -LiteralPath $modulePri -Destination (Join-Path $stage 'resources.pri') -Force
-}
+Copy-Item -LiteralPath $shareTarget -Destination (Join-Path $stage 'conduit-share-target.exe') -Force
 
 foreach ($name in $requiredRust) {
     Copy-Item -LiteralPath (Join-Path $rust $name) -Destination (Join-Path $stage $name) -Force
@@ -94,7 +84,7 @@ if (-not [string]::IsNullOrWhiteSpace($ShareTargetCertificate)) {
     Copy-Item -LiteralPath $shareCertificate -Destination (Join-Path $stage 'Conduit.ShareTarget.cer') -Force
 }
 if (-not [string]::IsNullOrWhiteSpace($RuneExecutable)) {
-    foreach ($name in @('Conduit.exe', 'Conduit.dll', 'Conduit.ShareTarget.msix', 'Conduit.ShareTarget.cer', 'conduit-rune.exe', 'conduit-daemon.exe', 'conduit-send.exe')) {
+    foreach ($name in @('conduit-share-target.exe', 'Conduit.ShareTarget.msix', 'Conduit.ShareTarget.cer', 'conduit-rune.exe', 'conduit-daemon.exe', 'conduit-send.exe')) {
         if (-not (Test-Path -LiteralPath (Join-Path $stage $name) -PathType Leaf)) {
             throw "Incomplete stable Windows package: missing $name"
         }
@@ -111,7 +101,7 @@ foreach ($name in @('conduit-nova.exe', 'conduit-tauri-preview.exe')) {
     if (Test-Path -LiteralPath (Join-Path $stage $name)) { throw "Retired frontend in package: $name" }
 }
 
-# Debug symbols are not required by the portable/Scoop runtime and make the WinUI package much larger.
+# Debug symbols are not required by the portable/Scoop runtime.
 Get-ChildItem -LiteralPath $stage -Recurse -File -Filter '*.pdb' | Remove-Item -Force
 
 $outputDir = [IO.Path]::GetDirectoryName($output)

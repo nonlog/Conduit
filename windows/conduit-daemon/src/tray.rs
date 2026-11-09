@@ -418,7 +418,7 @@ unsafe fn remember_control_process(handle: HANDLE) {
 }
 
 unsafe fn open_control() {
-    // Keep the native desktop separate from the WinUI Windows Share Target.
+    // Keep the native desktop separate from the headless Rust Windows Share Target.
     let existing = FindWindowW(null(), wide("Conduit — Rune").as_ptr());
     if !existing.is_null() {
         release_control_process_handle();

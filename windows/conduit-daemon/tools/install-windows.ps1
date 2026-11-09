@@ -59,7 +59,7 @@ $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $aumidKey = 'HKCU:\Software\Classes\AppUserModelId\Conduit.Desktop'
 $explorerVerbKey = 'Registry::HKEY_CURRENT_USER\Software\Classes\*\shell\Conduit.SendToPhone'
 
-$required = @('conduit-rune.exe', 'conduit-daemon.exe', 'conduit-send.exe')
+$required = @('conduit-rune.exe', 'conduit-daemon.exe', 'conduit-send.exe', 'conduit-share-target.exe')
 foreach ($name in $required) {
     if (-not (Test-Path (Join-Path $source $name))) {
         throw "Missing $name in $source"
@@ -80,7 +80,7 @@ foreach ($name in $requiredIconAssets) {
 $hadAutostart = $null -ne (Get-ItemProperty -Path $runKey -Name Conduit -ErrorAction SilentlyContinue).Conduit
 $hadExplorerIntegration = Test-Path -LiteralPath $explorerVerbKey
 
-$running = @(Get-Process conduit-daemon, Conduit, conduit-nova, conduit-tauri-preview, conduit-rune -ErrorAction SilentlyContinue)
+$running = @(Get-Process conduit-daemon, Conduit, conduit-share-target, conduit-nova, conduit-tauri-preview, conduit-rune -ErrorAction SilentlyContinue)
 if ($running.Count -gt 0) {
     $running | Stop-Process -Force -ErrorAction SilentlyContinue
     # Stop-Process requests termination but the executable image can stay mapped for a short
@@ -94,45 +94,26 @@ if ($running.Count -gt 0) {
 }
 New-Item -ItemType Directory -Force -Path $installDir, $programs | Out-Null
 
-# A packaged Conduit build contains the complete self-contained WinUI publish, not just the three
-# executable entry points. Updating only Conduit.exe leaves the old Conduit.dll/PRI/resources in
-# place, which means XAML and code-behind changes never reach the running UI. When the source is a
-# published package, copy the whole runtime payload while deliberately preserving the install's
-# data junction and keeping installer tooling out of the runtime root.
-$hasPublishedUi = Test-Path -LiteralPath (Join-Path $source 'Conduit.dll') -PathType Leaf
-if ($hasPublishedUi) {
-    foreach ($entry in Get-ChildItem -LiteralPath $source -Force) {
-        if ($entry.Name -in @('tools', 'data')) { continue }
-        $to = Join-Path $installDir $entry.Name
-        if ([string]::Equals($entry.FullName, $to, [StringComparison]::OrdinalIgnoreCase)) { continue }
-        if ($entry.PSIsContainer) {
-            Copy-Item -LiteralPath $entry.FullName -Destination $installDir -Recurse -Force
-        } else {
-            Copy-Item -LiteralPath $entry.FullName -Destination $to -Force
-        }
-    }
-} else {
-    # Developer/repo invocation still supports a Rust-only target/release directory.
-    foreach ($name in $required) {
-        $from = (Resolve-Path (Join-Path $source $name)).Path
-        $to = Join-Path $installDir $name
-        if (-not [string]::Equals($from, $to, [StringComparison]::OrdinalIgnoreCase)) {
-            Copy-Item -Force $from $to
-        }
-    }
-
+# Remove the old self-contained WinUI/.NET/WebView payload while preserving Conduit's data and
+# installer support directories. This is an allowlist because old language folders and framework
+# DLLs have no stable name to enumerate safely.
+$runtimeKeep = @(
+    'data', 'tools', 'assets', 'README.md',
+    'conduit-rune.exe', 'conduit-daemon.exe', 'conduit-send.exe', 'conduit-share-target.exe',
+    'Conduit.ShareTarget.msix', 'Conduit.ShareTarget.cer'
+)
+foreach ($entry in @(Get-ChildItem -LiteralPath $installDir -Force)) {
+    if ($runtimeKeep -ccontains $entry.Name) { continue }
+    Remove-Item -LiteralPath $entry.FullName -Recurse -Force -ErrorAction SilentlyContinue
 }
-if ($hasPublishedUi) {
-    foreach ($name in @('Conduit.dll', 'Conduit.pri', 'resources.pri')) {
-        $from = Join-Path $source $name
-        $to = Join-Path $installDir $name
-        if (-not (Test-Path -LiteralPath $to -PathType Leaf)) {
-            throw "Published UI payload did not install $name"
-        }
-        if ((Get-FileHash -LiteralPath $from -Algorithm SHA256).Hash -ne
-            (Get-FileHash -LiteralPath $to -Algorithm SHA256).Hash) {
-            throw "Published UI payload hash mismatch after installing $name"
-        }
+foreach ($entry in @(Get-ChildItem -LiteralPath $source -Force)) {
+    if ($entry.Name -eq 'data') { continue }
+    $to = Join-Path $installDir $entry.Name
+    if ([string]::Equals($entry.FullName, $to, [StringComparison]::OrdinalIgnoreCase)) { continue }
+    if ($entry.PSIsContainer) {
+        Copy-Item -LiteralPath $entry.FullName -Destination $installDir -Recurse -Force
+    } else {
+        Copy-Item -LiteralPath $entry.FullName -Destination $to -Force
     }
 }
 Remove-Item (Join-Path $installDir 'conduit-control.exe') -Force -ErrorAction SilentlyContinue
@@ -152,9 +133,9 @@ foreach ($name in @($requiredIconAssets + $optionalIconAssets)) {
 # so first registration temporarily adds that public leaf to TrustedPeople, registers the package,
 # then removes it immediately. No signing certificate remains trusted after installation.
 #
-# The sparse identity must track the new XAML PRI/MSIX version as well as the executable.
-# Previously any registered version caused registration to be skipped; that lets an old sparse
-# package load outdated XAML resources into a new WinUI binary and can crash the control UI.
+# The sparse identity must track the Share Target manifest version as well as the executable.
+# Previously any registered version caused registration to be skipped, which could leave an old
+# shell registration pointing at a removed host.
 # Update in place only when the registered identity is older. Keep the stable `current` path.
 $sharePackageName = 'Conduit.Desktop.ShareTarget'
 $sharePackage = Join-Path $installDir 'Conduit.ShareTarget.msix'
@@ -331,15 +312,13 @@ if (-not (Test-Path -LiteralPath $runeExe -PathType Leaf)) {
     throw 'Native Rune desktop missing; refusing an incomplete installation'
 }
 $controlExe = $runeExe
-if ($hasPublishedUi -and (Test-Path -LiteralPath (Join-Path $source 'conduit-rune.exe') -PathType Leaf)) {
+if (Test-Path -LiteralPath (Join-Path $source 'conduit-rune.exe') -PathType Leaf) {
     if ((Get-FileHash -LiteralPath (Join-Path $source 'conduit-rune.exe') -Algorithm SHA256).Hash -ne
         (Get-FileHash -LiteralPath $runeExe -Algorithm SHA256).Hash) {
         throw 'Rune desktop payload hash mismatch after installation'
     }
 }
-# An overlay upgrade does not remove old payload automatically. Only these exact
-# retired executable names are removed; data/, identity, history and the Share
-# Target compatibility host are never part of this cleanup.
+# Keep explicit cleanup for legacy overlays that predate the runtime allowlist.
 foreach ($retiredName in @('conduit-nova.exe', 'conduit-tauri-preview.exe')) {
     $retired = Join-Path $installDir $retiredName
     if (Test-Path -LiteralPath $retired -PathType Leaf) {

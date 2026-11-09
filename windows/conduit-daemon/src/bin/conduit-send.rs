@@ -192,7 +192,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("conduit-nova.exe"), []).unwrap();
-        std::fs::write(dir.join("Conduit.exe"), []).unwrap();
+        std::fs::write(dir.join("conduit-share-target.exe"), []).unwrap();
         let helper = dir.join("conduit-send.exe");
         assert_eq!(control_ui_path(&helper), dir.join("conduit-rune.exe"));
         std::fs::remove_dir_all(&dir).unwrap();

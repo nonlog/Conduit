@@ -6,8 +6,8 @@ AUMID mechanics, `CF_DIBV5` masks, the 7 risks). Everything below is a correctio
 
 The current published baseline is `v0.1.4` at
 `8987c1b701a91894c133cffb1f3123ee49eee266`. Formal Android, Windows and Relay builds are owned
-by GitHub Actions; the current workflow uses JDK 17, Rust 1.98, .NET 10 and the pinned Android
-Gradle wrapper.
+by GitHub Actions; the current workflow uses JDK 17, Rust 1.98 and the pinned Android Gradle
+wrapper.
 
 ## Names and paths
 

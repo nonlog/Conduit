@@ -9,11 +9,11 @@
     Name="Conduit.Desktop.ShareTarget"
     ProcessorArchitecture="neutral"
     Publisher="CN=Conduit"
-    Version="0.1.18.0" />
+    Version="0.1.19.1" />
   <Properties>
     <DisplayName>Conduit</DisplayName>
     <PublisherDisplayName>Conduit</PublisherDisplayName>
-    <Logo>Assets\conduit-icon.png</Logo>
+    <Logo>conduit-icon.png</Logo>
     <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
   </Properties>
   <Dependencies>
@@ -22,15 +22,15 @@
   <Applications>
     <Application
       Id="Conduit"
-      Executable="Conduit.exe"
+      Executable="conduit-share-target.exe"
       uap10:TrustLevel="mediumIL"
       uap10:RuntimeBehavior="win32App">
       <uap:VisualElements
         DisplayName="Conduit"
         Description="Send files to your phone with Conduit"
         BackgroundColor="transparent"
-        Square150x150Logo="Assets\conduit-icon.png"
-        Square44x44Logo="Assets\conduit-icon.png"
+        Square150x150Logo="conduit-icon.png"
+        Square44x44Logo="conduit-icon.png"
         AppListEntry="none" />
       <Extensions>
         <uap:Extension Category="windows.shareTarget">

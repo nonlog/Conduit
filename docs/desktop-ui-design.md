@@ -1,22 +1,12 @@
 # Conduit desktop visual system
 
-Conduit is a native Uno/WinUI Windows application. The navigation and page
-layout introduced in PR #11 remains unchanged: 246-pixel sidebar, paired-device
-card, notifications, shared links, settings and about pages.
+Conduit is a native Rust/Rune Windows application. Its navigation and page layout
+remain compact and event-driven: paired-device state, transfers, notifications,
+shared links, settings and about pages.
 
 ## Windows Fluent / Mica
-- Real Mica: App.xaml.cs already applies MicaBackdrop. MainPage.xaml leaves the
-  page, caption root and sidebar transparent so the OS backdrop is visible.
-  The workspace uses the native LayerFillColorDefaultBrush translucent layer.
-- Native surfaces: CardBackgroundFillColorDefaultBrush and CardStrokeColorDefaultBrush
-  for cards, ControlFillColorDefaultBrush for subdued surfaces, and
-  ControlStrokeColorDefaultBrush for borders. Navigation selection uses
-  SubtleFillColorSecondaryBrush.
-- Native text and accent: TextFillColor*Brush, AccentTextFillColorPrimaryBrush,
-  AccentFillColorDefaultBrush and the built-in AccentButtonStyle. Native controls
-  follow the Windows app theme and accent, without SystemAccentColor overrides.
-- Light/dark/high contrast: resolve all colors through Windows theme resources,
-  rather than using hard-coded light/dark hex colors.
+- Rune paints surfaces, text, accents and selection from its semantic light/dark theme.
+- The custom window frame follows the Windows theme without a web or XAML control tree.
 
 ## Identity and behavior
 - **Icon unchanged:** retain the transparent, two-track bidirectional Conduit
@@ -27,8 +17,8 @@ card, notifications, shared links, settings and about pages.
 - **Functionality unchanged:** preserve all view-model bindings, daemon IPC,
   notifications, file/drop, pairing and settings handlers, window captions,
   Share Target and single-instance behavior; no new background polling.
-- Theme button styles live in windows/conduit-ui/App.xaml. Presentation lives in
-  MainPage.xaml; commands remain in MainPage.xaml.cs.
+- Theme and layout code live in `windows/conduit-rune`; file sharing uses the separate
+  Rust `windows/conduit-share-target` host and existing daemon IPC.
 - The layout was originally inspired by Caho1/open-claude-ui (MIT). No web UI or
   Claude/Anthropic logo is embedded.
 

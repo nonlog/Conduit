@@ -1,5 +1,48 @@
 # Conduit handoff
 
+## Rust Share Target cleanup — 2026-11-09
+- The working tree is intentionally dirty for the approved cleanup; no commit, push, local
+  release, or installation change has been made. The old `windows/conduit-ui` Uno/WinUI project,
+  its .NET/WebView packaging step, and the obsolete transfer-layout test are deleted from the
+  pending diff.
+- Added `windows/conduit-share-target`, a small Rust Windows Runtime host. It reads
+  `ShareTargetActivatedEventArgs`, receives `StorageItems`, and forwards each file to the existing
+  `conduit-send.exe` helper. The sparse MSIX identity remains, with its executable now set to
+  `conduit-share-target.exe`.
+- `scripts/package-windows.ps1` now packages only Rust binaries plus the MSIX and public `.cer`.
+  `install-windows.ps1` uses an allowlist to remove old WinUI/.NET/WebView files and language
+  directories while preserving `data`, `tools`, and `assets`. The Share Target manifest is
+  `0.1.18.1` so an installed `0.1.18.0` identity is replaced; release version validation accepts
+  the package revision.
+- Validation so far: `cargo check -p conduit-share-target --target x86_64-pc-windows-msvc` passed;
+  `scripts/test-native-only-desktop.ps1` passed; PowerShell packaging/install scripts were parsed.
+  `cargo fmt --check` and `scripts/verify-version.ps1 -ExpectedVersion 0.1.18` passed. Full Windows
+  packaging, install smoke, and real Share Sheet transfer remain GitHub Actions checks. The
+  installer now also copies updated `tools` when source and install directories differ, while
+  preserving the existing `data` junction.
+
+## IOTFRESH Windows package audit — 2026-11-09
+- This is the pre-cleanup audit snapshot. The Rust Share Target cleanup section above supersedes
+  its source and packaging conclusions; the measurements remain historical evidence for why the
+  migration was needed.
+- Checkout is `master` at `8d6b08914e9779717ae3734e29933d327b21a081`; this audit changes
+  only this handoff. No application source, installed files, registration, or runtime data changed.
+- IOTFRESH's Scoop `current` points to `D:\Programs\Scoop\apps\conduit\0.1.18`.
+  Excluding persisted `data`, the installation has 570 files / 283.82 MiB; 86 language folders
+  account for 3.37 MiB. The cached official ZIP has 560 files / 283.71 MiB uncompressed and
+  SHA-256 `d05115742eacf94edc0e18c418af6c12e593c5879ef2027dcfed6fcc0e9572fa`.
+- Rune replaced the ordinary desktop frontend, but Windows Share Target still activates
+  `Conduit.exe` and constructs the old WinUI `MainPage`. `scripts/package-windows.ps1:44-45`
+  copies its entire self-contained, untrimmed publish output, including .NET/WinUI/Windows App
+  SDK resources and WebView2 bindings/loader. These files are in the release ZIP itself.
+- The small `Conduit.ShareTarget.msix` supplies Share Target package identity; its public `.cer`
+  verifies the package signature. Installation temporarily adds certificate trust and removes
+  newly added trust afterward. These artifacts are unrelated to phone notification permissions.
+- At audit time, only Rune and daemon were running; neither loaded app-local WinUI, CoreCLR,
+  or WebView modules. No browser runtime executable was present in the ZIP.
+- To remove the legacy framework payload while preserving Windows sharing, first investigate
+  and replace the Share Target host, then update packaging and its current compatibility tests.
+  Do not delete individual dependencies from the working installation. No build/release ran.
 ## v0.1.18 release completed — 2026-11-06
 
 - The user confirmed notification synchronization works on IOTFRESH and explicitly requested

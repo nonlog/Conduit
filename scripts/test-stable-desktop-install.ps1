@@ -36,6 +36,10 @@ try {
     # Simulate an in-place upgrade over the retired frontend.
     $retired = Join-Path $install 'conduit-nova.exe'
     [IO.File]::WriteAllText($retired, 'retired frontend fixture')
+    [IO.File]::WriteAllText((Join-Path $install 'Conduit.dll'), 'legacy WinUI fixture')
+    [IO.File]::WriteAllText((Join-Path $install 'Microsoft.WinUI.dll'), 'legacy WinUI fixture')
+    New-Item -ItemType Directory -Path (Join-Path $install 'zh-CN') -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $install 'zh-CN\Microsoft.ui.xaml.dll.mui'), 'legacy resource fixture')
     $installAttempted = $true
     $results = @(& (Join-Path $install 'tools/install-windows.ps1') -SourceDir $install -InstallDir $install -NoStart)
     $result = $results | Where-Object { $_ -is [pscustomobject] } | Select-Object -Last 1
@@ -49,6 +53,11 @@ try {
     }
 
     if (Test-Path -LiteralPath $retired) { throw 'In-place upgrade kept the retired Nova executable' }
+    foreach ($legacy in @('Conduit.dll', 'Microsoft.WinUI.dll', 'zh-CN')) {
+        if (Test-Path -LiteralPath (Join-Path $install $legacy)) {
+            throw "In-place upgrade kept legacy WinUI payload: $legacy"
+        }
+    }
 
     $shortcutPath = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Microsoft\Windows\Start Menu\Programs\Conduit.lnk'
     $shell = New-Object -ComObject WScript.Shell
@@ -58,7 +67,7 @@ try {
     }
     # Read the expected version from the checked-in native Share Target manifest.
     # This assertion must advance with every release; never pin a version literal.
-    $shareManifestPath = Join-Path $PSScriptRoot '..\windows\conduit-ui\ShareTargetPackage\AppxManifest.xml'
+    $shareManifestPath = Join-Path $PSScriptRoot '..\windows\conduit-share-target\ShareTargetPackage\AppxManifest.xml'
     [xml]$expectedManifest = Get-Content -LiteralPath $shareManifestPath -Raw
     $expectedShareVersion = [string]$expectedManifest.Package.Identity.Version
     if ($expectedShareVersion -notmatch '^\d+\.\d+\.\d+\.\d+$') {

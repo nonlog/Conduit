@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$ManifestPath = (Join-Path $PSScriptRoot '..\windows\conduit-ui\ShareTargetPackage\AppxManifest.xml'),
+[string]$ManifestPath = (Join-Path $PSScriptRoot '..\windows\conduit-share-target\ShareTargetPackage\AppxManifest.xml'),
     [Parameter(Mandatory)]
     [string]$OutputPackage,
 
@@ -37,6 +37,7 @@ $stage = Join-Path ([IO.Path]::GetTempPath()) "conduit-share-target-$PID"
 try {
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
     Copy-Item -LiteralPath $manifest -Destination (Join-Path $stage 'AppxManifest.xml') -Force
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\windows\conduit-daemon\assets\conduit-icon.png') -Destination (Join-Path $stage 'conduit-icon.png') -Force
     $outputDir = [IO.Path]::GetDirectoryName($output)
     New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
     Remove-Item -LiteralPath $output -Force -ErrorAction SilentlyContinue

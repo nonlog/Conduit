@@ -2,7 +2,7 @@
 //!
 //! The wire payload is intentionally tiny and content-addressed. The daemon never polls this file:
 //! the phone sends a new preview only after an authenticated connection or a real wallpaper-change
-//! callback, and the WinUI process already watches the data directory for changes.
+//! callback, and the native desktop already watches the data directory for changes.
 
 use anyhow::{anyhow, Context as _, Result};
 use sha2::Digest as _;

@@ -1,0 +1,27 @@
+[package]
+name = "conduit-share-target"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Native Windows Share Target host for Conduit"
+authors = ["Codex <codex@openai.com>"]
+
+[dependencies]
+windows = { version = "0.62.2", features = [
+    "ApplicationModel_Activation",
+    "ApplicationModel_DataTransfer_ShareTarget",
+    "Foundation_Collections",
+    "Storage",
+    "Win32_System_WinRT",
+] }
+
+[build-dependencies]
+winres = "0.1.12"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

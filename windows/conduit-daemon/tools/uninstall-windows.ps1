@@ -49,7 +49,7 @@ $appData = [Environment]::GetFolderPath([Environment+SpecialFolder]::Application
 $installDir = Join-Path $localAppData 'Programs\Conduit'
 # Scoop deployments call this script from the installed tools directory; prefer that runtime root.
 $scriptRuntime = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-if (Test-Path -LiteralPath (Join-Path $scriptRuntime 'Conduit.exe') -PathType Leaf) { $installDir = $scriptRuntime }
+if (Test-Path -LiteralPath (Join-Path $scriptRuntime 'conduit-share-target.exe') -PathType Leaf) { $installDir = $scriptRuntime }
 $programs = Join-Path $appData 'Microsoft\Windows\Start Menu\Programs'
 $shortcut = Join-Path $programs 'Conduit.lnk'
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
@@ -59,6 +59,7 @@ $explorerKey = 'HKCU:\Software\Classes\*\shell\Conduit.SendToPhone'
 
 Get-Process conduit-daemon -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Get-Process Conduit -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process conduit-share-target -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Get-Process conduit-nova, conduit-tauri-preview -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Get-Process conduit-rune -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Remove-ConduitShareTargetPackage $installDir

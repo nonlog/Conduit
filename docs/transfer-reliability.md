@@ -62,10 +62,10 @@ checkout or reintroduce the rejected sensitive-notification setting.
 - Android send controls have equal width/height and bounded one-line labels.
   Both endpoints show per-file progress, queued/waiting/terminal states and cancel
   controls. Desktop transfer state remains visible from all four pages.
-- Preserve the native WinUI/Mica/system-accent UI and bidirectional arrow assets.
+- Preserve the native Rune/system-accent UI and bidirectional arrow assets.
 - Windows upgrades compare the sparse Share Target MSIX manifest version against
   the registered version. An older identity must be updated in place to prevent
-  the new WinUI binary loading old XAML PRI resources. Registration uses temporary
+  the new Rust Share Target host loading an old registered executable. Registration uses temporary
   signing-certificate trust with administrator approval when needed, and removes
   only trust it added; existing user data and pairing are not replaced.
 

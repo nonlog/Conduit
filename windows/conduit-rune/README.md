@@ -12,11 +12,10 @@ Rust daemon continues to own Noise, LAN/Relay, clipboard and file transfers.
 The on-demand UI watches bounded state files and does not poll in the background
 or create a second identity or transport.
 
-`Conduit.exe` is retained as a **Windows Share Target compatibility host** with
-its sparse MSIX identity. This host is still WinUI/.NET, not Rust; it is not an
-alternative desktop. Normal launches redirect to Rune. Keeping it avoids
-silently removing Windows' native file Share contract before a Rust replacement
-has been implemented and verified.
+`conduit-share-target.exe` is retained as a **Windows Share Target host** with
+its sparse MSIX identity. It is a small Rust process that receives Windows
+`StorageItems` and forwards them through `conduit-send.exe`; it does not open a
+second desktop UI or carry a WebView/.NET runtime.
 
 Scoop's persisted data directory remains authoritative. Portable installations
 with their own sibling daemon keep their own data directory. The retired standalone

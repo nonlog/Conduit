@@ -8,8 +8,7 @@ $ErrorActionPreference = 'Stop'
 $zipPath = (Resolve-Path -LiteralPath $PackageZip).Path
 $root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $expected = @(
-    'conduit-rune.exe',
-    'Conduit.exe', 'Conduit.dll', 'Conduit.pri', 'resources.pri',
+    'conduit-rune.exe', 'conduit-share-target.exe',
     'conduit-daemon.exe', 'conduit-send.exe',
     'Conduit.ShareTarget.msix', 'Conduit.ShareTarget.cer',
     'tools/install-windows.ps1', 'tools/uninstall-windows.ps1'
@@ -30,14 +29,21 @@ try {
         if (@($entries | Where-Object { $_ -match '(^|/)(conduit-nova|conduit-tauri-preview)\.exe$' }).Count -gt 0) {
             throw 'Retired Nova/Tauri frontend must not be packaged'
         }
+        if (@($entries | Where-Object {
+                $_ -match '\.(dll|mui|pri|deps\.json|runtimeconfig\.json)$' -or
+                $_ -match '(^|/)Microsoft\.WindowsAppSDK' -or
+                $_ -match '(^|/)Microsoft\.WinUI'
+            }).Count -gt 0) {
+            throw 'Legacy WinUI/.NET/WebView payload must not be packaged'
+        }
         [IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $stage)
     }
     finally { $zip.Dispose() }
 
-    foreach ($name in @('conduit-rune.exe', 'Conduit.exe', 'conduit-daemon.exe')) {
+    foreach ($name in @('conduit-rune.exe', 'conduit-share-target.exe', 'conduit-daemon.exe')) {
         $path = Join-Path $stage $name
         $item = Get-Item -LiteralPath $path
-        $minSize = if ($name -eq 'Conduit.exe') { 64KB } else { 1MB }
+        $minSize = if ($name -eq 'conduit-share-target.exe') { 64KB } else { 1MB }
         if ($item.Length -lt $minSize) { throw "Unexpectedly small Windows executable $name" }
         $stream = [IO.File]::OpenRead($path)
         try { if ($stream.ReadByte() -ne 77 -or $stream.ReadByte() -ne 90) { throw "Not a PE executable: $name" } }
@@ -53,8 +59,7 @@ try {
         throw "The Rune desktop must use Windows GUI subsystem 2, got $subsystem"
     }
 
-    # Keep the sparse MSIX identity on WinUI while Rune owns the standard
-    # native desktop remains the only ordinary control surface.
+    # The sparse MSIX identity activates the native Rust Share Target host.
     $shareZip = [IO.Compression.ZipFile]::OpenRead((Join-Path $stage 'Conduit.ShareTarget.msix'))
     try {
         $entry = $shareZip.GetEntry('AppxManifest.xml')
@@ -62,8 +67,8 @@ try {
         $reader = [IO.StreamReader]::new($entry.Open())
         try { [xml]$manifest = $reader.ReadToEnd() } finally { $reader.Dispose() }
         if ($manifest.Package.Identity.Name -ne 'Conduit.Desktop.ShareTarget' -or
-            $manifest.Package.Applications.Application.Executable -ne 'Conduit.exe') {
-            throw 'Share Target must remain bound to the WinUI compatibility host'
+            $manifest.Package.Applications.Application.Executable -ne 'conduit-share-target.exe') {
+            throw 'Share Target must remain bound to the native Rust host'
         }
         if ($manifest.OuterXml -notmatch 'windows.shareTarget' -or
             $manifest.OuterXml -notmatch 'StorageItems') {
@@ -74,7 +79,7 @@ try {
 
     $installer = Get-Content (Join-Path $stage 'tools/install-windows.ps1') -Raw
     if ($installer -notmatch 'conduit-rune\.exe' -or
-        $installer -notmatch 'Conduit\.exe' -or
+        $installer -notmatch 'conduit-share-target\.exe' -or
         $installer -notmatch 'ConduitShortcut' -or $installer -notmatch 'ShareTargetRegistered') {
         throw 'Stable installer must select Rune and preserve the Windows Share Target host'
     }
@@ -83,7 +88,7 @@ try {
         Result = 'passed'
         DefaultDesktop = 'conduit-rune.exe'
         WebViewFrontend = $false
-        ShareTarget = 'Conduit.exe (WinUI compatibility host)'
+        ShareTarget = 'conduit-share-target.exe (Rust host)'
         Entries = $entries.Count
         ZipSha256 = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
     }

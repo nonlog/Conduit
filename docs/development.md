@@ -35,8 +35,8 @@ it by hand.
 dispatches, and `v*` tags. It builds three independent artifacts on clean GitHub-hosted runners:
 
 - Android: JDK 17 + Android SDK 36, `testDebugUnitTest`, and `assembleDebug`.
-- Windows: Rust 1.98 daemon/helper tests and release binaries plus .NET 10 / Uno Platform / WinUI 3
-  restore and self-contained publish, packaged as a Scoop-compatible x64 zip.
+- Windows: Rust 1.98 daemon, helper, Rune, and Share Target tests and release binaries,
+  packaged as a Scoop-compatible x64 zip.
 - Relay: Rust 1.98 tests and Linux x64 release binary.
 
 Successful runs retain `conduit-android-debug`, `conduit-windows-x64`, and

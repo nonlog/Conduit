@@ -36,7 +36,7 @@ So the hard requirements are non-functional:
 | Component | Language | Runs on |
 |---|---|---|
 | `android/` | Kotlin | phone |
-| `windows/` | Rust daemon + native Rust/Rune desktop | Windows (light resident daemon, on-demand Rune UI; retained WinUI compatibility host only for Windows Share Target) |
+| `windows/` | Rust daemon, Rune desktop, and native Share Target host | Windows (light resident daemon, on-demand Rune UI, and a small Rust Windows Share Target process) |
 | `relay/` | Rust | a VPS, for when LAN is unavailable |
 | `proto/` | protobuf | wire contract, single source of truth |
 
