@@ -1,7 +1,6 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [Parameter(Mandatory)]
     [string]$RustReleaseDir,
 
     [Parameter(Mandatory)]
