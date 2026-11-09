@@ -1,10 +1,32 @@
 # Conduit handoff
 
+## v0.1.19 release and IOTFRESH installation — 2026-11-09
+- The Rust Share Target cleanup was committed on `master` as `238a046d342a06a03fe96efd7cb2d5fae8253403`;
+  the packaging parameter fix was committed as `c2f3b1dc4a58c712ca1f45cb7dd0465437caa781`. Both
+  commits use `Codex <codex@openai.com>` as author and committer. `master` is pushed and clean.
+- Tagged `v0.1.19` and published the release at
+  `https://github.com/nonlog/Conduit/releases/tag/v0.1.19`. GitHub Actions run `42560559626`
+  passed Windows x64, Android, Relay, and GitHub Release. Windows ZIP SHA-256 is
+  `b6425c46d2449c6387f477a1df389137d7af2ffad3fa9f65f908f7fe1a5a5595`.
+- Updated `nonlog/scoop-www` `bucket/conduit.json` to `0.1.19` with the matching Windows ZIP hash;
+  commit `694e852f0932c3d95a286e72e0d9d10f5828b12c` is pushed with Codex author and committer.
+  The manifest now shims `conduit-rune.exe`, which is the package's actual desktop executable.
+- IOTFRESH is installed from Scoop `www` at `D:\Programs\Scoop\apps\conduit\0.1.19`.
+  `current\data` remains a junction to `D:\Programs\Scoop\persist\conduit\data`; the daemon
+  restarted with `state=linked`, `peer_name=OnePlus 12`, `path=lan`, and `link_enabled=true`.
+- Share Target registration is `Conduit.Desktop.ShareTarget` version `0.1.19.1`. The installed
+  package has Rust binaries, `Conduit.ShareTarget.msix`, its public certificate, tools, assets, and
+  README only. A bounded legacy-payload check found no `.dll`, `.pri`, `.mui`, WinUI, WebView,
+  Uno, `Conduit.exe`, `.deps.json`, or `.runtimeconfig.json` files. Pairing and notification history
+  remain under persisted `data`.
+- The Scoop bucket refresh reported an unrelated local edit in `bucket/workbuddy-cn.json` and did
+  not merge that bucket; it did not affect the Conduit manifest or installation. Do not discard that
+  unrelated edit.
+
 ## Rust Share Target cleanup — 2026-11-09
-- The working tree is intentionally dirty for the approved cleanup; no commit, push, local
-  release, or installation change has been made. The old `windows/conduit-ui` Uno/WinUI project,
+- The cleanup is complete and released. The old `windows/conduit-ui` Uno/WinUI project,
   its .NET/WebView packaging step, and the obsolete transfer-layout test are deleted from the
-  pending diff.
+  source tree.
 - Added `windows/conduit-share-target`, a small Rust Windows Runtime host. It reads
   `ShareTargetActivatedEventArgs`, receives `StorageItems`, and forwards each file to the existing
   `conduit-send.exe` helper. The sparse MSIX identity remains, with its executable now set to
@@ -12,13 +34,13 @@
 - `scripts/package-windows.ps1` now packages only Rust binaries plus the MSIX and public `.cer`.
   `install-windows.ps1` uses an allowlist to remove old WinUI/.NET/WebView files and language
   directories while preserving `data`, `tools`, and `assets`. The Share Target manifest is
-  `0.1.18.1` so an installed `0.1.18.0` identity is replaced; release version validation accepts
+  `0.1.19.1` so an installed `0.1.18.0` identity is replaced; release version validation accepts
   the package revision.
-- Validation so far: `cargo check -p conduit-share-target --target x86_64-pc-windows-msvc` passed;
-  `scripts/test-native-only-desktop.ps1` passed; PowerShell packaging/install scripts were parsed.
-  `cargo fmt --check` and `scripts/verify-version.ps1 -ExpectedVersion 0.1.18` passed. Full Windows
-  packaging, install smoke, and real Share Sheet transfer remain GitHub Actions checks. The
-  installer now also copies updated `tools` when source and install directories differ, while
+- Local validation passed: `cargo check -p conduit-share-target --target x86_64-pc-windows-msvc`,
+  `cargo fmt --all -- --check`, `scripts/test-native-only-desktop.ps1`, version validation for
+  `0.1.19`, PowerShell parser checks, and `git diff --check`. The tagged GitHub Actions run also
+  passed full Windows packaging, isolated install/uninstall, Share Target identity, and daemon exit
+  checks. The installer copies updated `tools` when source and install directories differ while
   preserving the existing `data` junction.
 
 ## IOTFRESH Windows package audit — 2026-11-09
