@@ -426,20 +426,6 @@ pub fn save_material_preference(material: crate::window_material::Material) -> R
     fs::write(dir.join("rune-material.txt"), material.name()).map_err(|e| e.to_string())
 }
 
-pub fn smooth_scroll_preference() -> bool {
-    bounded(&data_dir().join("rune-smooth-scroll.txt"), 16).trim() != "false"
-}
-
-pub fn save_smooth_scroll_preference(enabled: bool) -> Result<(), String> {
-    let dir = data_dir();
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    fs::write(
-        dir.join("rune-smooth-scroll.txt"),
-        if enabled { "true" } else { "false" },
-    )
-    .map_err(|e| e.to_string())
-}
-
 pub fn daemon_path() -> Option<PathBuf> {
     if let Some(path) = env::var_os("CONDUIT_DAEMON_PATH").map(PathBuf::from) {
         if path.is_file() {

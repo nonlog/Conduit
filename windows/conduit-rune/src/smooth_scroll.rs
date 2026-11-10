@@ -2,6 +2,7 @@
 //! Rune's bounded glide owns frames and becomes completely idle at its destination.
 
 use rune::{El, ScrollPos, WheelEvent};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -13,7 +14,22 @@ struct Position {
     direction: f32,
 }
 
+fn wheel_delta_y(event: WheelEvent) -> f32 {
+    // winit on Windows reports 1.0 LineDelta per wheel notch and rune scales LineDelta by 40pt;
+    // multiply notched steps up to standard 3-line (120pt) Windows wheel distance.
+    if !event.precise && event.dy.abs() <= 80.0 {
+        event.dy * 3.0
+    } else {
+        event.dy
+    }
+}
+
 impl Position {
+    fn cancel_glide(&mut self) {
+        self.target = None;
+        self.last_input = None;
+    }
+
     fn target_for(&mut self, event: WheelEvent, now: Instant) -> Option<f32> {
         if event.precise
             || event.mods.ctrl
@@ -23,26 +39,27 @@ impl Position {
             || event.dy == 0.0
             || event.dx.abs() > event.dy.abs()
         {
-            self.target = None;
-            self.last_input = None;
+            self.cancel_glide();
             return None;
         }
         let max = self.current.max[1].max(0.0);
         if max == 0.0 {
             return None;
         }
-        let direction = -event.dy.signum();
-        let continuing = self
-            .last_input
-            .is_some_and(|last| now.saturating_duration_since(last) < Duration::from_millis(350))
-            && self.direction == direction;
+        let dy = wheel_delta_y(event);
+        let direction = -dy.signum();
+        let continuing = self.direction == direction
+            && (self.target.is_some()
+                || self.last_input.is_some_and(|last| {
+                    now.saturating_duration_since(last) < Duration::from_millis(500)
+                }));
         // A reversal starts from the presented offset, not the unconsumed old target.
         let from = if continuing {
             self.target.unwrap_or(self.current.offset[1])
         } else {
             self.current.offset[1]
         };
-        let next = (from - event.dy).clamp(0.0, max);
+        let next = (from - dy).clamp(0.0, max);
         self.last_input = Some(now);
         self.direction = direction;
         self.target = Some(next);
@@ -51,25 +68,29 @@ impl Position {
 }
 
 #[derive(Clone, Default)]
-pub struct SmoothScroll(Arc<Mutex<Position>>);
+pub struct SmoothScroll(Arc<Mutex<BTreeMap<String, Position>>>);
 
 impl SmoothScroll {
     pub fn reset(&self) {
         if let Ok(mut state) = self.0.lock() {
-            *state = Position::default();
+            for pos in state.values_mut() {
+                pos.cancel_glide();
+            }
         }
     }
 
     pub fn viewport<S: 'static>(&self, element: El, key: String, enabled: bool) -> El {
         let observe = self.0.clone();
+        let observe_key = key.clone();
         let input = self.0.clone();
         element
             .on_scroll_offset(move |pos: ScrollPos| {
                 if let Ok(mut state) = observe.lock() {
-                    state.current = pos;
-                    if let Some(target) = state.target {
+                    let entry = state.entry(observe_key.clone()).or_default();
+                    entry.current = pos;
+                    if let Some(target) = entry.target {
                         let target = target.clamp(0.0, pos.max[1].max(0.0));
-                        state.target = ((target - pos.offset[1]).abs() > 0.5).then_some(target);
+                        entry.target = ((target - pos.offset[1]).abs() > 0.5).then_some(target);
                     }
                 }
             })
@@ -80,7 +101,8 @@ impl SmoothScroll {
                 let Ok(mut state) = input.lock() else {
                     return false;
                 };
-                let Some(target) = state.target_for(event, Instant::now()) else {
+                let entry = state.entry(key.clone()).or_default();
+                let Some(target) = entry.target_for(event, Instant::now()) else {
                     return false;
                 };
                 // The runtime respects reduced motion and clamps after layout/content changes.
@@ -128,13 +150,14 @@ mod tests {
         rt
     }
     fn offset(rt: &Runtime<State>) -> f32 {
-        rt.state.scroll.0.lock().unwrap().current.offset[1]
+        rt.state.scroll.0.lock().unwrap()["viewport"].current.offset[1]
     }
 
     #[test]
     fn notched_wheel_moves_over_multiple_frames_then_settles() {
         let mut rt = rig(true);
-        rt.wheel_event(WheelEvent::new(0.0, -120.0).at(100.0, 100.0));
+        // 40pt is the raw LineDelta(0, -1) produced by winit + rune on Windows.
+        rt.wheel_event(WheelEvent::new(0.0, -40.0).at(100.0, 100.0));
         rt.frame(1.0 / 60.0);
         let first = offset(&rt);
         assert!(first > 0.0 && first < 120.0, "first offset {first}");
@@ -149,6 +172,19 @@ mod tests {
             rt.frame(1.0 / 60.0);
             assert_eq!(offset(&rt), end);
         }
+    }
+
+    #[test]
+    fn reset_preserves_scroll_bounds_when_returning_to_page() {
+        let mut rt = rig(true);
+        rt.state.scroll.reset();
+        rt.wheel_event(WheelEvent::new(0.0, -40.0).at(100.0, 100.0));
+        rt.frame(1.0 / 60.0);
+        let first = offset(&rt);
+        assert!(
+            first > 0.0 && first < 120.0,
+            "expected smooth glide after reset, got {first}"
+        );
     }
 
     #[test]

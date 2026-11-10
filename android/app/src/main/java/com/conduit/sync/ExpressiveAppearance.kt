@@ -3,11 +3,9 @@
 package com.conduit.sync
 
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -27,8 +25,11 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Path
+import android.view.HapticFeedbackConstants
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
@@ -270,35 +271,64 @@ internal fun ExpressiveNavigationDock(
         ) {
             BoxWithConstraints(Modifier.height(ExpressiveLayout.dockHeight).padding(4.dp)) {
                 val cell = maxWidth / 4
-                val targetOffset = cell * selectedIndex
-                val offset by animateDpAsState(
-                    targetValue = targetOffset,
+                val lensPosition by animateFloatAsState(
+                    targetValue = selectedIndex.toFloat(),
                     animationSpec = if (animated) MaterialTheme.motionScheme.defaultSpatialSpec() else snap(),
-                    label = "Navigation selection",
+                    label = "Navigation lens position",
                 )
-                val travelFraction = if (cell.value > 0f) {
-                    (abs((targetOffset - offset).value) / cell.value).coerceIn(0f, 1f)
-                } else {
-                    0f
-                }
+                val offset = cell * lensPosition
+                val travelFraction = abs(selectedIndex.toFloat() - lensPosition).coerceIn(0f, 1f)
                 Box(
                     Modifier
                         .offset(x = offset)
                         .testTag("navigation-indicator")
                         .width(cell)
-                        .fillMaxHeight()
-                        .graphicsLayer {
-                            scaleX = 1f + 0.08f * travelFraction
-                            scaleY = 1f - 0.04f * travelFraction
-                        }
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.surfaceContainerHighest),
-                )
+                        .fillMaxHeight(),
+                ) {
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .graphicsLayer {
+                                scaleX = 1f + 0.10f * travelFraction
+                                scaleY = 1f - 0.04f * travelFraction
+                            }
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+                    )
+                }
                 Row(Modifier.fillMaxSize().selectableGroup()) {
-                    DockItem("Home", R.drawable.ic_dashboard, selectedIndex == 0, onHome, Modifier.weight(1f))
-                    DockItem("Transfers", R.drawable.ic_transfer, selectedIndex == 1, onTransfers, Modifier.weight(1f))
-                    DockItem("Clipboard", R.drawable.ic_file_outline, selectedIndex == 2, onClipboard, Modifier.weight(1f))
-                    DockItem("Settings", R.drawable.ic_settings_outline, selectedIndex == 3, onSettings, Modifier.weight(1f))
+                    DockItem(
+                        label = "Home",
+                        icon = R.drawable.ic_dashboard,
+                        selected = selectedIndex == 0,
+                        coverage = (1f - abs(lensPosition - 0f)).coerceIn(0f, 1f),
+                        onClick = onHome,
+                        modifier = Modifier.weight(1f),
+                    )
+                    DockItem(
+                        label = "Transfers",
+                        icon = R.drawable.ic_transfer,
+                        selected = selectedIndex == 1,
+                        coverage = (1f - abs(lensPosition - 1f)).coerceIn(0f, 1f),
+                        onClick = onTransfers,
+                        modifier = Modifier.weight(1f),
+                    )
+                    DockItem(
+                        label = "Clipboard",
+                        icon = R.drawable.ic_file_outline,
+                        selected = selectedIndex == 2,
+                        coverage = (1f - abs(lensPosition - 2f)).coerceIn(0f, 1f),
+                        onClick = onClipboard,
+                        modifier = Modifier.weight(1f),
+                    )
+                    DockItem(
+                        label = "Settings",
+                        icon = R.drawable.ic_settings_outline,
+                        selected = selectedIndex == 3,
+                        coverage = (1f - abs(lensPosition - 3f)).coerceIn(0f, 1f),
+                        onClick = onSettings,
+                        modifier = Modifier.weight(1f),
+                    )
                 }
             }
         }
@@ -306,30 +336,41 @@ internal fun ExpressiveNavigationDock(
 }
 
 @Composable
-private fun DockItem(label: String, icon: Int, selected: Boolean, onClick: () -> Unit, modifier: Modifier) {
+private fun DockItem(
+    label: String,
+    icon: Int,
+    selected: Boolean,
+    coverage: Float,
+    onClick: () -> Unit,
+    modifier: Modifier,
+) {
+    val view = LocalView.current
     val interactive = remember { MutableInteractionSource() }
     val pressed by interactive.collectIsPressedAsState()
     val animated = LocalConduitMotion.current
-    val color by animateColorAsState(
-        if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-        animationSpec = if (animated) tween(ConduitMotion.feedbackMillis) else snap(),
-        label = "Navigation ink",
-    )
-    val scale by animateFloatAsState(
-        if (pressed) 0.88f else if (selected) 1.08f else 1f,
+    val pressScale by animateFloatAsState(
+        if (pressed) 0.90f else 1f,
         animationSpec = if (animated) MaterialTheme.motionScheme.fastSpatialSpec() else snap(),
-        label = "Navigation glyph",
+        label = "Navigation press",
     )
+    val color = lerp(
+        MaterialTheme.colorScheme.onSurfaceVariant,
+        MaterialTheme.colorScheme.primary,
+        coverage,
+    )
+    val scale = (1f + 0.08f * coverage) * pressScale
     Column(
         modifier
             .fillMaxHeight()
-            .clip(CircleShape)
             .selectable(
                 selected = selected,
-                onClick = onClick,
+                onClick = {
+                    view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                    onClick()
+                },
                 role = Role.Tab,
                 interactionSource = interactive,
-                indication = LocalIndication.current,
+                indication = null,
             )
             .semantics(mergeDescendants = true) { contentDescription = label },
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -349,7 +390,7 @@ private fun DockItem(label: String, icon: Int, selected: Boolean, onClick: () ->
             label,
             style = MaterialTheme.typography.labelMedium,
             color = color,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+            fontWeight = if (coverage >= 0.5f) FontWeight.SemiBold else FontWeight.Medium,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )

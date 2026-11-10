@@ -213,7 +213,6 @@ struct Ui {
     material: window_material::Material,
     backdrop_active: bool,
     transparency: u8,
-    smooth_scrolling: bool,
     motion_allowed: bool,
     wheel_scroll: smooth_scroll::SmoothScroll,
     relays: TextEdit,
@@ -248,7 +247,6 @@ impl Ui {
             material: bridge::material_preference(),
             backdrop_active: false,
             transparency: bridge::transparency_preference(),
-            smooth_scrolling: bridge::smooth_scroll_preference(),
             motion_allowed: window_material::animations_enabled(),
             wheel_scroll: smooth_scroll::SmoothScroll::default(),
             image_cache: None,
@@ -457,18 +455,6 @@ impl Ui {
             Ok(()) => {
                 self.material = material;
                 self.backdrop_active = window_material::apply(material, &self.appearance);
-            }
-            Err(error) => {
-                self.show_notice(error, NoticeKind::Error);
-            }
-        }
-    }
-
-    fn set_smooth_scrolling(&mut self, enabled: bool) {
-        match bridge::save_smooth_scroll_preference(enabled) {
-            Ok(()) => {
-                self.smooth_scrolling = enabled;
-                self.wheel_scroll.reset();
             }
             Err(error) => {
                 self.show_notice(error, NoticeKind::Error);
@@ -2070,6 +2056,7 @@ fn field(label: &str, edit: &TextEdit, paint: Paint, editable: fn(&mut Ui) -> &m
         .child(text(label).font(type_::LABEL).color(paint.subdued))
         .child(
             row()
+                .role("textbox")
                 .w_full()
                 .min_h(40.0)
                 .px(12.0)
@@ -2082,6 +2069,7 @@ fn field(label: &str, edit: &TextEdit, paint: Paint, editable: fn(&mut Ui) -> &m
                         .w_full()
                         .single_line()
                         .color(paint.t.text)
+                        .caret(paint.accent, paint.accent.alpha(0.22))
                         .on_edit(move |ui: &mut Ui| {
                             ui.settings_dirty = true;
                             editable(ui)
@@ -2129,6 +2117,7 @@ fn relays_field(ui: &Ui, paint: Paint) -> El {
         content = content
             .child(
                 col()
+                    .role("textbox")
                     .w_full()
                     .min_h(98.0)
                     .padding(12.0)
@@ -2141,6 +2130,7 @@ fn relays_field(ui: &Ui, paint: Paint) -> El {
                             .w_full()
                             .min_h(74.0)
                             .color(paint.t.text)
+                            .caret(paint.accent, paint.accent.alpha(0.22))
                             .on_edit(|s: &mut Ui| {
                                 s.settings_dirty = true;
                                 &mut s.relays
@@ -2313,9 +2303,9 @@ fn notification_history_settings(ui: &Ui, paint: Paint) -> El {
         .child(tonal_block(paint, col().w_full().gap(10.0)
             .child(row().w_full().center_y().gap(10.0)
                 .child(text("Keep for").font(type_::BODY).color(paint.subdued))
-                .child(row().w(74.0).h(36.0).px(10.0).center_y().fill(paint.inset).radius(10.0).continuous_corners()
+                .child(row().role("textbox").w(74.0).h(36.0).px(10.0).center_y().fill(paint.inset).radius(10.0).continuous_corners()
                     .child(text_input(&ui.notification_retention, type_::BODY).key("notification-retention-days")
-                        .w_full().single_line().color(paint.t.text).label("Notification history retention in days")
+                        .w_full().single_line().color(paint.t.text).caret(paint.accent, paint.accent.alpha(0.22)).label("Notification history retention in days")
                         .on_edit(|s: &mut Ui| { s.settings_dirty = true; &mut s.notification_retention })))
                 .child(text("days").font(type_::BODY).color(paint.subdued))
                 .child(el().grow(1.0)))
@@ -2440,32 +2430,7 @@ fn settings(ui: &Ui, paint: Paint) -> El {
                     )
                     .child(materials),
             ))
-            .child(tonal_block(paint, transparency_control(ui, paint)))
-            .child(tonal_block(
-                paint,
-                row()
-                    .w_full()
-                    .center_y()
-                    .justify_between()
-                    .child(
-                        col()
-                            .gap(5.0)
-                            .child(heading("Smooth wheel scrolling", paint))
-                            .child(
-                                text("Respects Windows animation settings; trackpad stays direct")
-                                    .font(rune::TextStyle::new(10.0, 450.0))
-                                    .color(paint.faint)
-                                    .max_lines(2),
-                            ),
-                    )
-                    .child(preference_toggle(
-                        "smooth-scroll",
-                        "Toggle smooth wheel scrolling",
-                        ui.smooth_scrolling,
-                        paint,
-                        |ui| ui.set_smooth_scrolling(!ui.smooth_scrolling),
-                    )),
-            )),
+            .child(tonal_block(paint, transparency_control(ui, paint))),
     );
     let mut connection = col()
         .gap(12.0)
@@ -2781,6 +2746,7 @@ fn content(ui: &Ui, paint: Paint, compact: bool) -> El {
 fn search_field(ui: &Ui, paint: Paint) -> El {
     row()
         .key("search-box")
+        .role("textbox")
         .w(255.0)
         .h(36.0)
         .px(13.0)
@@ -2795,6 +2761,7 @@ fn search_field(ui: &Ui, paint: Paint) -> El {
                 .single_line()
                 .placeholder("Search…", paint.t.text_secondary)
                 .color(paint.t.text)
+                .caret(paint.accent, paint.accent.alpha(0.22))
                 .on_edit(|ui: &mut Ui| &mut ui.search),
         )
 }
@@ -2980,7 +2947,7 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
                 })
                 .child(content(ui, paint, compact)),
             scroll_key,
-            ui.smooth_scrolling && ui.motion_allowed,
+            ui.motion_allowed,
         ),
     );
     let shell_body = row()
@@ -3534,14 +3501,10 @@ mod tests {
         ui.page = Page::Settings;
         let mut rt = Runtime::new(ui, view, (1020.0, 605.0), Env::new(true, 1.0));
         rt.frame(0.0);
-        for key in [
-            "material-acrylic",
-            "material-mica",
-            "material-solid",
-            "smooth-scroll",
-        ] {
+        for key in ["material-acrylic", "material-mica", "material-solid"] {
             assert!(rt.find(key).is_some(), "missing {key}");
         }
+        assert!(rt.find("smooth-scroll").is_none());
     }
 
     #[test]
