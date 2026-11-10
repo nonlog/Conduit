@@ -1,47 +1,26 @@
 # Conduit handoff
 
-## Desktop card/divider redesign and Android FlClash UI & motion — 2026-11-10
-- Branch is `master` at `88c07db` (dirty worktree with modified `windows/conduit-rune/src/main.rs`,
-  `android/app/src/main/java/com/conduit/sync/{ActivityTabs,ConduitTheme,ExpressiveAppearance,ExpressiveDeviceCard,ExpressiveTransferCard,MainActivity,MotionSettingsSection}.kt`,
-  and `docs/CONDUIT_HANDOFF.md`).
+## v0.1.20 release, desktop tonal card redesign, Android FlClash UI & motion, and IOTFRESH installation — 2026-11-10
+- Branch is `master`, clean and pushed.
+- Release commits on `master`:
+  - `b10dda72669549a57a4e139934cca9006b78bbea`: desktop tonal surface redesign, Android FlClash UI & motion redesign, and `0.1.20` version bump.
+  - `856d4f3ab6c7fc620844f250b759ceaca1322011` (tag `v0.1.20`): restored `DeviceManagementCard` closing block and trimmed duplicate `ClipRow` tail in `MainActivity.kt`.
+  - Both commits use `Codex <codex@openai.com>` as author and committer.
 - **Desktop (`windows/conduit-rune/src/main.rs`)**:
-  - Root cause of the harsh cards and lines in light/translucent mode: `Paint::new(false)` previously
-    mixed `t.bg` with `t.card` by only `0.20` while drawing `1px` `paint.line` (`alpha = 0.14..0.18`)
-    wireframe borders around every card, notification row, button, and input, plus full-bleed
-    horizontal/vertical rules across the sidebar, shell, date headers, and settings sections.
-  - Replaced wireframe borders and full-bleed rules with a 4-tier borderless tonal surface hierarchy
-    (`surface -> card -> block -> inset`) and continuous squircle corners while preserving the
-    existing window layout and backdrop transparency.
-  - Notification date headers now render as compact tonal capsules without trailing horizontal rules;
-    settings, overview transfers, and shared links group items inside nested `tonal_block` surfaces.
+  - Replaced wireframe borders and full-bleed rules with a 4-tier borderless tonal surface hierarchy (`surface -> card -> block -> inset`) and continuous squircle corners while preserving the existing window layout and backdrop transparency.
+  - Notification date headers now render as compact tonal capsules without trailing horizontal rules; settings, overview transfers, and shared links group items inside nested `tonal_block` surfaces.
 - **Android (`android/app/src/main/java/com/conduit/sync/`)**:
-  - Redesigned mobile cards, surface hierarchy, and finite input/state-driven motion after
-    `chen08209/FlClash` (`prism_ui`):
-    - Added `FlClashScallopShape` (morphing `Cookie12Sided`, `Cookie9Sided`, `Cookie6Sided`, and
-      `Clover4Leaf` polar scalloped shapes), `Modifier.elasticPress`, `ExpressiveBlock` nested
-      tonal containers, and `FlClashShapeBadge`.
-    - Upgraded `ExpressiveDeviceCard` with FlClash's `CurrentOutboundCard` hero layout (clipped
-      top-end 12-sided cookie watermark that rotates/scales when linked, 4-leaf clover peer badge,
-      nested route/status block, and a 64dp primary toggle that morphs between `Circle` and
-      `Cookie9Sided` while rotating 40°) and `DashboardConnectedGroup` send buttons (`26dp` outer /
-      `12dp` inner corners morphing on press, side-by-side at phone width and stacked on narrow or
-      large-font viewports).
-    - Upgraded `ExpressiveNavigationDock` to a full capsule dock with velocity-stretched lens
-      indicator (`navigation-indicator`), `ExpressiveTransferCard` / `HomeTransfersSummary` /
-      `DeviceActionsCard` / `ClipRow` with nested `ExpressiveBlock` cells, and `SwitchPreferenceRow`
-      with morphing `Cookie6Sided` badges.
-  - All animations remain strictly finite and event/state-driven (zero idle wakeups) and honor
-    `LocalConduitMotion`.
-- **Verification**:
-  - `cargo fmt --manifest-path windows/conduit-rune/Cargo.toml --all -- --check` passed.
-  - `cargo check --manifest-path windows/conduit-rune/Cargo.toml` passed with 0 warnings.
-  - `cargo test --manifest-path windows/conduit-rune/Cargo.toml` passed (45/45 tests).
-  - `./scripts/test-native-only-desktop.ps1` and `python scripts/sync-android-brand.py --check`
-    passed, and headless Rune light/dark scene snapshots were visually inspected.
-  - Android Gradle compilation and emulator UI tests (`ConduitMotionInstrumentedTest`,
-    `ExpressiveLayoutInstrumentedTest`) have not been run on GitHub Actions yet; next action when
-    requested is to commit with `Codex <codex@openai.com>`, push, and run the GitHub Actions
-    workflows.
+  - Redesigned mobile cards, surface hierarchy, and finite input/state-driven motion after `chen08209/FlClash` (`prism_ui`): `FlClashScallopShape`, `Modifier.elasticPress`, `ExpressiveBlock`, `FlClashShapeBadge`, `CurrentOutboundCard`-style hero card with 12-sided cookie watermark + 4-leaf clover peer badge + 9-sided morphing start toggle, `DashboardConnectedGroup` send buttons, and capsule `ExpressiveNavigationDock`.
+- **CI & GitHub Release (`v0.1.20`)**:
+  - `Build` workflow run `42753505813` for `v0.1.20` passed across `Relay Linux x64`, `Windows x64`, `Android`, and `GitHub Release`.
+  - `Android Expressive` workflow run `42753505856` passed across `Official Expressive build and tests` and `Android 16 visual and interaction tests` (emulator instrumented suite).
+  - Published release: `https://github.com/nonlog/Conduit/releases/tag/v0.1.20`
+    - `Conduit-0.1.20-windows-x64.zip` (`7,529,099` bytes, SHA-256 `2cc103d0909e2ee0e990c3318d49250ac5e79573be96bb1bb01cb02dd8b77477`)
+    - `Conduit-0.1.20-android.apk` (`4,342,240` bytes, SHA-256 `611ce06a47cbc27d752016a1f61634ff4a9cbb2b647137b9299d4606ff46e54a`)
+    - `Conduit-0.1.20-relay-linux-x64` (`951,240` bytes, SHA-256 `f9d2588c17def6ed76ede83d37036dd551fe3c62ffca7d037ab74765727ba898`)
+- **Scoop & `IOTFRESH` host installation**:
+  - Updated `D:\Programs\Scoop\buckets\www\bucket\conduit.json` to `0.1.20` and pushed commit `0451ea0001651a0082665da455d1590811571279` to `nonlog/scoop-www` (`master`).
+  - Upgraded `conduit` on `IOTFRESH` via `scoop update conduit`; `D:\Programs\Scoop\apps\conduit\current` now points to `D:\Programs\Scoop\apps\conduit\0.1.20`, and both `conduit-daemon.exe` and `conduit-rune.exe` are running.
 
 ## v0.1.19 release and IOTFRESH installation — 2026-11-09
 - The Rust Share Target cleanup was committed on `master` as `238a046d342a06a03fe96efd7cb2d5fae8253403`;
