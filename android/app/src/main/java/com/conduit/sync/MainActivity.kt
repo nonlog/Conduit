@@ -1023,7 +1023,13 @@ private fun DeviceManagementCard(
                 icon = R.drawable.ic_add,
                 title = if (pairing) "Cancel pairing" else "Add another computer",
                 subtitle = if (pairing) "Pairing is in progress" else "Keep existing computers paired and connected",
-                onClick = i@Composable
+                onClick = if (pairing) onCancelPair else onPair,
+            )
+        }
+    }
+}
+
+@Composable
 private fun DeviceActionsCard(history: List<HistoryEntry>, onOpenHistory: () -> Unit) {
     val latest = history.firstOrNull()
     val c = MaterialTheme.colorScheme
@@ -1322,12 +1328,6 @@ internal fun ClipRow(entry: HistoryEntry) {
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-        }
-    }
-}
-
-    overflow = TextOverflow.Ellipsis,
-            )
         }
     }
 }
