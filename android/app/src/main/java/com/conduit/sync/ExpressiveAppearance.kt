@@ -2,15 +2,15 @@
 
 package com.conduit.sync
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.LocalIndication
+import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
@@ -23,7 +23,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -32,23 +36,78 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.min
+import kotlin.math.sin
 
 internal object ExpressiveLayout {
     val pageInset = 16.dp
-    val cardCorner = 20.dp
-    val cardSpacing = 10.dp
+    val cardCorner = 28.dp
+    val blockCorner = 20.dp
+    val cardSpacing = 12.dp
     val dockHeight = 62.dp
 }
 
-/** Quiet neutral surfaces; no outlines or fake glass gradients. */
+/**
+ * FlClash / prism_ui scalloped polygon shape (cookie12Sided, cookie9Sided, cookie6Sided, clover4Leaf)
+ * that morphs continuously between a pure circle (progress = 0f) and an N-lobed shape (progress = 1f).
+ */
+internal class FlClashScallopShape(
+    private val lobes: Int,
+    private val depth: Float,
+    private val progress: Float = 1f,
+    private val phaseRad: Float = 0f,
+) : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
+        val path = Path()
+        val cx = size.width / 2f
+        val cy = size.height / 2f
+        val maxR = min(cx, cy)
+        val p = progress.coerceIn(0f, 1f)
+        val amp = (depth * p).coerceIn(0f, 0.35f)
+        val baseR = maxR / (1f + amp)
+        val steps = 96
+        for (i in 0 until steps) {
+            val theta = (2.0 * PI * i / steps).toFloat()
+            val r = baseR * (1f + amp * cos(lobes * (theta - phaseRad)))
+            val x = cx + r * cos(theta)
+            val y = cy + r * sin(theta)
+            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+        }
+        path.close()
+        return Outline.Generic(path)
+    }
+}
+
+/** FlClash / prism_ui ElasticPress: spring scale on pointer down without changing layout bounds. */
+@Composable
+internal fun Modifier.elasticPress(pressed: Boolean, pressedScale: Float = 0.96f): Modifier {
+    val animated = LocalConduitMotion.current
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) pressedScale else 1f,
+        animationSpec = if (animated) MaterialTheme.motionScheme.fastSpatialSpec() else snap(),
+        label = "Elastic press",
+    )
+    return this.graphicsLayer {
+        scaleX = scale
+        scaleY = scale
+    }
+}
+
+/** FlClash SurfaceLevel.card: borderless tonal card with generous rounded corners. */
 @Composable
 internal fun ExpressiveCard(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(ExpressiveLayout.cardCorner),
         color = MaterialTheme.colorScheme.surfaceContainerLow,
-        shadowElevation = 1.dp,
+        shadowElevation = 0.dp,
     ) {
         // Surface is a Box, unlike the previous Material Card's ColumnScope.
         // Keep sequential settings rows vertical, including the OEM battery controls.
@@ -56,30 +115,99 @@ internal fun ExpressiveCard(modifier: Modifier = Modifier, content: @Composable 
     }
 }
 
+/** FlClash DashboardBlock (SurfaceLevel.block): nested tonal block inside a card. */
+@Composable
+internal fun ExpressiveBlock(
+    modifier: Modifier = Modifier,
+    corner: Dp = ExpressiveLayout.blockCorner,
+    color: Color = MaterialTheme.colorScheme.surfaceContainer,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(corner),
+        color = color,
+        shadowElevation = 0.dp,
+    ) {
+        Column(content = content)
+    }
+}
+
+/** FlClash DashboardSwitchRow icon badge: morphs between Cookie6Sided (active) and Circle (idle). */
+@Composable
+internal fun FlClashShapeBadge(
+    icon: Int,
+    active: Boolean,
+    modifier: Modifier = Modifier,
+    size: Dp = 40.dp,
+    iconSize: Dp = 20.dp,
+) {
+    val c = MaterialTheme.colorScheme
+    val animated = LocalConduitMotion.current
+    val progress by animateFloatAsState(
+        targetValue = if (active) 1f else 0f,
+        animationSpec = if (animated) MaterialTheme.motionScheme.defaultSpatialSpec() else snap(),
+        label = "Badge morph",
+    )
+    val bg by animateColorAsState(
+        targetValue = if (active) c.primaryContainer else c.surfaceContainerHighest,
+        animationSpec = if (animated) tween(ConduitMotion.feedbackMillis) else snap(),
+        label = "Badge background",
+    )
+    val tint by animateColorAsState(
+        targetValue = if (active) c.primary else c.onSurfaceVariant,
+        animationSpec = if (animated) tween(ConduitMotion.feedbackMillis) else snap(),
+        label = "Badge tint",
+    )
+    Box(
+        modifier = modifier
+            .size(size)
+            .graphicsLayer { rotationZ = progress * 30f }
+            .clip(FlClashScallopShape(lobes = 6, depth = 0.11f, progress = progress))
+            .background(bg),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            painter = painterResource(icon),
+            contentDescription = null,
+            modifier = Modifier.size(iconSize).graphicsLayer { rotationZ = -progress * 30f },
+            tint = tint,
+        )
+    }
+}
+
 @Composable
 internal fun ExpressiveSectionTitle(title: String, detail: String? = null) {
     Row(
-        Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, top = 14.dp, bottom = 4.dp),
+        Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, top = 12.dp, bottom = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            title, modifier = Modifier.weight(1f),
-            style = MaterialTheme.typography.bodyMedium,
+            title,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1, overflow = TextOverflow.Ellipsis,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
         if (!detail.isNullOrBlank()) {
-            Text(detail, style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                detail,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
 
-/** Single-weight page title and a compact tonal action, as in the supplied reference. */
+/** Single-weight page title and a compact tonal action, styled after FlClash's header bar. */
 @Composable
 internal fun ExpressiveTopBar(title: String, action: (() -> Unit)? = null, back: (() -> Unit)? = null) {
     Row(
-        Modifier.fillMaxWidth().statusBarsPadding().heightIn(min = 72.dp)
+        Modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+            .heightIn(min = 72.dp)
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -89,12 +217,20 @@ internal fun ExpressiveTopBar(title: String, action: (() -> Unit)? = null, back:
                 Icon(painterResource(R.drawable.ic_arrow_back), "Back", modifier = Modifier.size(22.dp))
             }
         }
-        Text(title, Modifier.weight(1f), style = MaterialTheme.typography.headlineLarge,
-            maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(
+            title,
+            Modifier.weight(1f),
+            style = MaterialTheme.typography.headlineLarge,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
         if (action != null) {
+            val interaction = remember { MutableInteractionSource() }
+            val pressed by interaction.collectIsPressedAsState()
             FilledTonalIconButton(
                 onClick = action,
-                modifier = Modifier.size(44.dp),
+                interactionSource = interaction,
+                modifier = Modifier.size(44.dp).elasticPress(pressed, 0.92f),
                 colors = IconButtonDefaults.filledTonalIconButtonColors(
                     containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
                     contentColor = MaterialTheme.colorScheme.onSurface,
@@ -106,33 +242,58 @@ internal fun ExpressiveTopBar(title: String, action: (() -> Unit)? = null, back:
     }
 }
 
-/** Compact floating bar. Selection uses the official Expressive spatial motion token. */
+/** FlClash / prism_ui floating capsule NavigationDock with spring lens indicator. */
 @Composable
 internal fun ExpressiveNavigationDock(
-    selectedSettings: Boolean, onHome: () -> Unit, onSettings: () -> Unit,
+    selectedSettings: Boolean,
+    onHome: () -> Unit,
+    onSettings: () -> Unit,
     destination: String = if (selectedSettings) "Settings" else "Home",
-    onTransfers: () -> Unit = {}, onClipboard: () -> Unit = {},
+    onTransfers: () -> Unit = {},
+    onClipboard: () -> Unit = {},
 ) {
     val selectedIndex = listOf("Home", "Transfers", "Clipboard", "Settings").indexOf(destination).coerceAtLeast(0)
+    val animated = LocalConduitMotion.current
     Box(
-        Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 20.dp, vertical = 6.dp),
+        Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(horizontal = 20.dp, vertical = 8.dp),
         contentAlignment = Alignment.Center,
     ) {
         Surface(
-            modifier = Modifier.widthIn(max = 320.dp).fillMaxWidth(),
-            shape = RoundedCornerShape(24.dp),
+            modifier = Modifier.widthIn(max = 340.dp).fillMaxWidth(),
+            shape = CircleShape,
             color = MaterialTheme.colorScheme.surfaceContainer,
-            shadowElevation = 6.dp,
+            tonalElevation = 3.dp,
+            shadowElevation = 8.dp,
         ) {
             BoxWithConstraints(Modifier.height(ExpressiveLayout.dockHeight).padding(4.dp)) {
                 val cell = maxWidth / 4
+                val targetOffset = cell * selectedIndex
                 val offset by animateDpAsState(
-                    targetValue = cell * selectedIndex,
-                    animationSpec = if (LocalConduitMotion.current) MaterialTheme.motionScheme.defaultSpatialSpec() else snap(),
+                    targetValue = targetOffset,
+                    animationSpec = if (animated) MaterialTheme.motionScheme.defaultSpatialSpec() else snap(),
                     label = "Navigation selection",
                 )
-                Box(Modifier.offset(x = offset).testTag("navigation-indicator").width(cell).fillMaxHeight()
-                    .clip(RoundedCornerShape(18.dp)).background(MaterialTheme.colorScheme.surfaceContainerHighest))
+                val travelFraction = if (cell.value > 0f) {
+                    (abs((targetOffset - offset).value) / cell.value).coerceIn(0f, 1f)
+                } else {
+                    0f
+                }
+                Box(
+                    Modifier
+                        .offset(x = offset)
+                        .testTag("navigation-indicator")
+                        .width(cell)
+                        .fillMaxHeight()
+                        .graphicsLayer {
+                            scaleX = 1f + 0.08f * travelFraction
+                            scaleY = 1f - 0.04f * travelFraction
+                        }
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+                )
                 Row(Modifier.fillMaxSize().selectableGroup()) {
                     DockItem("Home", R.drawable.ic_dashboard, selectedIndex == 0, onHome, Modifier.weight(1f))
                     DockItem("Transfers", R.drawable.ic_transfer, selectedIndex == 1, onTransfers, Modifier.weight(1f))
@@ -151,23 +312,46 @@ private fun DockItem(label: String, icon: Int, selected: Boolean, onClick: () ->
     val animated = LocalConduitMotion.current
     val color by animateColorAsState(
         if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-        animationSpec = if (animated) tween(ConduitMotion.feedbackMillis) else snap(), label = "Navigation ink",
+        animationSpec = if (animated) tween(ConduitMotion.feedbackMillis) else snap(),
+        label = "Navigation ink",
     )
     val scale by animateFloatAsState(
         if (pressed) 0.88f else if (selected) 1.08f else 1f,
-        animationSpec = if (animated) MaterialTheme.motionScheme.fastSpatialSpec() else snap(), label = "Navigation glyph",
+        animationSpec = if (animated) MaterialTheme.motionScheme.fastSpatialSpec() else snap(),
+        label = "Navigation glyph",
     )
     Column(
-        modifier.fillMaxHeight().clip(CircleShape)
-            .selectable(selected = selected, onClick = onClick, role = Role.Tab,
-                interactionSource = interactive, indication = LocalIndication.current)
+        modifier
+            .fillMaxHeight()
+            .clip(CircleShape)
+            .selectable(
+                selected = selected,
+                onClick = onClick,
+                role = Role.Tab,
+                interactionSource = interactive,
+                indication = LocalIndication.current,
+            )
             .semantics(mergeDescendants = true) { contentDescription = label },
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Icon(painterResource(icon), null, Modifier.size(24.dp).graphicsLayer { scaleX = scale; scaleY = scale }, tint = color)
+        Icon(
+            painterResource(icon),
+            null,
+            Modifier.size(23.dp).graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            },
+            tint = color,
+        )
         Spacer(Modifier.height(2.dp))
-        Text(label, style = MaterialTheme.typography.labelMedium, color = color,
-            fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            color = color,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }

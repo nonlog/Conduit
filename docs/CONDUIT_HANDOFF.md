@@ -1,5 +1,48 @@
 # Conduit handoff
 
+## Desktop card/divider redesign and Android FlClash UI & motion — 2026-11-10
+- Branch is `master` at `88c07db` (dirty worktree with modified `windows/conduit-rune/src/main.rs`,
+  `android/app/src/main/java/com/conduit/sync/{ActivityTabs,ConduitTheme,ExpressiveAppearance,ExpressiveDeviceCard,ExpressiveTransferCard,MainActivity,MotionSettingsSection}.kt`,
+  and `docs/CONDUIT_HANDOFF.md`).
+- **Desktop (`windows/conduit-rune/src/main.rs`)**:
+  - Root cause of the harsh cards and lines in light/translucent mode: `Paint::new(false)` previously
+    mixed `t.bg` with `t.card` by only `0.20` while drawing `1px` `paint.line` (`alpha = 0.14..0.18`)
+    wireframe borders around every card, notification row, button, and input, plus full-bleed
+    horizontal/vertical rules across the sidebar, shell, date headers, and settings sections.
+  - Replaced wireframe borders and full-bleed rules with a 4-tier borderless tonal surface hierarchy
+    (`surface -> card -> block -> inset`) and continuous squircle corners while preserving the
+    existing window layout and backdrop transparency.
+  - Notification date headers now render as compact tonal capsules without trailing horizontal rules;
+    settings, overview transfers, and shared links group items inside nested `tonal_block` surfaces.
+- **Android (`android/app/src/main/java/com/conduit/sync/`)**:
+  - Redesigned mobile cards, surface hierarchy, and finite input/state-driven motion after
+    `chen08209/FlClash` (`prism_ui`):
+    - Added `FlClashScallopShape` (morphing `Cookie12Sided`, `Cookie9Sided`, `Cookie6Sided`, and
+      `Clover4Leaf` polar scalloped shapes), `Modifier.elasticPress`, `ExpressiveBlock` nested
+      tonal containers, and `FlClashShapeBadge`.
+    - Upgraded `ExpressiveDeviceCard` with FlClash's `CurrentOutboundCard` hero layout (clipped
+      top-end 12-sided cookie watermark that rotates/scales when linked, 4-leaf clover peer badge,
+      nested route/status block, and a 64dp primary toggle that morphs between `Circle` and
+      `Cookie9Sided` while rotating 40°) and `DashboardConnectedGroup` send buttons (`26dp` outer /
+      `12dp` inner corners morphing on press, side-by-side at phone width and stacked on narrow or
+      large-font viewports).
+    - Upgraded `ExpressiveNavigationDock` to a full capsule dock with velocity-stretched lens
+      indicator (`navigation-indicator`), `ExpressiveTransferCard` / `HomeTransfersSummary` /
+      `DeviceActionsCard` / `ClipRow` with nested `ExpressiveBlock` cells, and `SwitchPreferenceRow`
+      with morphing `Cookie6Sided` badges.
+  - All animations remain strictly finite and event/state-driven (zero idle wakeups) and honor
+    `LocalConduitMotion`.
+- **Verification**:
+  - `cargo fmt --manifest-path windows/conduit-rune/Cargo.toml --all -- --check` passed.
+  - `cargo check --manifest-path windows/conduit-rune/Cargo.toml` passed with 0 warnings.
+  - `cargo test --manifest-path windows/conduit-rune/Cargo.toml` passed (45/45 tests).
+  - `./scripts/test-native-only-desktop.ps1` and `python scripts/sync-android-brand.py --check`
+    passed, and headless Rune light/dark scene snapshots were visually inspected.
+  - Android Gradle compilation and emulator UI tests (`ConduitMotionInstrumentedTest`,
+    `ExpressiveLayoutInstrumentedTest`) have not been run on GitHub Actions yet; next action when
+    requested is to commit with `Codex <codex@openai.com>`, push, and run the GitHub Actions
+    workflows.
+
 ## v0.1.19 release and IOTFRESH installation — 2026-11-09
 - The Rust Share Target cleanup was committed on `master` as `238a046d342a06a03fe96efd7cb2d5fae8253403`;
   the packaging parameter fix was committed as `c2f3b1dc4a58c712ca1f45cb7dd0465437caa781`. Both

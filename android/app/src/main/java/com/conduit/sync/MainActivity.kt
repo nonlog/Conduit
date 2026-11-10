@@ -24,6 +24,7 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -1022,32 +1023,58 @@ private fun DeviceManagementCard(
                 icon = R.drawable.ic_add,
                 title = if (pairing) "Cancel pairing" else "Add another computer",
                 subtitle = if (pairing) "Pairing is in progress" else "Keep existing computers paired and connected",
-                onClick = if (pairing) onCancelPair else onPair,
-            )
-        }
-    }
-}
-
-@Composable
+                onClick = i@Composable
 private fun DeviceActionsCard(history: List<HistoryEntry>, onOpenHistory: () -> Unit) {
     val latest = history.firstOrNull()
     val c = MaterialTheme.colorScheme
-    ExpressiveCard(Modifier.fillMaxWidth().clickable(onClick = onOpenHistory)) {
-        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    val interaction = androidx.compose.runtime.remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    ExpressiveCard(
+        Modifier
+            .fillMaxWidth()
+            .elasticPress(pressed, 0.97f)
+            .clickable(
+                interactionSource = interaction,
+                indication = androidx.compose.foundation.LocalIndication.current,
+                onClick = onOpenHistory,
+            ),
+    ) {
+        Column(
+            Modifier.padding(horizontal = 20.dp, vertical = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Icon(painterResource(R.drawable.ic_history), null, Modifier.size(20.dp), tint = c.onSurfaceVariant)
+                Icon(painterResource(R.drawable.ic_history), null, Modifier.size(19.dp), tint = c.onSurfaceVariant)
                 Spacer(Modifier.width(10.dp))
                 Text("Latest item", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-                if (history.isNotEmpty()) StatusPill(history.size.toString())
+                if (history.isNotEmpty()) StatusPill(history.size.toString(), active = true)
+                Spacer(Modifier.width(6.dp))
                 Icon(painterResource(R.drawable.ic_chevron), "Open clipboard history", Modifier.size(20.dp), tint = c.onSurfaceVariant)
             }
-            Text(latest?.preview?.takeIf(String::isNotBlank) ?: "No clipboard items yet",
-                style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            if (latest != null) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(if (latest.direction == Direction.Sent) "Sent to desktop" else "Received from desktop",
-                        style = MaterialTheme.typography.bodySmall, color = c.onSurfaceVariant)
-                    Text(latest.ago().toString(), style = MaterialTheme.typography.bodySmall, color = c.onSurfaceVariant)
+            ExpressiveBlock(
+                modifier = Modifier.fillMaxWidth(),
+                corner = 18.dp,
+            ) {
+                Column(
+                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        latest?.preview?.takeIf(String::isNotBlank) ?: "No clipboard items yet",
+                        style = MaterialTheme.typography.bodyLarge,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (latest != null) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(
+                                if (latest.direction == Direction.Sent) "Sent to desktop" else "Received from desktop",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = c.onSurfaceVariant,
+                            )
+                            Text(latest.ago().toString(), style = MaterialTheme.typography.bodySmall, color = c.onSurfaceVariant)
+                        }
+                    }
                 }
             }
         }
@@ -1056,56 +1083,103 @@ private fun DeviceActionsCard(history: List<HistoryEntry>, onOpenHistory: () -> 
 
 @Composable
 internal fun SettingsDivider() {
-    HorizontalDivider(Modifier.padding(start = 56.dp, end = 14.dp), thickness = 0.5.dp,
-        color = MaterialTheme.colorScheme.outlineVariant)
+    HorizontalDivider(
+        Modifier.padding(start = 74.dp, end = 18.dp),
+        thickness = 0.5.dp,
+        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.07f),
+    )
 }
 
 @Composable
 internal fun PreferenceRow(
-    icon: Int, title: String, subtitle: String? = null,
-    onClick: (() -> Unit)? = null, trailing: (@Composable () -> Unit)? = null,
+    icon: Int,
+    title: String,
+    subtitle: String? = null,
+    onClick: (() -> Unit)? = null,
+    trailing: (@Composable () -> Unit)? = null,
 ) {
     val c = MaterialTheme.colorScheme
+    val interaction = androidx.compose.runtime.remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 62.dp)
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
-            .padding(start = 18.dp, end = 16.dp, top = 14.dp, bottom = 14.dp),
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 64.dp)
+            .then(
+                if (onClick != null) {
+                    Modifier
+                        .elasticPress(pressed, 0.98f)
+                        .clickable(
+                            interactionSource = interaction,
+                            indication = androidx.compose.foundation.LocalIndication.current,
+                            onClick = onClick,
+                        )
+                } else {
+                    Modifier
+                },
+            )
+            .padding(start = 18.dp, end = 16.dp, top = 12.dp, bottom = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Icon(painterResource(icon), null, Modifier.size(22.dp), tint = c.onSurfaceVariant)
+        Box(
+            Modifier
+                .size(40.dp)
+                .background(c.surfaceContainer, RoundedCornerShape(14.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(painterResource(icon), null, Modifier.size(20.dp), tint = c.onSurfaceVariant)
+        }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(title, style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
             subtitle?.takeIf(String::isNotBlank)?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall, color = c.onSurfaceVariant,
-                    maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = c.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
-        if (trailing != null) trailing()
-        else if (onClick != null) Icon(painterResource(R.drawable.ic_chevron), null, Modifier.size(20.dp), tint = c.onSurfaceVariant)
+        if (trailing != null) {
+            trailing()
+        } else if (onClick != null) {
+            Icon(painterResource(R.drawable.ic_chevron), null, Modifier.size(20.dp), tint = c.onSurfaceVariant)
+        }
     }
 }
 
 @Composable
 internal fun SwitchPreferenceRow(
-    icon: Int, title: String, subtitle: String? = null,
-    checked: Boolean, onCheckedChange: (Boolean) -> Unit,
+    icon: Int,
+    title: String,
+    subtitle: String? = null,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
 ) {
     val c = MaterialTheme.colorScheme
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 64.dp)
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 66.dp)
             .toggleable(value = checked, role = Role.Switch, onValueChange = onCheckedChange)
             .semantics(mergeDescendants = true) { contentDescription = title }
             .padding(horizontal = 18.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Icon(painterResource(icon), null, Modifier.size(22.dp), tint = c.onSurfaceVariant)
+        FlClashShapeBadge(icon = icon, active = checked)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(title, style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
             subtitle?.takeIf(String::isNotBlank)?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall, color = c.onSurfaceVariant, maxLines = 2,
-                    overflow = TextOverflow.Ellipsis)
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = c.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
         Switch(checked = checked, onCheckedChange = null)
@@ -1165,7 +1239,7 @@ private fun HistoryScreen(
                     value = query,
                     onValueChange = { query = it },
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(19.dp),
+                    shape = RoundedCornerShape(24.dp),
                     singleLine = true,
                     label = { Text("Search") },
                 )
@@ -1206,11 +1280,12 @@ internal fun filterHistory(entries: List<HistoryEntry>, query: String): List<His
 
 @Composable
 internal fun ClipRow(entry: HistoryEntry) {
-    val directionLabel = if (entry.direction == Direction.Sent) "Sent" else "Received"
+    val sent = entry.direction == Direction.Sent
+    val directionLabel = if (sent) "Sent" else "Received"
     ExpressiveCard(modifier = Modifier.fillMaxWidth()) {
         Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -1220,13 +1295,13 @@ internal fun ClipRow(entry: HistoryEntry) {
                 Surface(
                     modifier = Modifier.semantics { contentDescription = entry.direction.name },
                     shape = CircleShape,
-                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    color = if (sent) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest,
                 ) {
                     Text(
                         directionLabel,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        modifier = Modifier.padding(horizontal = 11.dp, vertical = 5.dp),
                         style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        color = if (sent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 Text(
@@ -1235,11 +1310,23 @@ internal fun ClipRow(entry: HistoryEntry) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Text(
-                entry.preview,
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = 4,
-                overflow = TextOverflow.Ellipsis,
+            ExpressiveBlock(
+                modifier = Modifier.fillMaxWidth(),
+                corner = 16.dp,
+            ) {
+                Text(
+                    entry.preview,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 4,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+    overflow = TextOverflow.Ellipsis,
             )
         }
     }

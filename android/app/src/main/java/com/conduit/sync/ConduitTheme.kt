@@ -68,9 +68,9 @@ internal fun ConduitTheme(darkOverride: Boolean? = null, motionOverride: Boolean
     ) else accent.copy(
         background = Color(0xFFF1F4F2), surface = Color(0xFFF1F4F2),
         surfaceDim = Color(0xFFD8DEDC), surfaceBright = Color(0xFFFAFCFB),
-        surfaceContainerLowest = Color(0xFFE8EDEB), surfaceContainerLow = Color(0xFFE8EEEC),
-        surfaceContainer = Color(0xFFE0E7E4), surfaceContainerHigh = Color(0xFFD8E0DD),
-        surfaceContainerHighest = Color(0xFFD0DAD6), surfaceVariant = Color(0xFFE0E7E4),
+        surfaceContainerLowest = Color(0xFFFFFFFF), surfaceContainerLow = Color(0xFFFAFCFB),
+        surfaceContainer = Color(0xFFE9EFEC), surfaceContainerHigh = Color(0xFFE1E8E5),
+        surfaceContainerHighest = Color(0xFFD6DFDC), surfaceVariant = Color(0xFFE9EFEC),
         onSurface = Color(0xFF191D1C), onBackground = Color(0xFF191D1C),
         onSurfaceVariant = Color(0xFF535F5C), outlineVariant = Color(0xFFD5DDDA),
         surfaceTint = Color.Transparent, secondary = accent.primary,

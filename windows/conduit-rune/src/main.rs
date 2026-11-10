@@ -15,9 +15,11 @@ use notices::{Kind as NoticeKind, Notice};
 use notify::{RecursiveMode, Watcher};
 use rune::tok::{self, Theme, type_};
 use rune::{
-    App, AppHandle, AppSpec, Color, Cx, El, Env, Icon, Image, ImageCache, Key, KeyEvent, Runtime,
-    ScrollSpec, SurfaceFit, TextEdit, Tx, Waker, col, el, icon, row, text, text_input,
+    App, AppHandle, AppSpec, Color, Cx, El, Icon, Image, ImageCache, Key, KeyEvent, ScrollSpec,
+    SurfaceFit, TextEdit, Tx, Waker, col, el, icon, row, text, text_input,
 };
+#[cfg(test)]
+use rune::{Env, Runtime};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -141,6 +143,7 @@ enum Page {
 }
 
 impl Page {
+    #[cfg(test)]
     const ALL: [Page; 7] = [
         Page::Overview,
         Page::Transfers,
@@ -658,6 +661,7 @@ struct Paint {
     surface: Color,
     sidebar: Color,
     card: Color,
+    block: Color,
     inset: Color,
     line: Color,
     subdued: Color,
@@ -673,13 +677,21 @@ impl Paint {
     fn new(dark: bool) -> Self {
         let color = |hex| rune::color::hex(hex).expect("valid Conduit design token");
         let t = tok::theme(dark);
-        // Keep every neutral surface derived from Rune's semantic theme. The small
-        // light-mode mix is intentional: Rune's reference card is pure white, while
-        // Conduit needs a quieter elevated surface so cards do not flash against the
-        // page when the Windows theme changes.
-        let card = t.bg.mix(t.card, if dark { 0.82 } else { 0.20 });
-        let inset = t.bg.mix(t.card, if dark { 0.42 } else { 0.10 });
-        let selected = t.bg.mix(t.card, if dark { 0.58 } else { 0.34 });
+        // Four-step borderless tonal hierarchy (page -> card -> block -> inset).
+        // Cards separate from the translucent shell through clean surface lift
+        // rather than dark wireframe strokes.
+        let card = t.bg.mix(t.card, if dark { 0.88 } else { 0.88 });
+        let block = if dark {
+            t.bg.mix(t.card, 0.54)
+        } else {
+            t.bg.mix(t.card, 0.48)
+        };
+        let inset = if dark {
+            t.bg.mix(t.card, 0.36)
+        } else {
+            t.bg.mix(t.text, 0.048)
+        };
+        let selected = t.bg.mix(t.card, if dark { 0.72 } else { 0.94 });
         Paint {
             t,
             accent: if dark {
@@ -695,11 +707,9 @@ impl Paint {
             surface: t.bg,
             sidebar: t.bg,
             card,
+            block,
             inset,
-            // Rune's stock card_border/hover tokens are intentionally much
-            // brighter than this neutral shell. Borders and interaction
-            // overlays must be calibrated against the *actual* card surface.
-            line: t.text.alpha(if dark { 0.18 } else { 0.14 }),
+            line: t.text.alpha(if dark { 0.065 } else { 0.050 }),
             subdued: t.text_secondary,
             faint: t.text_secondary.alpha(0.70),
             green: if dark {
@@ -730,8 +740,10 @@ impl Paint {
             self.surface = self
                 .surface
                 .alpha(1.0 - f32::from(transparency.min(100)) / 100.0);
-            self.card = self.card.alpha(0.82);
-            self.inset = self.inset.alpha(0.88);
+            self.card = self.card.alpha(0.84);
+            self.block = self.block.alpha(0.76);
+            self.inset = self.inset.alpha(0.82);
+            self.selected = self.selected.alpha(0.88);
         }
         self.sidebar = self.surface;
         self
@@ -762,17 +774,16 @@ fn action_button(
         .role("button")
         .label(title.clone())
         .h(36.0)
-        .px(13.0)
+        .px(14.0)
         .gap(8.0)
         .center()
-        .radius(9.0)
+        .radius(11.0)
         .continuous_corners()
         .fill(if primary {
             paint.primary_fill
         } else {
-            paint.card
+            paint.inset
         })
-        .border(if primary { 0.0 } else { 1.0 }, paint.line)
         .hover(if primary {
             Color::WHITE.alpha(0.08)
         } else {
@@ -809,16 +820,16 @@ fn segment(
         .key(key.into())
         .role("button")
         .label(label)
-        .h(34.0)
+        .h(32.0)
         .px(13.0)
         .center()
-        .radius(7.0)
+        .radius(8.0)
+        .continuous_corners()
         .fill(if selected {
-            paint.card
+            paint.selected
         } else {
             Color::TRANSPARENT
         })
-        .border(if selected { 1.0 } else { 0.0 }, paint.line)
         .hover(paint.hover_wash)
         .on_press(action)
         .child(
@@ -846,24 +857,17 @@ fn preference_toggle(
         .key(key.into())
         .role("button")
         .label(label)
-        .h(38.0)
+        .h(36.0)
         .px(13.0)
         .gap(8.0)
         .center_y()
-        .radius(8.0)
+        .radius(10.0)
+        .continuous_corners()
         .fill(if enabled {
-            paint.green.alpha(0.11)
+            paint.green.alpha(0.14)
         } else {
             paint.inset
         })
-        .border(
-            1.0,
-            if enabled {
-                paint.green.alpha(0.22)
-            } else {
-                paint.line
-            },
-        )
         .hover(paint.hover_wash)
         .on_press(action)
         .child(el().size(7.0, 7.0).radius(4.0).fill(if enabled {
@@ -880,24 +884,17 @@ fn preference_toggle(
 
 fn tag(label: impl Into<String>, paint: Paint, good: bool) -> El {
     row()
-        .radius(9.0)
+        .radius(10.0)
+        .continuous_corners()
         .px(12.0)
         .gap(8.0)
-        .h(30.0)
+        .h(28.0)
         .center()
         .fill(if good {
-            paint.green.alpha(0.11)
+            paint.green.alpha(0.14)
         } else {
             paint.inset
         })
-        .border(
-            1.0,
-            if good {
-                paint.green.alpha(0.19)
-            } else {
-                paint.line
-            },
-        )
         .child(
             el().size(7.0, 7.0)
                 .radius(4.0)
@@ -916,10 +913,20 @@ fn card(key: impl Into<String>, paint: Paint, child: El) -> El {
         .w_full()
         .padding(18.0)
         .gap(14.0)
-        .radius(12.0)
+        .radius(16.0)
         .continuous_corners()
         .fill(paint.card)
-        .border(1.0, paint.line)
+        .child(child)
+}
+
+fn tonal_block(paint: Paint, child: El) -> El {
+    col()
+        .w_full()
+        .padding(14.0)
+        .gap(10.0)
+        .radius(12.0)
+        .continuous_corners()
+        .fill(paint.block)
         .child(child)
 }
 
@@ -965,10 +972,11 @@ fn nav(page: Page, selected: bool, paint: Paint) -> El {
         .label(page.name())
         .w_full()
         .h(36.0)
-        .px(10.0)
+        .px(11.0)
         .gap(10.0)
         .center_y()
-        .radius(7.0)
+        .radius(10.0)
+        .continuous_corners()
         .fill(if selected {
             paint.selected
         } else {
@@ -985,7 +993,7 @@ fn nav(page: Page, selected: bool, paint: Paint) -> El {
             text(page.name())
                 .font(rune::TextStyle::new(
                     13.0,
-                    if selected { 600.0 } else { 450.0 },
+                    if selected { 610.0 } else { 460.0 },
                 ))
                 .color(if selected {
                     paint.t.text
@@ -1008,10 +1016,7 @@ fn sidebar(ui: &Ui, paint: Paint, compact: bool) -> El {
     ] {
         menu = menu.child(nav(page, ui.page == page, paint));
     }
-    menu = menu
-        .child(el().h(12.0))
-        .child(el().w_full().h(1.0).fill(paint.line.alpha(0.65)))
-        .child(el().h(8.0));
+    menu = menu.child(el().h(14.0));
     for page in [Page::Pairing, Page::Settings, Page::About] {
         menu = menu.child(nav(page, ui.page == page, paint));
     }
@@ -1044,19 +1049,21 @@ fn sidebar(ui: &Ui, paint: Paint, compact: bool) -> El {
                 .role("button")
                 .label("Manage phone pairing")
                 .w_full()
-                .h(44.0)
-                .px(8.0)
+                .h(46.0)
+                .px(10.0)
                 .gap(9.0)
                 .center_y()
-                .radius(8.0)
+                .radius(11.0)
+                .continuous_corners()
+                .fill(paint.inset)
                 .hover(paint.hover_wash)
                 .on_press(|ui: &mut Ui| ui.navigate(Page::Pairing))
-                .child(icon(&icons::SMARTPHONE, 17.0).color(paint.faint))
+                .child(icon(&icons::SMARTPHONE, 17.0).color(paint.subdued))
                 .child(
                     col()
                         .grow(1.0)
                         .min_w(0.0)
-                        .gap(4.0)
+                        .gap(3.0)
                         .child(
                             text(if ui.snap.connection.linked {
                                 "Phone connected"
@@ -1065,8 +1072,8 @@ fn sidebar(ui: &Ui, paint: Paint, compact: bool) -> El {
                             } else {
                                 "Connect a phone"
                             })
-                            .font(rune::TextStyle::new(11.0, 550.0))
-                            .color(paint.subdued),
+                            .font(rune::TextStyle::new(11.0, 580.0))
+                            .color(paint.t.text),
                         )
                         .child(
                             text(if ui.snap.connection.linked {
@@ -1079,7 +1086,7 @@ fn sidebar(ui: &Ui, paint: Paint, compact: bool) -> El {
                         ),
                 )
                 .child(
-                    el().size(5.0, 5.0)
+                    el().size(6.0, 6.0)
                         .radius(3.0)
                         .fill(if ui.snap.connection.linked {
                             paint.green
@@ -1113,12 +1120,14 @@ fn summary_connection(ui: &Ui, paint: Paint, compact: bool) -> El {
     let phone = if let Some(image) = &ui.wallpaper {
         el().key("phone-wallpaper")
             .size(52.0, 72.0)
-            .radius(9.0)
+            .radius(11.0)
+            .continuous_corners()
             .pixels_fit(image.pixels(), SurfaceFit::Fill)
     } else {
         el().key("phone-placeholder")
             .size(52.0, 72.0)
-            .radius(9.0)
+            .radius(11.0)
+            .continuous_corners()
             .fill(paint.inset)
             .center()
             .role("button")
@@ -1164,16 +1173,34 @@ fn summary_connection(ui: &Ui, paint: Paint, compact: bool) -> El {
                             .w_full()
                             .min_w(0.0)
                             .center_y()
-                            .gap(7.0)
-                            .child(el().size(6.0, 6.0).radius(3.0).fill(if conn.linked {
-                                paint.green
-                            } else {
-                                paint.faint
-                            }))
+                            .gap(8.0)
                             .child(
-                                text(route)
-                                    .font(rune::TextStyle::new(12.0, 570.0))
-                                    .color(paint.subdued),
+                                row()
+                                    .h(24.0)
+                                    .px(9.0)
+                                    .gap(6.0)
+                                    .radius(8.0)
+                                    .continuous_corners()
+                                    .fill(if conn.linked {
+                                        paint.green.alpha(0.14)
+                                    } else {
+                                        paint.inset
+                                    })
+                                    .center_y()
+                                    .child(el().size(6.0, 6.0).radius(3.0).fill(if conn.linked {
+                                        paint.green
+                                    } else {
+                                        paint.faint
+                                    }))
+                                    .child(
+                                        text(route).font(rune::TextStyle::new(11.0, 600.0)).color(
+                                            if conn.linked {
+                                                paint.green
+                                            } else {
+                                                paint.subdued
+                                            },
+                                        ),
+                                    ),
                             )
                             .child(
                                 text(endpoint)
@@ -1266,13 +1293,13 @@ fn transfer_row(transfer: &bridge::Transfer, paint: Paint) -> El {
         .gap(5.0)
         .child(
             text(&tr.name)
-                .font(rune::TextStyle::new(13.0, 560.0))
+                .font(rune::TextStyle::new(13.0, 580.0))
                 .color(paint.t.text)
                 .truncate_middle(),
         )
         .child(
             text(detail)
-                .font(rune::TextStyle::new(11.0, 440.0))
+                .font(rune::TextStyle::new(11.0, 450.0))
                 .color(paint.faint)
                 .truncate(),
         );
@@ -1281,12 +1308,12 @@ fn transfer_row(transfer: &bridge::Transfer, paint: Paint) -> El {
             row()
                 .key(format!("progress-{}", tr.id))
                 .w(170.0)
-                .h(3.0)
+                .h(4.0)
                 .radius(2.0)
-                .fill(paint.line)
+                .fill(paint.inset)
                 .child(
                     el().w(progress as f32 * 1.7)
-                        .h(3.0)
+                        .h(4.0)
                         .radius(2.0)
                         .fill(paint.accent),
                 ),
@@ -1297,14 +1324,19 @@ fn transfer_row(transfer: &bridge::Transfer, paint: Paint) -> El {
         .w_full()
         .center_y()
         .gap(12.0)
-        .h(if tr.terminal { 55.0 } else { 65.0 })
-        .px(6.0)
-        .radius(6.0)
+        .h(if tr.terminal { 58.0 } else { 68.0 })
+        .px(12.0)
+        .radius(12.0)
+        .continuous_corners()
+        .fill(paint.block)
         .hover(paint.hover_wash)
         .child(
-            el().size(32.0, 36.0)
+            el().size(36.0, 36.0)
+                .radius(10.0)
+                .continuous_corners()
+                .fill(paint.inset)
                 .center()
-                .child(icon(file_glyph(&tr.name), 20.0).color(paint.subdued)),
+                .child(icon(file_glyph(&tr.name), 18.0).color(paint.subdued)),
         )
         .child(details);
     if !tr.terminal {
@@ -1325,7 +1357,14 @@ fn transfer_row(transfer: &bridge::Transfer, paint: Paint) -> El {
             "failed" => paint.danger,
             _ => paint.faint,
         };
-        let mut status = row().center_y().gap(6.0);
+        let mut status = row()
+            .h(26.0)
+            .px(10.0)
+            .radius(8.0)
+            .continuous_corners()
+            .fill(status_color.alpha(0.12))
+            .center_y()
+            .gap(6.0);
         if tr.state == "completed" || tr.state == "failed" {
             status = status.child(
                 icon(
@@ -1334,7 +1373,7 @@ fn transfer_row(transfer: &bridge::Transfer, paint: Paint) -> El {
                     } else {
                         &icons::CLOSE
                     },
-                    14.0,
+                    13.0,
                 )
                 .color(status_color),
             );
@@ -1347,7 +1386,7 @@ fn transfer_row(transfer: &bridge::Transfer, paint: Paint) -> El {
                     "cancelled" => "Cancelled",
                     _ => "Finished",
                 })
-                .font(rune::TextStyle::new(11.0, 530.0))
+                .font(rune::TextStyle::new(11.0, 560.0))
                 .color(status_color),
             ),
         );
@@ -1360,10 +1399,14 @@ fn empty_state(title: &str, detail: &str, glyph: &'static Icon, paint: Paint) ->
         .w_full()
         .h(160.0)
         .gap(10.0)
+        .radius(14.0)
+        .continuous_corners()
+        .fill(paint.block)
         .center()
         .child(
-            el().size(38.0, 38.0)
-                .radius(10.0)
+            el().size(40.0, 40.0)
+                .radius(11.0)
+                .continuous_corners()
                 .fill(paint.inset)
                 .center()
                 .child(icon(glyph, 19.0).color(paint.subdued)),
@@ -1373,7 +1416,7 @@ fn empty_state(title: &str, detail: &str, glyph: &'static Icon, paint: Paint) ->
 }
 
 fn transfer_list(ui: &Ui, paint: Paint, limit: usize) -> El {
-    let mut list = col().key("transfer-list").w_full().gap(1.0);
+    let mut list = col().key("transfer-list").w_full().gap(8.0);
     let query = ui.search.text.trim().to_lowercase();
     let records = ui
         .snap
@@ -1417,44 +1460,51 @@ fn transfer_list(ui: &Ui, paint: Paint, limit: usize) -> El {
 }
 
 fn overview(ui: &Ui, paint: Paint) -> El {
-    col()
-        .key("overview-summary")
-        .w_full()
-        .gap(12.0)
-        .child(
-            row()
-                .w_full()
-                .center_y()
-                .justify_between()
-                .child(heading("Recent transfers", paint))
-                .child(button("show-transfers", "View all", paint, false, |ui| {
-                    ui.navigate(Page::Transfers)
-                })),
-        )
-        .child(el().w_full().h(1.0).fill(paint.line))
-        .child(transfer_list(ui, paint, 4))
-        .child(
-            row()
-                .key("drop-hint")
-                .w_full()
-                .h(40.0)
-                .center_y()
-                .gap(8.0)
-                .child(icon(&icons::SEND, 14.0).color(paint.faint))
-                .child(
-                    text("Drop files anywhere to send to your phone")
-                        .font(rune::TextStyle::new(11.0, 450.0))
-                        .color(paint.faint),
-                ),
-        )
+    card(
+        "overview-summary",
+        paint,
+        col()
+            .w_full()
+            .gap(12.0)
+            .child(
+                row()
+                    .w_full()
+                    .center_y()
+                    .justify_between()
+                    .child(heading("Recent transfers", paint))
+                    .child(button("show-transfers", "View all", paint, false, |ui| {
+                        ui.navigate(Page::Transfers)
+                    })),
+            )
+            .child(transfer_list(ui, paint, 4))
+            .child(
+                row()
+                    .key("drop-hint")
+                    .w_full()
+                    .h(38.0)
+                    .px(12.0)
+                    .radius(10.0)
+                    .continuous_corners()
+                    .fill(paint.inset)
+                    .center_y()
+                    .gap(8.0)
+                    .child(icon(&icons::SEND, 14.0).color(paint.subdued))
+                    .child(
+                        text("Drop files anywhere to send to your phone")
+                            .font(rune::TextStyle::new(11.0, 480.0))
+                            .color(paint.subdued),
+                    ),
+            ),
+    )
 }
 
 fn transfer_filters(ui: &Ui, paint: Paint) -> El {
     let mut filters = row()
         .key("transfer-filters")
-        .gap(2.0)
+        .gap(3.0)
         .padding(3.0)
-        .radius(8.0)
+        .radius(11.0)
+        .continuous_corners()
         .fill(paint.inset);
     for (key, label, value) in [
         ("all", "All", TransferFilter::All),
@@ -1474,27 +1524,29 @@ fn transfer_filters(ui: &Ui, paint: Paint) -> El {
 }
 
 fn transfers(ui: &Ui, paint: Paint) -> El {
-    col()
-        .key("transfers")
-        .w_full()
-        .gap(16.0)
-        .child(
-            row()
-                .w_full()
-                .center_y()
-                .justify_between()
-                .child(transfer_filters(ui, paint))
-                .child(action_button(
-                    "send-new-file",
-                    "Send file",
-                    Some(&icons::SEND),
-                    paint,
-                    true,
-                    |ui| ui.open_picker(),
-                )),
-        )
-        .child(el().w_full().h(1.0).fill(paint.line.alpha(0.65)))
-        .child(transfer_list(ui, paint, usize::MAX))
+    card(
+        "transfers",
+        paint,
+        col()
+            .w_full()
+            .gap(14.0)
+            .child(
+                row()
+                    .w_full()
+                    .center_y()
+                    .justify_between()
+                    .child(transfer_filters(ui, paint))
+                    .child(action_button(
+                        "send-new-file",
+                        "Send file",
+                        Some(&icons::SEND),
+                        paint,
+                        true,
+                        |ui| ui.open_picker(),
+                    )),
+            )
+            .child(transfer_list(ui, paint, usize::MAX)),
+    )
 }
 
 fn file_glyph(name: &str) -> &'static Icon {
@@ -1526,13 +1578,20 @@ fn notification_toolbar(ui: &Ui, paint: Paint) -> El {
         .center_y()
         .gap(8.0)
         .child(
-            text(format!("{} notifications", ui.snap.notifications.len()))
-                .grow(1.0)
-                .min_w(0.0)
-                .font(rune::TextStyle::new(12.0, 500.0))
-                .color(paint.subdued)
-                .truncate(),
+            row()
+                .h(28.0)
+                .px(11.0)
+                .radius(9.0)
+                .continuous_corners()
+                .fill(paint.inset)
+                .center_y()
+                .child(
+                    text(format!("{} notifications", ui.snap.notifications.len()))
+                        .font(rune::TextStyle::new(11.0, 560.0))
+                        .color(paint.subdued),
+                ),
         )
+        .child(el().grow(1.0))
         .child(button(
             "notification-retention",
             retention,
@@ -1562,14 +1621,17 @@ fn notification_toolbar(ui: &Ui, paint: Paint) -> El {
 fn notification_app_icon(ui: &Ui, notification: &bridge::Notification, paint: Paint) -> El {
     let container = el()
         .key(format!("notification-icon-{}", notification.id))
-        .size(34.0, 34.0)
-        .min_w(34.0)
-        .radius(9.0)
+        .size(38.0, 38.0)
+        .min_w(38.0)
+        .radius(11.0)
+        .continuous_corners()
         .role("image")
         .label(format!("{} app icon", notification.app))
         .center();
     if let Some((_, image)) = ui.notification_icons.get(&notification.package) {
-        return container.pixels_fit(image.pixels(), SurfaceFit::Fit);
+        return container
+            .fill(paint.inset)
+            .pixels_fit(image.pixels(), SurfaceFit::Fit);
     }
     // A missing cache entry has an honest app initial, never an unrelated logo.
     let initial = notification
@@ -1579,9 +1641,9 @@ fn notification_app_icon(ui: &Ui, notification: &bridge::Notification, paint: Pa
         .unwrap_or('?')
         .to_uppercase()
         .to_string();
-    container.fill(paint.accent.alpha(0.09)).child(
+    container.fill(paint.accent.alpha(0.12)).child(
         text(initial)
-            .font(rune::TextStyle::new(16.0, 600.0))
+            .font(rune::TextStyle::new(15.0, 620.0))
             .color(paint.accent),
     )
 }
@@ -1599,7 +1661,7 @@ fn notifications(ui: &Ui, paint: Paint) -> El {
                     .any(|field| field.to_lowercase().contains(&query))
         })
         .collect();
-    let mut list = col().key("notification-timeline").w_full().gap(9.0);
+    let mut list = col().key("notification-timeline").w_full().gap(10.0);
     if records.is_empty() {
         return list.child(empty_state(
             if query.is_empty() {
@@ -1625,22 +1687,29 @@ fn notifications(ui: &Ui, paint: Paint) -> El {
                 row()
                     .key(format!("notification-day-{day}"))
                     .w_full()
-                    .h(28.0)
+                    .h(26.0)
                     .center_y()
-                    .gap(12.0)
                     .child(
-                        text(stamp.day.clone())
-                            .font(rune::TextStyle::new(11.0, 560.0))
-                            .color(paint.subdued),
-                    )
-                    .child(el().grow(1.0).h(1.0).fill(paint.line.alpha(0.65))),
+                        row()
+                            .h(22.0)
+                            .px(10.0)
+                            .radius(7.0)
+                            .continuous_corners()
+                            .fill(paint.inset)
+                            .center()
+                            .child(
+                                text(stamp.day.clone())
+                                    .font(rune::TextStyle::new(11.0, 580.0))
+                                    .color(paint.subdued),
+                            ),
+                    ),
             );
         }
         let expanded = ui.expanded_notification.as_deref() == Some(notification.id.as_str());
         let mut message = col()
             .grow(1.0)
             .min_w(0.0)
-            .gap(6.0)
+            .gap(5.0)
             .child(
                 row()
                     .w_full()
@@ -1650,14 +1719,14 @@ fn notifications(ui: &Ui, paint: Paint) -> El {
                         text(notification.app.clone())
                             .grow(1.0)
                             .min_w(0.0)
-                            .font(rune::TextStyle::new(11.0, 550.0))
+                            .font(rune::TextStyle::new(11.0, 580.0))
                             .color(paint.subdued)
                             .truncate(),
                     )
                     .child(
                         text(stamp.time.clone())
                             .key(format!("notification-time-{}", notification.id))
-                            .font(rune::TextStyle::new(11.0, 450.0))
+                            .font(rune::TextStyle::new(11.0, 480.0))
                             .color(paint.faint)
                             .label(stamp.full.clone()),
                     ),
@@ -1665,7 +1734,7 @@ fn notifications(ui: &Ui, paint: Paint) -> El {
             .child(
                 text(notification.title.clone())
                     .w_full()
-                    .font(rune::TextStyle::new(13.0, 600.0))
+                    .font(rune::TextStyle::new(13.0, 610.0))
                     .color(paint.t.text)
                     .max_lines(if expanded { 4 } else { 2 }),
             );
@@ -1690,11 +1759,11 @@ fn notifications(ui: &Ui, paint: Paint) -> El {
             row()
                 .key(format!("notification-{}", notification.id))
                 .w_full()
-                .padding(14.0)
-                .gap(12.0)
-                .radius(11.0)
-                .fill(paint.card)
-                .border(1.0, paint.line.alpha(0.8))
+                .padding(15.0)
+                .gap(14.0)
+                .radius(15.0)
+                .continuous_corners()
+                .fill(if expanded { paint.selected } else { paint.card })
                 .hover(paint.hover_wash)
                 .press(paint.press_wash)
                 .focusable(true)
@@ -1719,7 +1788,7 @@ fn notifications(ui: &Ui, paint: Paint) -> El {
 }
 
 fn links(ui: &Ui, paint: Paint) -> El {
-    let mut list = col().gap(3.0);
+    let mut list = col().gap(8.0);
     let query = ui.search.text.trim().to_lowercase();
     let records = ui
         .snap
@@ -1764,14 +1833,17 @@ fn links(ui: &Ui, paint: Paint) -> El {
                 row()
                     .key(format!("link-{}", item.id))
                     .w_full()
-                    .padding(12.0)
+                    .padding(13.0)
                     .gap(13.0)
                     .center_y()
-                    .radius(9.0)
+                    .radius(12.0)
+                    .continuous_corners()
+                    .fill(paint.block)
                     .hover(paint.hover_wash)
                     .child(
                         el().size(36.0, 36.0)
-                            .radius(9.0)
+                            .radius(10.0)
+                            .continuous_corners()
                             .fill(paint.inset)
                             .center()
                             .child(icon(&icons::LINK, 18.0).color(paint.subdued)),
@@ -1837,14 +1909,13 @@ fn links(ui: &Ui, paint: Paint) -> El {
                         },
                     )),
             )
-            .child(el().w_full().h(1.0).fill(paint.line))
             .child(list),
     )
 }
 
 fn pairing(ui: &Ui, paint: Paint) -> El {
     let p = &ui.snap.pairing;
-    let mut content = col().w_full().gap(18.0).child(
+    let mut content = col().w_full().gap(16.0).child(
         row()
             .w_full()
             .center_y()
@@ -1868,7 +1939,8 @@ fn pairing(ui: &Ui, paint: Paint) -> El {
             .key("pairing-qr")
             .label("Temporary pairing QR code")
             .size(212.0, 212.0)
-            .radius(8.0)
+            .radius(12.0)
+            .continuous_corners()
             .fill(Color::WHITE);
         let qr = if let Some(image) = &ui.pairing_qr {
             qr.pixels_fit(image.pixels(), SurfaceFit::Fit)
@@ -1881,7 +1953,7 @@ fn pairing(ui: &Ui, paint: Paint) -> El {
                 col()
                     .grow(1.0)
                     .min_w(0.0)
-                    .gap(14.0)
+                    .gap(12.0)
                     .child(
                         muted(
                             "Open Conduit on your phone, then choose Pair desktop > Scan QR code.",
@@ -1920,7 +1992,8 @@ fn pairing(ui: &Ui, paint: Paint) -> El {
         );
     } else {
         if p.paired {
-            content = content.child(
+            content = content.child(tonal_block(
+                paint,
                 row()
                     .w_full()
                     .center_y()
@@ -1956,7 +2029,7 @@ fn pairing(ui: &Ui, paint: Paint) -> El {
                             }
                         },
                     )),
-            );
+            ));
         } else {
             content = content.child(
                 muted(
@@ -2002,8 +2075,8 @@ fn field(label: &str, edit: &TextEdit, paint: Paint, editable: fn(&mut Ui) -> &m
                 .px(12.0)
                 .center_y()
                 .fill(paint.inset)
-                .radius(8.0)
-                .border(1.0, paint.line)
+                .radius(10.0)
+                .continuous_corners()
                 .child(
                     text_input(edit, type_::BODY)
                         .w_full()
@@ -2018,7 +2091,12 @@ fn field(label: &str, edit: &TextEdit, paint: Paint, editable: fn(&mut Ui) -> &m
 }
 
 fn relays_field(ui: &Ui, paint: Paint) -> El {
-    let mut modes = row().gap(3.0).padding(3.0).radius(9.0).fill(paint.inset);
+    let mut modes = row()
+        .gap(3.0)
+        .padding(3.0)
+        .radius(11.0)
+        .continuous_corners()
+        .fill(paint.inset);
     for (mode, label) in [
         ("default", "Default nodes"),
         ("custom", "Custom"),
@@ -2039,7 +2117,7 @@ fn relays_field(ui: &Ui, paint: Paint) -> El {
             },
         ));
     }
-    let mut content = col().w_full().gap(9.0).child(
+    let mut content = col().w_full().gap(10.0).child(
         row()
             .w_full()
             .center_y()
@@ -2055,8 +2133,8 @@ fn relays_field(ui: &Ui, paint: Paint) -> El {
                     .min_h(98.0)
                     .padding(12.0)
                     .fill(paint.inset)
-                    .radius(8.0)
-                    .border(1.0, paint.line)
+                    .radius(10.0)
+                    .continuous_corners()
                     .child(
                         text_input(&ui.relays, type_::BODY)
                             .key("relay-nodes-editor")
@@ -2092,9 +2170,9 @@ fn relays_field(ui: &Ui, paint: Paint) -> El {
             .w_full()
             .gap(9.0)
             .padding(12.0)
-            .radius(8.0)
-            .fill(paint.inset)
-            .border(1.0, paint.line);
+            .radius(10.0)
+            .continuous_corners()
+            .fill(paint.inset);
         for (index, endpoint) in bridge::split_relays(bridge::DEFAULT_RELAYS)
             .iter()
             .enumerate()
@@ -2206,7 +2284,12 @@ fn transparency_control(ui: &Ui, paint: Paint) -> El {
 }
 
 fn notification_history_settings(ui: &Ui, paint: Paint) -> El {
-    let mut presets = row().gap(3.0).padding(3.0).radius(9.0).fill(paint.inset);
+    let mut presets = row()
+        .gap(3.0)
+        .padding(3.0)
+        .radius(11.0)
+        .continuous_corners()
+        .fill(paint.inset);
     for (days, label) in [
         ("7", "7 days"),
         ("30", "30 days"),
@@ -2227,21 +2310,27 @@ fn notification_history_settings(ui: &Ui, paint: Paint) -> El {
     card("settings-notification-history", paint, col().w_full().gap(13.0)
         .child(heading("Notification history", paint))
         .child(muted("Automatically delete desktop records older than the chosen number of days.", paint).max_lines(2))
-        .child(row().w_full().center_y().gap(10.0)
-            .child(text("Keep for").font(type_::BODY).color(paint.subdued))
-            .child(row().w(74.0).h(36.0).px(10.0).center_y().fill(paint.inset).radius(8.0).border(1.0, paint.line)
-                .child(text_input(&ui.notification_retention, type_::BODY).key("notification-retention-days")
-                    .w_full().single_line().color(paint.t.text).label("Notification history retention in days")
-                    .on_edit(|s: &mut Ui| { s.settings_dirty = true; &mut s.notification_retention })))
-            .child(text("days").font(type_::BODY).color(paint.subdued))
-            .child(el().grow(1.0)))
-        .child(row().child(presets))
+        .child(tonal_block(paint, col().w_full().gap(10.0)
+            .child(row().w_full().center_y().gap(10.0)
+                .child(text("Keep for").font(type_::BODY).color(paint.subdued))
+                .child(row().w(74.0).h(36.0).px(10.0).center_y().fill(paint.inset).radius(10.0).continuous_corners()
+                    .child(text_input(&ui.notification_retention, type_::BODY).key("notification-retention-days")
+                        .w_full().single_line().color(paint.t.text).label("Notification history retention in days")
+                        .on_edit(|s: &mut Ui| { s.settings_dirty = true; &mut s.notification_retention })))
+                .child(text("days").font(type_::BODY).color(paint.subdued))
+                .child(el().grow(1.0)))
+            .child(row().child(presets))))
         .child(text("0 disables age-based cleanup. Saving applies the rule immediately. Phone notifications are not deleted.")
             .font(rune::TextStyle::new(10.0, 450.0)).color(paint.faint).max_lines(3)))
 }
 
 fn settings(ui: &Ui, paint: Paint) -> El {
-    let mut proxy_modes = row().gap(3.0).padding(3.0).radius(9.0).fill(paint.inset);
+    let mut proxy_modes = row()
+        .gap(3.0)
+        .padding(3.0)
+        .radius(11.0)
+        .continuous_corners()
+        .fill(paint.inset);
     for (mode, label) in [
         ("direct", "Direct"),
         ("system", "System proxy"),
@@ -2259,7 +2348,12 @@ fn settings(ui: &Ui, paint: Paint) -> El {
             },
         ));
     }
-    let mut appearance = row().gap(3.0).padding(3.0).radius(9.0).fill(paint.inset);
+    let mut appearance = row()
+        .gap(3.0)
+        .padding(3.0)
+        .radius(11.0)
+        .continuous_corners()
+        .fill(paint.inset);
     for (mode, label) in [("system", "System"), ("light", "Light"), ("dark", "Dark")] {
         appearance = appearance.child(segment(
             format!("appearance-{mode}"),
@@ -2284,7 +2378,12 @@ fn settings(ui: &Ui, paint: Paint) -> El {
             },
         ));
     }
-    let mut materials = row().gap(3.0).padding(3.0).radius(9.0).fill(paint.inset);
+    let mut materials = row()
+        .gap(3.0)
+        .padding(3.0)
+        .radius(11.0)
+        .continuous_corners()
+        .fill(paint.inset);
     for (material, label) in [
         (window_material::Material::Acrylic, "Acrylic"),
         (window_material::Material::Mica, "Mica"),
@@ -2303,8 +2402,9 @@ fn settings(ui: &Ui, paint: Paint) -> El {
         paint,
         col()
             .w_full()
-            .gap(16.0)
-            .child(
+            .gap(10.0)
+            .child(tonal_block(
+                paint,
                 row()
                     .w_full()
                     .center_y()
@@ -2316,9 +2416,9 @@ fn settings(ui: &Ui, paint: Paint) -> El {
                             .child(muted("Choose how Conduit looks", paint)),
                     )
                     .child(appearance),
-            )
-            .child(el().w_full().h(1.0).fill(paint.line))
-            .child(
+            ))
+            .child(tonal_block(
+                paint,
                 row()
                     .w_full()
                     .center_y()
@@ -2339,11 +2439,10 @@ fn settings(ui: &Ui, paint: Paint) -> El {
                             ),
                     )
                     .child(materials),
-            )
-            .child(el().w_full().h(1.0).fill(paint.line))
-            .child(transparency_control(ui, paint))
-            .child(el().w_full().h(1.0).fill(paint.line))
-            .child(
+            ))
+            .child(tonal_block(paint, transparency_control(ui, paint)))
+            .child(tonal_block(
+                paint,
                 row()
                     .w_full()
                     .center_y()
@@ -2366,18 +2465,24 @@ fn settings(ui: &Ui, paint: Paint) -> El {
                         paint,
                         |ui| ui.set_smooth_scrolling(!ui.smooth_scrolling),
                     )),
-            ),
+            )),
     );
     let mut connection = col()
-        .gap(15.0)
+        .gap(12.0)
         .child(heading("Connection & network", paint))
         .child(muted(
             "Relays are used when a direct LAN path is unavailable.",
             paint,
         ))
-        .child(relays_field(ui, paint))
-        .child(eyebrow("PROXY ROUTE", paint))
-        .child(row().child(proxy_modes));
+        .child(tonal_block(paint, relays_field(ui, paint)))
+        .child(tonal_block(
+            paint,
+            col()
+                .w_full()
+                .gap(8.0)
+                .child(eyebrow("PROXY ROUTE", paint))
+                .child(row().child(proxy_modes)),
+        ));
     if ui.proxy_mode == "manual" {
         connection = connection.child(field("SOCKS5 URL", &ui.manual_proxy, paint, |s| {
             &mut s.manual_proxy
@@ -2387,32 +2492,42 @@ fn settings(ui: &Ui, paint: Paint) -> El {
         "settings-files",
         paint,
         col()
-            .gap(14.0)
+            .gap(10.0)
             .child(heading("Files & background", paint))
-            .child(field("Receive folder", &ui.receive_dir, paint, |s| {
-                &mut s.receive_dir
-            }))
-            .child(
-                row()
-                    .gap(8.0)
-                    .child(action_button(
-                        "browse-receive-folder",
-                        "Choose folder",
-                        Some(&icons::FOLDER),
-                        paint,
-                        false,
-                        |ui| ui.pick_receive_dir(),
-                    ))
-                    .child(button(
-                        "folder-received",
-                        "Open downloads",
-                        paint,
-                        false,
-                        |ui| ui.operation("Opening downloads", || bridge::open_folder("received")),
-                    )),
-            )
-            .child(el().w_full().h(1.0).fill(paint.line))
-            .child(
+            .child(tonal_block(
+                paint,
+                col()
+                    .w_full()
+                    .gap(10.0)
+                    .child(field("Receive folder", &ui.receive_dir, paint, |s| {
+                        &mut s.receive_dir
+                    }))
+                    .child(
+                        row()
+                            .gap(8.0)
+                            .child(action_button(
+                                "browse-receive-folder",
+                                "Choose folder",
+                                Some(&icons::FOLDER),
+                                paint,
+                                false,
+                                |ui| ui.pick_receive_dir(),
+                            ))
+                            .child(button(
+                                "folder-received",
+                                "Open downloads",
+                                paint,
+                                false,
+                                |ui| {
+                                    ui.operation("Opening downloads", || {
+                                        bridge::open_folder("received")
+                                    })
+                                },
+                            )),
+                    ),
+            ))
+            .child(tonal_block(
+                paint,
                 row()
                     .w_full()
                     .center_y()
@@ -2433,7 +2548,7 @@ fn settings(ui: &Ui, paint: Paint) -> El {
                             s.settings_dirty = true;
                         },
                     )),
-            ),
+            )),
     );
     col()
         .w_full()
@@ -2472,9 +2587,10 @@ fn windows_integration(ui: &Ui, paint: Paint) -> El {
         "windows-integration",
         paint,
         col()
-            .gap(15.0)
+            .gap(10.0)
             .child(heading("Windows integration", paint))
-            .child(
+            .child(tonal_block(
+                paint,
                 row()
                     .w_full()
                     .center_y()
@@ -2504,9 +2620,9 @@ fn windows_integration(ui: &Ui, paint: Paint) -> El {
                             });
                         },
                     )),
-            )
-            .child(el().w_full().h(1.0).fill(paint.line))
-            .child(
+            ))
+            .child(tonal_block(
+                paint,
                 row()
                     .w_full()
                     .center_y()
@@ -2533,16 +2649,22 @@ fn windows_integration(ui: &Ui, paint: Paint) -> El {
                             });
                         },
                     )),
-            )
-            .child(el().w_full().h(1.0).fill(paint.line))
-            .child(eyebrow("LOCAL DATA", paint))
-            .child(row().gap(8.0).child(button(
-                "data-folder",
-                "Open data folder",
+            ))
+            .child(tonal_block(
                 paint,
-                false,
-                |ui| ui.operation("Opening data folder", || bridge::open_folder("data")),
-            ))),
+                row()
+                    .w_full()
+                    .center_y()
+                    .justify_between()
+                    .child(eyebrow("LOCAL DATA", paint))
+                    .child(button(
+                        "data-folder",
+                        "Open data folder",
+                        paint,
+                        false,
+                        |ui| ui.operation("Opening data folder", || bridge::open_folder("data")),
+                    )),
+            )),
     )
 }
 
@@ -2551,14 +2673,16 @@ fn about(ui: &Ui, paint: Paint) -> El {
         "about",
         paint,
         col()
-            .gap(18.0)
-            .child(
+            .gap(14.0)
+            .child(tonal_block(
+                paint,
                 row()
                     .center_y()
                     .gap(14.0)
                     .child(
                         el().size(54.0, 54.0)
-                            .radius(13.0)
+                            .radius(14.0)
+                            .continuous_corners()
                             .fill(paint.selected)
                             .center()
                             .child(icon(&icons::CONDUIT, 27.0).color(paint.accent)),
@@ -2579,49 +2703,60 @@ fn about(ui: &Ui, paint: Paint) -> El {
                                 paint,
                             )),
                     ),
-            )
-            .child(el().w_full().h(1.0).fill(paint.line))
-            .child(
-                muted(
-                    "Securely transfer files, notifications and links between Windows and Android.",
-                    paint,
-                )
-                .max_lines(2),
-            )
-            .child(tag(
-                if ui.snap.daemon_available {
-                    "Background service available"
-                } else {
-                    "Background service unavailable"
-                },
+            ))
+            .child(tonal_block(
                 paint,
-                ui.snap.daemon_available,
+                col()
+                    .w_full()
+                    .gap(10.0)
+                    .child(
+                        muted(
+                            "Securely transfer files, notifications and links between Windows and Android.",
+                            paint,
+                        )
+                        .max_lines(2),
+                    )
+                    .child(row().child(tag(
+                        if ui.snap.daemon_available {
+                            "Background service available"
+                        } else {
+                            "Background service unavailable"
+                        },
+                        paint,
+                        ui.snap.daemon_available,
+                    )))
+                    .child(
+                        muted(
+                            format!("Data directory: {}", bridge::data_dir().display()),
+                            paint,
+                        )
+                        .truncate_middle(),
+                    ),
             ))
             .child(
-                muted(
-                    format!("Data directory: {}", bridge::data_dir().display()),
-                    paint,
-                )
-                .truncate_middle(),
-            )
-            .child(eyebrow("PROJECT", paint))
-            .child(row().gap(8.0).child(action_button(
-                "about-github",
-                "GitHub",
-                Some(&icons::ARROW_UP_RIGHT),
-                paint,
-                false,
-                |ui| {
-                    ui.operation("Opening GitHub", || {
-                        bridge::open_external("https://github.com/nonlog/Conduit")
-                    })
-                },
-            ))),
+                row()
+                    .w_full()
+                    .center_y()
+                    .justify_between()
+                    .child(eyebrow("PROJECT", paint))
+                    .child(action_button(
+                        "about-github",
+                        "GitHub",
+                        Some(&icons::ARROW_UP_RIGHT),
+                        paint,
+                        false,
+                        |ui| {
+                            ui.operation("Opening GitHub", || {
+                                bridge::open_external("https://github.com/nonlog/Conduit")
+                            })
+                        },
+                    )),
+            ),
     )
 }
 
 fn content(ui: &Ui, paint: Paint, compact: bool) -> El {
-    let mut body = col().key("page-content").w_full().min_w(0.0).gap(24.0);
+    let mut body = col().key("page-content").w_full().min_w(0.0).gap(18.0);
     if ui.page == Page::Overview {
         body = body
             .child(summary_connection(ui, paint, compact))
@@ -2647,12 +2782,12 @@ fn search_field(ui: &Ui, paint: Paint) -> El {
     row()
         .key("search-box")
         .w(255.0)
-        .h(38.0)
-        .px(12.0)
+        .h(36.0)
+        .px(13.0)
         .center_y()
-        .radius(8.0)
+        .radius(11.0)
+        .continuous_corners()
         .fill(paint.inset)
-        .border(1.0, paint.line)
         .child(
             text_input(&ui.search, type_::BODY)
                 .key("search-input")
@@ -2738,6 +2873,11 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
         right = right.child(
             row()
                 .key("header-status")
+                .h(28.0)
+                .px(11.0)
+                .radius(9.0)
+                .continuous_corners()
+                .fill(paint.inset)
                 .gap(7.0)
                 .center_y()
                 .child(
@@ -2757,7 +2897,7 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
                     } else {
                         "Offline"
                     })
-                    .font(rune::TextStyle::new(11.0, 530.0))
+                    .font(rune::TextStyle::new(11.0, 560.0))
                     .color(paint.subdued),
                 ),
         );
@@ -2796,11 +2936,12 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
             row()
                 .key("notice")
                 .w_full()
-                .padding(8.0)
+                .padding(10.0)
                 .center_y()
                 .gap(10.0)
-                .radius(8.0)
-                .fill(tint.alpha(0.1))
+                .radius(11.0)
+                .continuous_corners()
+                .fill(tint.alpha(0.12))
                 .child(
                     muted(notice.message.clone(), paint)
                         .grow(1.0)
@@ -2811,7 +2952,8 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
                     el().key("dismiss-notice")
                         .size(28.0, 28.0)
                         .center()
-                        .radius(6.0)
+                        .radius(8.0)
+                        .continuous_corners()
                         .role("button")
                         .label("Dismiss message")
                         .focusable(true)
@@ -2846,7 +2988,6 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
         .grow(1.0)
         .min_h(0.0)
         .child(sidebar(ui, paint, compact))
-        .child(el().w(1.0).h_full().fill(paint.line.alpha(0.65)))
         .child(body);
     let mut root = col()
         .key("window")
