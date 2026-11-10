@@ -1,5 +1,22 @@
 # Conduit handoff
 
+## v0.1.21 release, desktop caret & default smooth wheel scroll fixes, Android dock lens motion & haptics, and dual-device installation — 2026-11-10
+- Branch is `master`, clean and pushed.
+- Release commit on `master`:
+  - `52ff880e65e7f36dd08fba16fb788b3bab85f21f` (tag `v0.1.21`): fixed desktop `text_input` caret/selection colors and `.role("textbox")` hit-targets, removed the standalone smooth-scrolling toggle so smooth wheel scrolling is always active by default, preserved per-page scroll bounds across `SmoothScroll::reset()` and scaled Windows notched wheel steps (`LineDelta * 40pt`) to standard 3-line (`120pt`) increments, and refactored Android `ExpressiveNavigationDock` so `DockItem` has no premature `CircleShape` ripple capsule (`indication = null`), tint/scale interpolate with the moving `lensPosition`, and tab clicks trigger `HapticFeedbackConstants.VIRTUAL_KEY`.
+  - Uses `Codex <codex@openai.com>` as both author and committer.
+- **CI & GitHub Release (`v0.1.21`)**:
+  - `Build` workflow run `42760148067` for `v0.1.21` passed across `Relay Linux x64`, `Windows x64`, `Android`, and `GitHub Release`.
+  - `Android Expressive` workflow run `42760147648` passed across `Official Expressive build and tests` and `Android 16 visual and interaction tests`.
+  - Published release: `https://github.com/nonlog/Conduit/releases/tag/v0.1.21`
+    - `Conduit-0.1.21-windows-x64.zip` (`7,530,594` bytes, SHA-256 `25fe54ee4c8dcba2c7fe6c4029efe06387db71e4dee9eb6a00880aa376cf0ceb`)
+    - `Conduit-0.1.21-android.apk` (`4,342,240` bytes, SHA-256 `37788bbec733d564313d75ca1417e480ea0fcce1224461e95931ae9a4ded76f0`)
+    - `Conduit-0.1.21-relay-linux-x64` (`951,240` bytes, SHA-256 `b3b7bda514a07c00afcaee065591d9897c7f457a2fbe10aa1f0be0d0f2dccb39`)
+- **Scoop (`IOTFRESH`) & Android (`192.168.111.11:5555` / `CPH2573`) installation**:
+  - Updated `D:\Programs\Scoop\buckets\www\bucket\conduit.json` to `0.1.21` and pushed commit `86b6504` to `nonlog/scoop-www` (`master`).
+  - Upgraded `conduit` on `IOTFRESH` via `scoop update conduit` (`0.1.20 -> 0.1.21`); `conduit-daemon.exe` and `conduit-rune.exe` are running from `D:\Programs\Scoop\apps\conduit\current`.
+  - Installed `Conduit-0.1.21-android.apk` onto `192.168.111.11:5555` (`CPH2573`) via `adb install -r` (`versionName=0.1.21`, `versionCode=23`) and launched `com.conduit.sync/.MainActivity`.
+
 ## v0.1.20 release, desktop tonal card redesign, Android FlClash UI & motion, and IOTFRESH installation — 2026-11-10
 - Branch is `master`, clean and pushed.
 - Release commits on `master`:
