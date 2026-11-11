@@ -7,8 +7,8 @@ import android.util.Log
 
 private const val TAG = "conduit.boot"
 
-internal fun shouldStartLinkOnBoot(linkWanted: Boolean, hasPairedPeer: Boolean): Boolean =
-    linkWanted && hasPairedPeer
+internal fun shouldStartLinkOnBoot(linkWanted: Boolean, hasEnabledPeer: Boolean): Boolean =
+    linkWanted && hasEnabledPeer
 
 /**
  * Restores the user's existing companion-link request after Android finishes a normal boot.
@@ -23,11 +23,12 @@ class BootReceiver : BroadcastReceiver() {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
 
         Settings.load(context)
-        val hasPairedPeer = Identity.peer(context.filesDir) != null
-        if (!shouldStartLinkOnBoot(Settings.linkWanted, hasPairedPeer)) {
+        // A computer the user paused stays paused across a reboot; boot is not a Connect tap.
+        val hasEnabledPeer = Identity.peers(context.filesDir).any { it.enabled }
+        if (!shouldStartLinkOnBoot(Settings.linkWanted, hasEnabledPeer)) {
             Log.i(
                 TAG,
-                "boot completed; link restore skipped (wanted=${Settings.linkWanted}, paired=$hasPairedPeer)",
+                "boot completed; link restore skipped (wanted=${Settings.linkWanted}, enabled=$hasEnabledPeer)",
             )
             return
         }

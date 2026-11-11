@@ -53,10 +53,15 @@ internal class CompanionLinks(
     /** Always called on the Android main thread after the trust registry changes. */
     fun reconcile(primaryId: String?) {
         if (closed) return
-        val allowed = PairedDesktops.list(context.filesDir).map { it.id }
-            .filter { it != primaryId }.take(PairedDesktops.MAX_PEERS - 1).toSet()
+        val allowed = PairedDesktops.list(context.filesDir)
+            .filter { it.id != primaryId && it.enabled }
+            .map { it.id }.take(PairedDesktops.MAX_PEERS - 1).toSet()
         for ((id, session) in peers.toMap()) {
-            if (id !in allowed) {
+            val keep = id in allowed
+            // A paused computer closes now: its socket, discovery burst and retry chain all end
+            // here rather than surviving until the next reconnect event notices.
+            session.enabled = keep
+            if (!keep) {
                 peers.remove(id)
                 session.close()
             }
@@ -70,10 +75,18 @@ internal class CompanionLinks(
         onChange()
     }
 
+    /** One computer came back from the per-device switch; do not disturb its siblings. */
+    fun reconnectPeer(id: String) {
+        if (closed || !Settings.linkWanted || !networkAvailable()) return
+        val peer = peers[id] ?: return
+        if (!peer.enabled || peer.link.hasOpenSocket) return
+        peer.redial()
+    }
+
     fun reconnectAll() {
         if (closed || !Settings.linkWanted || !networkAvailable()) return
         peers.values.forEach { peer ->
-            if (!peer.link.hasOpenSocket) peer.redial()
+            if (peer.enabled && !peer.link.hasOpenSocket) peer.redial()
         }
     }
 
@@ -133,6 +146,8 @@ internal class CompanionLinks(
     }
 
     private inner class Peer(val id: String) {
+        /** False while the user has this computer paused; every transport gate reads it. */
+        var enabled = true
         var state: LinkState = LinkState.Idle
         var path = ""
         var networkClass = "other"
@@ -177,7 +192,9 @@ internal class CompanionLinks(
                             retryMs = 5_000L
                             main.removeCallbacks(retry)
                             if (path == "Relay") lanNetwork()?.let(::discover)
-                        } else if (next == LinkState.Idle && Settings.linkWanted && networkAvailable()) {
+                        } else if (next == LinkState.Idle && Settings.linkWanted && enabled &&
+                            networkAvailable()
+                        ) {
                             // A lost LAN path falls through to Relay immediately; a failed
                             // relay candidate tries the next endpoint without a discovery loop.
                             if (path == "LAN") tryRelay()
@@ -234,11 +251,13 @@ internal class CompanionLinks(
         ) }
 
         fun discover(network: Network) {
-            if (!closed && Settings.linkWanted) discovery.burst(network)
+            if (!closed && Settings.linkWanted && enabled) discovery.burst(network)
         }
 
         fun redial(preferredLan: Network? = null) {
-            if (closed || peers[id] !== this || !Settings.linkWanted || !networkAvailable()) return
+            if (closed || peers[id] !== this || !Settings.linkWanted || !enabled ||
+                !networkAvailable()
+            ) return
             if (link.hasOpenSocket) return
             main.removeCallbacks(retry)
             val lan = preferredLan ?: lanNetwork()
@@ -246,7 +265,7 @@ internal class CompanionLinks(
         }
 
         private fun tryRelay() {
-            if (closed || !Settings.linkWanted || !networkAvailable()) return
+            if (closed || !Settings.linkWanted || !enabled || !networkAvailable()) return
             networkClass = if (lanNetwork() != null) "wifi" else "cellular"
             candidates.clear()
             candidates.addAll(relayEndpoints().take(8))
@@ -267,6 +286,7 @@ internal class CompanionLinks(
         }
 
         private fun handoff(address: InetSocketAddress, network: Network?) {
+            if (closed || !enabled) return
             if (link.hasActiveFileTransfers) {
                 pendingHandoff = address to network
                 return
@@ -281,7 +301,7 @@ internal class CompanionLinks(
         }
 
         private fun scheduleRetry() {
-            if (closed || !Settings.linkWanted || !networkAvailable()) return
+            if (closed || !Settings.linkWanted || !enabled || !networkAvailable()) return
             main.removeCallbacks(retry)
             main.postDelayed(retry, retryMs)
             retryMs = (retryMs * 2).coerceAtMost(300_000L)

@@ -949,7 +949,7 @@ fn main() {
         let card_brush = CreateSolidBrush(theme.card);
         let accent_brush = CreateSolidBrush(theme.accent);
         let edit_brush = CreateSolidBrush(theme.edit);
-        let border_pen = CreatePen(PS_SOLID as i32, 1, theme.border);
+        let border_pen = CreatePen(PS_SOLID, 1, theme.border);
         let icon_file = ensure_app_icon_file();
         let app_icon_class = icon_file
             .as_deref()

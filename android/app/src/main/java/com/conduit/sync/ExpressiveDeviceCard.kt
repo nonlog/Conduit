@@ -12,7 +12,9 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
@@ -27,6 +29,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -48,14 +52,20 @@ internal fun ExpressiveDeviceCard(
     onCancelPair: () -> Unit,
     onSendFiles: () -> Unit,
     onSendPhoto: () -> Unit,
+    devices: List<ConnectedDevice> = emptyList(),
 ) {
     val c = MaterialTheme.colorScheme
     val motion = LocalConduitMotion.current
     val paired = pairedDeviceId != null
     val linked = state == LinkState.Connected
     val requested = isLinkRequestedState(state)
+    val online = devices.count { it.state == LinkState.Connected }
+    val allPaused = devices.isNotEmpty() && devices.all { it.state == LinkState.Paused }
     val stateLabel = when {
         pairing -> "Pairing"
+        // A FlClash style summary rather than one computer's name when several are paired.
+        devices.size > 1 && online > 0 -> "Linked · $online/${devices.size}"
+        allPaused -> "Paused"
         !paired -> "Not paired"
         linked -> "Linked"
         requested -> "Connecting"
@@ -160,7 +170,9 @@ internal fun ExpressiveDeviceCard(
                                         StatusPill(path, active = false)
                                     }
                                     Text(
-                                        if (linked) {
+                                        if (allPaused) {
+                                            "Paused"
+                                        } else if (linked) {
                                             "Connected"
                                         } else if (pairing) {
                                             "Waiting for approval"
@@ -265,7 +277,11 @@ internal fun ExpressiveDeviceCard(
                             style = MaterialTheme.typography.titleMedium,
                             modifier = Modifier.weight(1f),
                         )
-                        StatusPill("Encrypted", active = false)
+                        if (devices.size > 1) {
+                            StatusPill("To ${peerName ?: "desktop"}", active = true)
+                        } else {
+                            StatusPill("Encrypted", active = false)
+                        }
                     }
                     BoxWithConstraints(Modifier.fillMaxWidth()) {
                         if (maxWidth < 280.dp || LocalDensity.current.fontScale >= 1.35f) {
@@ -304,6 +320,150 @@ internal fun ExpressiveDeviceCard(
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * FlClash outbound list: every trusted computer as a tappable row with its own Connect switch.
+ * Selection only redirects shares and clipboard; each row toggles its own transport.
+ */
+@Composable
+internal fun ExpressiveComputersCard(
+    devices: List<ConnectedDevice>,
+    sendTargetId: String?,
+    onSelectDevice: (String) -> Unit,
+    onSetDeviceEnabled: (String, Boolean) -> Unit,
+) {
+    val c = MaterialTheme.colorScheme
+    val online = devices.count { it.state == LinkState.Connected }
+    ExpressiveCard(Modifier.fillMaxWidth().testTag("home-computers-card")) {
+        Column(
+            Modifier.padding(horizontal = 20.dp, vertical = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(9.dp),
+            ) {
+                Icon(
+                    painterResource(R.drawable.ic_desktop),
+                    null,
+                    Modifier.size(19.dp),
+                    tint = c.onSurfaceVariant,
+                )
+                Text(
+                    "Computers",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                StatusPill("$online/${devices.size} online", active = online > 0, showDot = online > 0)
+            }
+            devices.forEach { device ->
+                ExpressiveComputerRow(
+                    device = device,
+                    sendTarget = device.id == sendTargetId,
+                    onSelect = { onSelectDevice(device.id) },
+                    onSetEnabled = { onSetDeviceEnabled(device.id, it) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ExpressiveComputerRow(
+    device: ConnectedDevice,
+    sendTarget: Boolean,
+    onSelect: () -> Unit,
+    onSetEnabled: (Boolean) -> Unit,
+) {
+    val c = MaterialTheme.colorScheme
+    val view = LocalView.current
+    // The durable switch, not the transient socket, is what the trailing button reflects.
+    val paused = !device.enabled || device.state == LinkState.Paused
+    val connected = device.state == LinkState.Connected
+    val name = device.name.ifBlank { "Computer" }
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val toggleInteraction = remember { MutableInteractionSource() }
+    val togglePressed by toggleInteraction.collectIsPressedAsState()
+    ExpressiveBlock(Modifier.fillMaxWidth(), corner = 18.dp) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .elasticPress(pressed, 0.98f)
+                .clickable(
+                    interactionSource = interaction,
+                    indication = LocalIndication.current,
+                    onClick = {
+                        view.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
+                        onSelect()
+                    },
+                )
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            FlClashShapeBadge(R.drawable.ic_desktop, active = connected)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(
+                    name,
+                    style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    (if (sendTarget) "Send target · " else "") + when {
+                        paused -> "Paused"
+                        connected -> "Connected" + device.path.takeIf { it.isNotBlank() }
+                            ?.let { " · $it" }.orEmpty()
+                        else -> "Offline"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = c.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            FilledTonalIconButton(
+                onClick = {
+                    view.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
+                    onSetEnabled(paused)
+                },
+                interactionSource = toggleInteraction,
+                shapes = IconButtonDefaults.shapes(
+                    shape = FlClashScallopShape(lobes = 9, depth = 0.095f, progress = 1f),
+                    pressedShape = FlClashScallopShape(lobes = 9, depth = 0.05f, progress = 1f),
+                ),
+                modifier = Modifier
+                    .size(42.dp)
+                    .elasticPress(togglePressed, 0.92f)
+                    .testTag("toggle-device-${device.id}")
+                    .semantics {
+                        contentDescription = if (paused) "Connect $name" else "Disconnect $name"
+                    },
+                colors = IconButtonDefaults.filledTonalIconButtonColors(
+                    containerColor = c.surfaceContainerHighest,
+                    contentColor = c.primary,
+                ),
+            ) {
+                Crossfade(
+                    targetState = paused,
+                    animationSpec = if (LocalConduitMotion.current) {
+                        tween(ConduitMotion.feedbackMillis)
+                    } else {
+                        snap()
+                    },
+                    label = "Device connect control",
+                ) { isPaused ->
+                    Icon(
+                        painterResource(if (isPaused) R.drawable.ic_play else R.drawable.ic_pause),
+                        contentDescription = null,
+                        modifier = Modifier.size(19.dp),
+                    )
                 }
             }
         }

@@ -10,8 +10,10 @@
 //! Noise static key; a spoofed advert only wastes one handshake.
 
 use anyhow::{Context, Result};
-use mdns_sd::{ServiceDaemon, ServiceInfo};
+use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::time::{Duration, Instant};
 use tracing::info;
 
 const SERVICE_TYPE: &str = "_conduit._tcp.local.";
@@ -56,6 +58,42 @@ impl Drop for Advert {
     }
 }
 
+/// Finds a paired peer's LAN socket by its device id.
+///
+/// One bounded browse, started and torn down per call: the mDNS daemon thread is shut down as
+/// soon as the peer is found or the deadline passes, so an idle desktop runs no discovery at all.
+/// A stale or spoofed advert only yields an address whose Noise handshake then fails.
+pub async fn discover_lan_peer(target_id: &str, timeout: Duration) -> Option<SocketAddr> {
+    let daemon = ServiceDaemon::new().ok()?;
+    let receiver = daemon.browse(SERVICE_TYPE).ok()?;
+    let target = target_id.to_owned();
+    let found = tokio::task::spawn_blocking(move || {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return None;
+            }
+            match receiver.recv_timeout(remaining) {
+                Ok(ServiceEvent::ServiceResolved(info)) => {
+                    if info.get_property_val_str("id") != Some(target.as_str()) {
+                        continue;
+                    }
+                    let address = info.get_addresses().iter().next()?.to_ip_addr();
+                    return Some(SocketAddr::new(address, info.get_port()));
+                }
+                Ok(_) => {}
+                Err(_) => return None,
+            }
+        }
+    })
+    .await
+    .ok()
+    .flatten();
+    let _ = daemon.shutdown();
+    found
+}
+
 /// The Windows device name shown on the phone. Not a security boundary.
 ///
 /// Do not rely on `COMPUTERNAME`: service/AgentDock/WMI launch paths can omit that environment
@@ -85,4 +123,21 @@ pub fn hostname() -> String {
                 .filter(|name| !name.is_empty())
         })
         .unwrap_or_else(|| "conduit-desktop".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn discovery_is_bounded_and_returns_nothing_for_an_absent_peer() {
+        let started = Instant::now();
+        let found = discover_lan_peer(&"Z".repeat(43), Duration::from_millis(150)).await;
+        assert!(found.is_none());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "a failed discovery must stay bounded, took {:?}",
+            started.elapsed()
+        );
+    }
 }

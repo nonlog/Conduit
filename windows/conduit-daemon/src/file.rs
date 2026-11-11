@@ -97,18 +97,6 @@ impl Outbound {
         })
     }
 
-    pub fn name(&self) -> &str {
-        &self.offer.name
-    }
-
-    pub fn transfer_id(&self) -> &[u8] {
-        &self.offer.transfer_id
-    }
-
-    pub fn total_bytes(&self) -> u64 {
-        self.offer.total_bytes
-    }
-
     pub fn offer(&mut self, id: &[u8]) -> pb::FileOffer {
         self.offer.transfer_id = id.to_vec();
         self.offer.clone()
@@ -353,6 +341,7 @@ impl Incoming {
     /// In-order only. Chunks travel on one TCP stream inside one Noise session, so out of
     /// order is not a network condition — it is a broken or hostile peer, and dropping the
     /// transfer is the right answer.
+    #[cfg(test)]
     pub fn push(&mut self, chunk: &pb::FileChunk) -> Result<Option<PathBuf>> {
         self.push_cancellable(chunk, &std::sync::atomic::AtomicBool::new(false))
     }

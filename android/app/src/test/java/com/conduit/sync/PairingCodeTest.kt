@@ -1,5 +1,6 @@
 package com.conduit.sync
 
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -23,6 +24,29 @@ class PairingCodeTest {
             PairingCode.rendezvous("123456"),
         )
         assertEquals(43, PairingCode.rendezvous("123456").length)
+    }
+
+    @Test
+    fun pairingProofBindsTheCodeAndBothNoiseIdentities() {
+        val phone = "phone-id"
+        val desktop = "desk-id"
+        assertEquals(
+            """7b777be2bb68164f3af6294241c51cb2b0d96704ab2a3f3451e614a3501fb7de""",
+            PairingCode.proof("123456", phone, desktop).joinToString("") {
+                (it.toInt() and 0xff).toString(16).padStart(2, '0')
+            },
+        )
+        // Formatting in the code the user reads must not change the digest.
+        assertArrayEquals(
+            PairingCode.proof("123456", phone, desktop),
+            PairingCode.proof("12 34-56", phone, desktop),
+        )
+        // Swapping the two identities is a different pairing, not the same one.
+        assertFalse(
+            PairingCode.proof("123456", phone, desktop)
+                .contentEquals(PairingCode.proof("123456", desktop, phone)),
+        )
+        assertEquals(32, PairingCode.proof("123456", phone, desktop).size)
     }
 
     @Test

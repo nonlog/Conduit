@@ -160,7 +160,7 @@ dependencies = [
 
 [[package]]
 name = "conduit-daemon"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "anyhow",
  "base64",
@@ -181,7 +181,7 @@ dependencies = [
 
 [[package]]
 name = "conduit-relay"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "anyhow",
  "socket2",
@@ -192,7 +192,7 @@ dependencies = [
 
 [[package]]
 name = "conduit-share-target"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "windows",
  "winres",

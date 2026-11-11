@@ -51,17 +51,21 @@ class LinkTileService : TileService() {
     private fun updateTile() {
         val tile = qsTile ?: return
         val trusted = PairedDesktops.list(filesDir)
+        val allPaused = trusted.isNotEmpty() && trusted.none { it.enabled }
         val peer = LinkStatus.peerName ?: Identity.peerName(filesDir) ?: "desktop"
         val connected = LinkStatus.devices.filter { it.state == LinkState.Connected }
         val linkRequested = Settings.linkWanted
         tile.icon = Icon.createWithResource(this, R.drawable.ic_stat_link)
         tile.label = "Conduit"
-        tile.state = if (linkRequested && trusted.isNotEmpty()) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
+        tile.state = if (linkRequested && !allPaused && trusted.isNotEmpty()) Tile.STATE_ACTIVE
+            else Tile.STATE_INACTIVE
         tile.subtitle = when {
             connected.size > 1 -> "Linked to ${connected.size} computers"
             connected.size == 1 -> "Linked to ${connected.first().name.ifBlank { "desktop" }}"
             LinkStatus.pairing -> "Pairing a desktop"
             trusted.isEmpty() -> "Open Conduit to pair"
+            // Every trusted computer was paused one by one; one tap resumes them all.
+            allPaused -> "Paused"
             LinkStatus.state == LinkState.Waiting -> "$peer offline · auto reconnect on"
             LinkStatus.state == LinkState.Retrying -> "Reconnecting to desktops"
             linkRequested -> "Connecting to desktops"

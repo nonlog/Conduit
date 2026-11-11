@@ -8,6 +8,7 @@ import android.util.Log
 import com.conduit.sync.proto.ClipImageChunk
 import com.conduit.sync.proto.ClipImageHeader
 import com.conduit.sync.proto.ClipText
+import com.conduit.sync.proto.DeviceKind
 import com.conduit.sync.proto.Envelope
 import com.conduit.sync.proto.FileCancel
 import com.conduit.sync.proto.FileChunk
@@ -17,6 +18,7 @@ import com.conduit.sync.proto.Kind
 import com.conduit.sync.proto.NotifAction
 import com.conduit.sync.proto.PairRequest
 import com.conduit.sync.proto.PairResponse
+import com.conduit.sync.proto.PeerRoster
 import com.conduit.sync.proto.SharedUrl
 import com.conduit.sync.proto.WallpaperPreview
 import java.net.InetSocketAddress
@@ -124,6 +126,8 @@ class Link(
     private val localDeviceName: String,
     private val events: Events,
     private val openIncomingFile: (FileOffer) -> Files.Incoming? = { null },
+    /** The six digits the user typed for this pairing attempt, or null outside a Pair-new window. */
+    private val pairingCodeProvider: () -> String? = { null },
 ) {
 
     interface Events {
@@ -576,6 +580,9 @@ class Link(
         send(Kind.SHARED_URL, shared.toByteArray(), "shared url")
     }
 
+    /** The phone owns the roster; a desktop only ever receives it on this authenticated channel. */
+    fun sendRoster(roster: PeerRoster) = send(Kind.PEER_ROSTER, roster.toByteArray(), "peer roster")
+
     fun send(kind: Kind, payload: ByteArray, what: String) = send(kind, what) { payload }
     fun send(kind: Kind, what: String, build: () -> ByteArray) {
         val owner = current?.takeIf { it.authenticated && usable(it) }
@@ -649,7 +656,16 @@ class Link(
                 if (viaRelay) sock.soTimeout = RELAY_READ_DEADLINE_MS
                 val hello = PairRequest.newBuilder().setDeviceId(localDeviceId)
                     .setDeviceName(localDeviceName.take(PEER_NAME_MAX))
-                    .setPairing(events.pairingRequested()).setTransferProtocol(1).build()
+                    .setPairing(events.pairingRequested()).setTransferProtocol(1)
+                    .setDeviceKind(DeviceKind.DEVICE_KIND_PHONE)
+                    .apply {
+                        pairingCodeProvider()?.let { code ->
+                            setPairingProof(
+                                ByteString.copyFrom(PairingCode.proof(code, localDeviceId, remoteId)),
+                            )
+                        }
+                    }
+                    .build()
                 control(owner, priority = true) { it.send(Kind.PAIR_REQUEST, hello.toByteArray()) }
                 val first = live.recv()
                 if (first.kind != Kind.PAIR_REQUEST) throw SecurityException("Desktop did not send pairing hello")

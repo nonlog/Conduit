@@ -31,14 +31,15 @@ mod wire;
 
 use anyhow::{bail, Context, Result};
 use prost::Message as _;
+use std::collections::HashMap;
 use std::io::Write as _;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::sync::{broadcast, mpsc};
 use tracing::{info, warn};
 use wire::pb;
 
@@ -57,6 +58,14 @@ const IDLE_PING: Duration = Duration::from_secs(60);
 /// silently dead tunnel later. The phone's read deadline is 2.5x this and follows it.
 const RELAY_IDLE_PING: Duration = Duration::from_secs(240);
 const PONG_DEADLINE: Duration = Duration::from_secs(10);
+/// A paired desktop is looked for on the LAN for this long before the Relay is dialled. Short on
+/// purpose: an mDNS hit is nearly immediate, and the Relay path is always available.
+const LAN_DIAL_TIMEOUT: Duration = Duration::from_millis(2500);
+const DIAL_BACKOFF_MIN: Duration = Duration::from_secs(5);
+const DIAL_BACKOFF_MAX: Duration = Duration::from_secs(300);
+/// How long a forgetting session may take to send its final PairResponse. One bounded wait on an
+/// explicit user action; nothing polls.
+const FORGET_GRACE: Duration = Duration::from_secs(2);
 
 /// State for one outstanding liveness challenge.
 ///
@@ -117,6 +126,7 @@ struct Metrics {
 struct SessionGuard {
     metrics: Arc<Metrics>,
     status: Arc<status::StatusFile>,
+    peer_id: String,
 }
 
 struct RelayArrival {
@@ -131,7 +141,24 @@ struct CandidateSession {
     path: &'static str,
     relay_endpoint: Option<String>,
     generation: u64,
+    /// True when this side dialled. Two dialers can cross on one path, so the initiator role
+    /// (not arrival order) decides which socket survives.
+    initiator: bool,
     negotiated: admission::Negotiated,
+}
+
+/// One live authenticated session, keyed by peer id.
+struct ActiveSession {
+    handle: tokio::task::JoinHandle<()>,
+    path: &'static str,
+    initiator: bool,
+    /// Unique per session for one peer, so a replaced session cannot remove its successor.
+    generation: u64,
+}
+
+enum DaemonEvent {
+    SessionEnded { peer_id: String, generation: u64 },
+    PeersChanged,
 }
 
 enum ConnectionArrival {
@@ -141,7 +168,7 @@ enum ConnectionArrival {
 
 impl Drop for SessionGuard {
     fn drop(&mut self) {
-        self.status.disconnected();
+        self.status.disconnected(&self.peer_id);
         let closed = self.metrics.closed.fetch_add(1, Ordering::Relaxed) + 1;
         info!(
             created = self.metrics.created.load(Ordering::Relaxed),
@@ -194,18 +221,99 @@ async fn run() -> Result<()> {
             return Ok(());
         }
         if command == "send" {
-            let path = args.next().context("usage: conduit-daemon send <file>")?;
-            if args.next().is_some() {
-                bail!("usage: conduit-daemon send <file>");
+            let mut to = None;
+            let mut source = None;
+            while let Some(arg) = args.next() {
+                if arg == "--to" {
+                    let id = args
+                        .next()
+                        .context("usage: conduit-daemon send [--to <id>] <file>")?;
+                    to = Some(id.to_string_lossy().into_owned());
+                } else if source.is_none() {
+                    source = Some(PathBuf::from(arg));
+                } else {
+                    bail!("usage: conduit-daemon send [--to <id>] <file>");
+                }
             }
+            let path = source.context("usage: conduit-daemon send [--to <id>] <file>")?;
             let mut stdout = std::io::stdout();
-            let path = control::queue_with_progress(&PathBuf::from(path), |transferred, total| {
+            let path = control::queue_to_progress(to.as_deref(), &path, |transferred, total| {
                 let _ = writeln!(stdout, "PROGRESS {transferred} {total}");
             })
             .await?;
             // A GUI-subsystem command launched from Explorer may have no stdout handle. Output is
-            // best-effort only; publication success belongs to the resident daemon/phone handshake.
-            let _ = writeln!(stdout, "Sent to phone: {}", path.display());
+            // best-effort only; publication success belongs to the resident daemon/peer handshake.
+            let _ = writeln!(
+                stdout,
+                "Sent to {}: {}",
+                to.as_deref().unwrap_or("peer"),
+                path.display()
+            );
+            return Ok(());
+        }
+        if command == "share-url" {
+            let mut to = None;
+            let mut url = None;
+            let mut title = String::new();
+            while let Some(arg) = args.next() {
+                if arg == "--to" {
+                    let id = args
+                        .next()
+                        .context("usage: conduit-daemon share-url [--to <id>] <url> [title]")?;
+                    to = Some(id.to_string_lossy().into_owned());
+                } else if url.is_none() {
+                    url = Some(arg.to_string_lossy().into_owned());
+                } else if title.is_empty() {
+                    title = arg.to_string_lossy().into_owned();
+                } else {
+                    bail!("usage: conduit-daemon share-url [--to <id>] <url> [title]");
+                }
+            }
+            let url = url.context("usage: conduit-daemon share-url [--to <id>] <url> [title]")?;
+            control::share_url(to.as_deref(), &url, &title).await?;
+            println!("Shared {url}");
+            return Ok(());
+        }
+        if command == "peer" {
+            let action = args
+                .next()
+                .context("usage: conduit-daemon peer <connect|disconnect|select|forget> <id>")?;
+            let id = args
+                .next()
+                .map(|value| value.to_string_lossy().into_owned())
+                .context("usage: conduit-daemon peer <connect|disconnect|select|forget> <id>")?;
+            if args.next().is_some() {
+                bail!("usage: conduit-daemon peer <connect|disconnect|select|forget> <id>");
+            }
+            pairing::peers(&config_dir()?)
+                .iter()
+                .find(|peer| peer.id == id)
+                .with_context(|| format!("no paired device with id {id}"))?;
+            let action = match action.to_string_lossy().as_ref() {
+                "connect" => control::PairAction::PeerConnect(id.clone()),
+                "disconnect" => control::PairAction::PeerDisconnect(id.clone()),
+                "select" => control::PairAction::PeerSelect(id.clone()),
+                "forget" => control::PairAction::PeerForget(id.clone()),
+                _ => bail!("usage: conduit-daemon peer <connect|disconnect|select|forget> <id>"),
+            };
+            let offline = action.clone();
+            match control::pair(action).await {
+                Ok(()) => println!("Peer updated: {id}"),
+                Err(error) => {
+                    // Selection and forgetting are pure trust-file edits; they work with no daemon.
+                    let dir = config_dir()?;
+                    match offline {
+                        control::PairAction::PeerSelect(_) => pairing::choose_peer(&dir, &id)?,
+                        control::PairAction::PeerForget(_) => {
+                            if pairing::forget_peer(&dir, &id)? {
+                                println!("Forgot {id}; no daemon is currently running.");
+                                return Ok(());
+                            }
+                        }
+                        _ => bail!("{error:#}"),
+                    }
+                }
+            }
             return Ok(());
         }
         if command == "autostart" {
@@ -277,7 +385,7 @@ async fn run() -> Result<()> {
             let dir = config_dir()?;
             std::fs::create_dir_all(&dir)?;
             let action = args.next().context(
-                "usage: conduit-daemon pair <status|start|cancel|forget|rekey-imported --confirm>",
+                "usage: conduit-daemon pair <status|start|cancel|forget [id]|join <code>|rekey-imported --confirm>",
             )?;
             let confirmation = args.next();
             if action == "rekey-imported" {
@@ -301,8 +409,24 @@ async fn run() -> Result<()> {
                 println!("Restart Conduit and pair the phone to this computer again.");
                 return Ok(());
             }
-            if confirmation.is_some() {
-                bail!("usage: conduit-daemon pair <status|start|cancel|forget|rekey-imported --confirm>");
+            if action == "join" {
+                let code = confirmation
+                    .context("usage: conduit-daemon pair join <code>")?
+                    .to_string_lossy()
+                    .into_owned();
+                if args.next().is_some() {
+                    bail!("usage: conduit-daemon pair join <code>");
+                }
+                control::pair(control::PairAction::Join(code.clone())).await?;
+                println!("Joining pairing code {}.", pairing::format_code(&code));
+                return Ok(());
+            }
+            let target = confirmation
+                .as_ref()
+                .filter(|_| action == "forget")
+                .map(|value| value.to_string_lossy().into_owned());
+            if confirmation.is_some() && action != "forget" {
+                bail!("usage: conduit-daemon pair <status|start|cancel|forget|join <code>|rekey-imported --confirm>");
             }
             match action.to_string_lossy().as_ref() {
                 "status" => {
@@ -364,14 +488,24 @@ async fn run() -> Result<()> {
                         println!("Pairing cancelled.");
                     }
                 },
-                "forget" => match control::pair(control::PairAction::Forget).await {
-                    Ok(()) => println!("Paired phone forgotten."),
+                "forget" => match control::pair(control::PairAction::Forget(target.clone())).await {
+                    Ok(()) => match target.as_deref() {
+                        Some(id) => println!("Forgot {id}."),
+                        None => println!("All paired devices forgotten."),
+                    },
                     Err(_) => {
-                        pairing::forget(&dir)?;
-                        println!("Paired phone forgotten; no daemon is currently running.");
+                        match target.as_deref() {
+                            Some(id) => {
+                                pairing::forget_peer(&dir, id)?;
+                            }
+                            None => {
+                                pairing::forget(&dir)?;
+                            }
+                        }
+                        println!("Paired devices updated; no daemon is currently running.");
                     }
                 },
-                _ => bail!("usage: conduit-daemon pair <status|start|cancel|forget>"),
+                _ => bail!("usage: conduit-daemon pair <status|start|cancel|forget [id]|join <code>|rekey-imported --confirm>"),
             }
             return Ok(());
         }
@@ -481,7 +615,7 @@ async fn run() -> Result<()> {
             return Ok(());
         }
         bail!(
-            "unknown command {:?}; usage: conduit-daemon [send <file> | status | pair <status|start|cancel|forget> | autostart <install|remove|status> | explorer <install|remove|status> | config ...]",
+            "unknown command {:?}; usage: conduit-daemon [send [--to <id>] <file> | share-url [--to <id>] <url> [title] | status | pair <status|start|cancel|forget [id]|join <code>> | peer <connect|disconnect|select|forget> <id> | autostart <install|remove|status> | explorer <install|remove|status> | config ...]",
             command
         );
     }
@@ -544,6 +678,10 @@ async fn run() -> Result<()> {
     // active Noise session. It has no backlog semantics: with no live session receiver, a toast
     // click is dropped rather than replayed against a future/stale Android notification.
     let (toast_action_tx, _) = broadcast::channel::<pb::NotifAction>(16);
+    // One ephemeral ring for user-shared pages. Each live session takes only what is addressed to
+    // it, so a share never lands on whichever peer happened to connect first.
+    let (share_tx, _) = broadcast::channel::<control::SharedUrlRequest>(16);
+    let control_share_tx = share_tx.clone();
     // Likewise one toast thread. A failure here is not fatal: clipboard sync is still
     // worth having on a machine where the notification platform will not cooperate.
     let toasts = match toast::Notifier::start(&dir, toast_action_tx.clone(), bridge.clone()) {
@@ -554,21 +692,31 @@ async fn run() -> Result<()> {
         }
     };
     // One local command queue for the process. File bytes never pass through this IPC; callers
-    // name a local path and the resident daemon opens/streams it through its one live session.
+    // name a local path and the resident daemon opens/streams it through the session that owns
+    // the named peer.
     let (outbound_tx, outbound_rx) = mpsc::channel::<control::SendRequest>(16);
-    let outbound = Arc::new(Mutex::new(outbound_rx));
+    let dispatch_transfers = desktop_status.transfers.clone();
+    let send_routes = Arc::new(SendRoutes::default());
+    tokio::spawn(dispatch_send_requests(
+        outbound_rx,
+        dispatch_transfers,
+        send_routes.clone(),
+    ));
     let (reload_tx, mut reload_rx) = mpsc::channel::<control::ReloadRequest>(4);
     let (pair_tx, mut pair_rx) = mpsc::channel::<control::PairRequest>(4);
     let (pair_session_tx, _) = broadcast::channel::<control::PairAction>(4);
     let control_transfers = desktop_status.transfers.clone();
     let control_history = history.clone();
+    let control_dir = dir.clone();
     let control_task = tokio::spawn(async move {
         if let Err(e) = control::serve(
             outbound_tx,
             reload_tx,
             pair_tx,
+            control_share_tx,
             control_transfers,
             control_history,
+            control_dir,
         )
         .await
         {
@@ -612,10 +760,47 @@ async fn run() -> Result<()> {
         _ => empty_relay_workers(),
     };
 
-    let mut active: Option<tokio::task::JoinHandle<()>> = None;
-    let mut active_path: Option<&'static str> = None;
+    let mut active_sessions: HashMap<String, ActiveSession> = HashMap::new();
+    let mut dialers: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
     let mut candidates = tokio::task::JoinSet::<Result<CandidateSession>>::new();
     let mut admission_generation = admission::Generation::default();
+    let mut generations: u64 = 0;
+    let mut join_task: Option<tokio::task::JoinHandle<()>> = None;
+    let (dial_tx, mut dial_rx) = mpsc::channel::<Result<CandidateSession>>(4);
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<DaemonEvent>();
+    info!(
+        peers = pairing::peers(&dir).len(),
+        selected = pairing::selected_peer(&dir).as_deref().unwrap_or("-"),
+        "paired device registry"
+    );
+    // One refresh path for the two derived views — the status files and the auto-dial targets —
+    // so no control action or session change can leave either one stale.
+    macro_rules! refresh {
+        () => {{
+            let peers_now = pairing::peers(&dir);
+            desktop_status.set_peers(&peers_now, pairing::selected_peer(&dir).as_deref());
+            refresh_dialers(
+                &mut dialers,
+                &peers_now,
+                &active_sessions,
+                &device_id,
+                link_enabled,
+                |peer_id| {
+                    desktop_status.connecting(&peer_id);
+                    tokio::spawn(run_dialer(
+                        peer_id,
+                        device_id.clone(),
+                        identity.private.clone(),
+                        dir.clone(),
+                        relay_endpoints.clone(),
+                        relay_proxy.clone(),
+                        dial_tx.clone(),
+                    ))
+                },
+            );
+        }};
+    }
+    refresh!();
     loop {
         let arrival = tokio::select! {
             Some(()) = tray_exit_rx.recv() => {
@@ -690,15 +875,16 @@ async fn run() -> Result<()> {
                                 "relay configuration applied without daemon restart"
                             );
                             // A live relay socket belongs to the old routing configuration. End only
-                            // that session so the phone reconnects through the newly parked routes;
-                            // a LAN session is left untouched.
-                            if active_path.is_some_and(|path| path.starts_with("relay"))
-                                && !desktop_status.transfers.has_active() {
-                                if let Some(previous) = active.take() {
-                                    previous.abort();
-                                    let _ = previous.await;
-                                }
-                                active_path = None;
+                            // those sessions so the peers reconnect through the newly parked routes;
+                            // LAN sessions and busy peers are left untouched.
+                            let reroute: Vec<String> = active_sessions
+                                .iter()
+                                .filter(|(_, session)| session.path.starts_with("relay"))
+                                .filter(|(id, _)| !desktop_status.transfers.has_active_for(id))
+                                .map(|(id, _)| id.clone())
+                                .collect();
+                            for peer_id in reroute {
+                                stop_sessions(&mut active_sessions, Some(&peer_id)).await;
                             }
                         }
 
@@ -708,6 +894,7 @@ async fn run() -> Result<()> {
                         }
                     }
                 };
+                refresh!();
                 let _ = request.completion.send(result);
                 continue;
             }
@@ -715,7 +902,7 @@ async fn run() -> Result<()> {
                 let result = match request.action {
                     control::PairAction::Disconnect => {
                         let outcome = desktop_status.transfers.set_link_enabled(false, || {
-                            // Never remove peer.txt or identity.bin for a temporary disconnect.
+                            // Never remove trust files or identity.bin for a temporary disconnect.
                             link_intent::save(&dir, false)
                         });
                         match outcome {
@@ -728,17 +915,16 @@ async fn run() -> Result<()> {
                                 if let Err(error) = pairing::cancel(&dir) {
                                     warn!(%error, "could not remove pairing window; paused admission still blocks it");
                                 }
-                                for task in relay_tasks.drain(..).chain(pairing_relay_tasks.drain(..)) {
-                                    task.abort();
-                                    let _ = task.await;
-                                }
-                                (relay_tasks, relay_rx) = empty_relay_workers();
-                                (pairing_relay_tasks, pairing_relay_rx) = empty_relay_workers();
-                                if let Some(previous) = active.take() {
+                                if let Some(previous) = join_task.take() {
                                     previous.abort();
                                     let _ = previous.await;
                                 }
-                                active_path = None;
+                                stop_workers(&mut relay_tasks).await;
+                                stop_workers(&mut pairing_relay_tasks).await;
+                                (relay_tasks, relay_rx) = empty_relay_workers();
+                                (pairing_relay_tasks, pairing_relay_rx) = empty_relay_workers();
+                                stop_sessions(&mut active_sessions, None).await;
+                                stop_dialers(&mut dialers);
                                 desktop_status.set_link_enabled(false);
                                 Ok(())
                             }
@@ -756,6 +942,13 @@ async fn run() -> Result<()> {
                                     link_enabled = true;
                                     desktop_status.set_link_enabled(true);
                                     (relay_tasks, relay_rx) = start_relay_workers(&relay_endpoints, &device_id, relay_proxy.clone());
+                                    // Every peer disabled means nothing could ever connect, so
+                                    // resuming the link is also an explicit "connect again".
+                                    if !pairing::peers(&dir).iter().any(|peer| peer.enabled) {
+                                        if let Err(error) = pairing::enable_all_peers(&dir) {
+                                            warn!(%error, "could not re-enable paired devices");
+                                        }
+                                    }
                                     Ok(())
                                 }
                             }
@@ -766,10 +959,11 @@ async fn run() -> Result<()> {
                     }
                     control::PairAction::Start => match pairing::start(&dir) {
                         Ok(window) => {
-                            for task in pairing_relay_tasks.drain(..) {
-                                task.abort();
-                                let _ = task.await;
+                            if let Some(previous) = join_task.take() {
+                                previous.abort();
+                                let _ = previous.await;
                             }
+                            stop_workers(&mut pairing_relay_tasks).await;
                             let (tasks, rx) = start_pairing_relay_workers(
                                 &relay_endpoints,
                                 &window.rendezvous,
@@ -783,37 +977,151 @@ async fn run() -> Result<()> {
                         }
                         Err(e) => Err(format!("{e:#}")),
                     },
+                    control::PairAction::Join(_) if !link_enabled => {
+                        Err("Connection is paused. Connect before joining pairing.".into())
+                    }
+                    control::PairAction::Join(code) => match pairing::join(&dir, &code) {
+                        Ok(window) => {
+                            if let Some(previous) = join_task.take() {
+                                previous.abort();
+                                let _ = previous.await;
+                            }
+                            stop_workers(&mut pairing_relay_tasks).await;
+                            (pairing_relay_tasks, pairing_relay_rx) = empty_relay_workers();
+                            info!(code = %pairing::format_code(&window.code), "joining a pairing code");
+                            join_task = Some(tokio::spawn(join_pairing(
+                                window.rendezvous,
+                                window.code,
+                                device_id.clone(),
+                                identity.private.clone(),
+                                dir.clone(),
+                                relay_endpoints.clone(),
+                                relay_proxy.clone(),
+                                dial_tx.clone(),
+                            )));
+                            Ok(())
+                        }
+                        Err(e) => Err(format!("{e:#}")),
+                    },
                     control::PairAction::Cancel => {
+                        if let Some(previous) = join_task.take() {
+                            previous.abort();
+                            let _ = previous.await;
+                        }
                         let result = pairing::cancel(&dir).map(|_| ()).map_err(|e| format!("{e:#}"));
                         if result.is_ok() {
-                            for task in pairing_relay_tasks.drain(..) {
-                                task.abort();
-                                let _ = task.await;
-                            }
+                            stop_workers(&mut pairing_relay_tasks).await;
                             (pairing_relay_tasks, pairing_relay_rx) = empty_relay_workers();
                         }
                         result
                     }
-                    control::PairAction::Forget => {
-                        let result = pairing::forget(&dir).map(|_| ()).map_err(|e| format!("{e:#}"));
-                        if result.is_ok() {
-                            for task in pairing_relay_tasks.drain(..) {
-                                task.abort();
-                                let _ = task.await;
-                            }
-                            (pairing_relay_tasks, pairing_relay_rx) = empty_relay_workers();
-                            let _ = pair_session_tx.send(control::PairAction::Forget);
-                            if active.is_none() {
-                                desktop_status.disconnected();
+                    control::PairAction::Forget(target) => match target {
+                        Some(id) => {
+                            if desktop_status.transfers.has_active_for(&id) {
+                                Err(format!("A transfer with {id} is active. Cancel it or wait for completion."))
+                            } else {
+                                // The session sends PairResponse so the other side drops this PC
+                                // too. One bounded grace, only on this explicit user action.
+                                let _ = pair_session_tx.send(control::PairAction::Forget(Some(id.clone())));
+                                wait_for_session_end(&active_sessions, &id, FORGET_GRACE).await;
+                                stop_sessions(&mut active_sessions, Some(&id)).await;
+                                stop_dialers_for(&mut dialers, &id);
+                                pairing::forget_peer(&dir, &id).map(|_| ()).map_err(|e| format!("{e:#}"))
                             }
                         }
+                        None if desktop_status.transfers.has_active() => {
+                            Err("A transfer is active. Cancel it or wait for completion.".to_string())
+                        }
+                        None => {
+                            let result = pairing::forget(&dir).map(|_| ()).map_err(|e| format!("{e:#}"));
+                            if result.is_ok() {
+                                stop_workers(&mut pairing_relay_tasks).await;
+                                (pairing_relay_tasks, pairing_relay_rx) = empty_relay_workers();
+                                if let Some(previous) = join_task.take() {
+                                    previous.abort();
+                                    let _ = previous.await;
+                                }
+                                let _ = pair_session_tx.send(control::PairAction::Forget(None));
+                                wait_for_all_sessions(&active_sessions, FORGET_GRACE).await;
+                                stop_sessions(&mut active_sessions, None).await;
+                                stop_dialers(&mut dialers);
+                            }
+                            result
+                        }
+                    },
+                    control::PairAction::PeerConnect(id) => {
+                        let mut result = Ok(());
+                        if !link_enabled {
+                            let outcome = pairing::cancel(&dir).and_then(|_| {
+                                desktop_status
+                                    .transfers
+                                    .set_link_enabled(true, || link_intent::save(&dir, true))
+                            });
+                            match outcome {
+                                Err(error) => result = Err(format!("{error:#}")),
+                                Ok(()) => {
+                                    link_enabled = true;
+                                    desktop_status.set_link_enabled(true);
+                                    (relay_tasks, relay_rx) = start_relay_workers(
+                                        &relay_endpoints,
+                                        &device_id,
+                                        relay_proxy.clone(),
+                                    );
+                                }
+                            }
+                        }
+                        if result.is_ok() {
+                            result = pairing::set_peer_enabled(&dir, &id, true)
+                                .map(|_| ())
+                                .map_err(|e| format!("{e:#}"));
+                        }
+                        if result.is_ok() {
+                            // Explicit connect dials even when this side would not win the
+                            // deterministic dialer election, so the command always acts.
+                            stop_dialers_for(&mut dialers, &id);
+                            let handle = tokio::spawn(run_dialer(
+                                id.clone(),
+                                device_id.clone(),
+                                identity.private.clone(),
+                                dir.clone(),
+                                relay_endpoints.clone(),
+                                relay_proxy.clone(),
+                                dial_tx.clone(),
+                            ));
+                            dialers.insert(id, handle);
+                        }
                         result
+                    }
+                    control::PairAction::PeerDisconnect(id) => {
+                        if desktop_status.transfers.has_active_for(&id) {
+                            Err(format!("A transfer with {id} is active. Cancel it or wait for completion."))
+                        } else {
+                            stop_sessions(&mut active_sessions, Some(&id)).await;
+                            stop_dialers_for(&mut dialers, &id);
+                            pairing::set_peer_enabled(&dir, &id, false)
+                                .map(|_| ())
+                                .map_err(|e| format!("{e:#}"))
+                        }
+                    }
+                    control::PairAction::PeerSelect(id) => pairing::choose_peer(&dir, &id)
+                        .map_err(|e| format!("{e:#}")),
+                    control::PairAction::PeerForget(id) => {
+                        if desktop_status.transfers.has_active_for(&id) {
+                            Err(format!("A transfer with {id} is active. Cancel it or wait for completion."))
+                        } else {
+                            stop_sessions(&mut active_sessions, Some(&id)).await;
+                            stop_dialers_for(&mut dialers, &id);
+                            pairing::forget_peer(&dir, &id)
+                                .map(|_| ())
+                                .map_err(|e| format!("{e:#}"))
+                        }
                     }
                 };
                 if result.is_ok() {
                     admission_generation.invalidate();
                     candidates.abort_all();
                 }
+                refresh!();
                 let _ = request.completion.send(result);
                 continue;
             }
@@ -834,9 +1142,50 @@ async fn run() -> Result<()> {
             Some(completed) = candidates.join_next(), if !candidates.is_empty() => {
                 match completed {
                     Ok(Ok(candidate)) => ConnectionArrival::Authenticated(candidate),
-                    Ok(Err(error)) => { warn!(%error, "connection candidate refused; live session unchanged"); continue; }
+                    Ok(Err(error)) => { warn!(%error, "connection candidate refused; live sessions unchanged"); continue; }
                     Err(error) => { if !error.is_cancelled() { warn!(%error, "candidate task stopped"); } continue; }
                 }
+            }
+            Some(result) = dial_rx.recv() => {
+                match result {
+                    Ok(mut candidate) => {
+                        // An outbound dial is always evaluated against the trust state at
+                        // receipt, so a stale dial cannot outrun a local Forget.
+                        candidate.generation = admission_generation.ticket();
+                        ConnectionArrival::Authenticated(candidate)
+                    }
+                    Err(error) => { warn!(%error, "outbound dial failed"); continue; }
+                }
+            }
+            Some(event) = event_rx.recv() => {
+                match event {
+                    DaemonEvent::SessionEnded { peer_id, generation } => {
+                        let ours = active_sessions
+                            .get(&peer_id)
+                            .is_some_and(|session| session.generation == generation);
+                        if ours {
+                            stop_sessions(&mut active_sessions, Some(&peer_id)).await;
+                        }
+                    }
+                    DaemonEvent::PeersChanged => {}
+                }
+                // The registry is authoritative: a session for a device that is no longer
+                // listed or is disabled must not survive a roster or Forget change.
+                let peers_now = pairing::peers(&dir);
+                let stale: Vec<String> = active_sessions
+                    .iter()
+                    .filter(|(id, _)| {
+                        !peers_now
+                            .iter()
+                            .any(|peer| &peer.id == *id && peer.enabled)
+                    })
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                for peer_id in stale {
+                    stop_sessions(&mut active_sessions, Some(&peer_id)).await;
+                }
+                refresh!();
+                continue;
             }
         };
         if !link_enabled {
@@ -850,23 +1199,16 @@ async fn run() -> Result<()> {
                 }
                 let generation = admission_generation.ticket();
                 let private_key = identity.private.clone();
-                let hello = pb::PairRequest {
-                    device_id: device_id.clone(),
-                    device_name: advert::hostname(),
-                    static_pub: Vec::new(),
-                    version: env!("CARGO_PKG_VERSION").to_string(),
-                    wallpaper_hash: wallpaper::cached_hash(&dir),
-                    pairing: pairing::state(&dir).pairing,
-                    transfer_protocol: 1,
-                    device_kind: pb::DeviceKind::Desktop as i32,
-                    pairing_proof: Vec::new(),
-                };
+                let hello_dir = dir.clone();
+                let hello_id = device_id.clone();
                 candidates.spawn(async move {
                     stream.set_nodelay(true)?;
                     set_keepalive(&stream)?;
+                    let hello_for =
+                        |remote_id: &str| inbound_hello(&hello_dir, &hello_id, remote_id);
                     let negotiated = tokio::time::timeout(
                         admission::TIMEOUT,
-                        admission::negotiate(&mut stream, &private_key, &hello),
+                        admission::negotiate_with(&mut stream, &private_key, false, hello_for),
                     )
                     .await
                     .context("candidate authentication timed out")??;
@@ -876,6 +1218,7 @@ async fn run() -> Result<()> {
                         path,
                         relay_endpoint,
                         generation,
+                        initiator: false,
                         negotiated,
                     })
                 });
@@ -888,33 +1231,52 @@ async fn run() -> Result<()> {
         }
         // Pair/Forget and another admitted connection may have changed policy while
         // this candidate was doing I/O. Only the main loop may persist a new peer.
-        let authorization = match pairing::authorize(
+        let remote_id = candidate.negotiated.remote_id.clone();
+        let (authorization, peer_kind) = match pairing::authorize_candidate(
             &dir,
-            &candidate.negotiated.remote_id,
+            &device_id,
+            &remote_id,
             candidate.path,
-            candidate.negotiated.hello.pairing,
+            candidate.initiator,
+            &candidate.negotiated.hello,
         ) {
-            Ok(authorization) => authorization,
+            Ok(result) => result,
             Err(error) => {
-                warn!(%error, "candidate is not paired; retaining active session");
+                warn!(%error, "candidate is not paired; active sessions unchanged");
                 continue;
             }
         };
-        if authorization == pairing::Authorization::Trusted
-            && candidate.path == "lan"
-            && active_path.is_some_and(|path| path.starts_with("relay"))
-            && desktop_status.transfers.has_active()
-        {
-            info!("deferring optional LAN promotion while transfers are active");
-            continue;
+        // A duplicate socket for one peer is normal for a moment: a LAN upgrade replaces the
+        // Relay session it supersedes, and two dialers can cross on the same path. Only the
+        // winner may own that peer's session, transfers and clipboard ring.
+        if let Some(existing) = active_sessions.get(&remote_id) {
+            let replaces = replaces_session(
+                existing.path,
+                candidate.path,
+                existing.initiator,
+                candidate.initiator,
+                &device_id,
+                &remote_id,
+                desktop_status.transfers.has_active_for(&remote_id),
+            );
+            if !replaces {
+                info!(
+                    %remote_id,
+                    existing = existing.path,
+                    candidate = candidate.path,
+                    "duplicate socket refused; keeping the established session"
+                );
+                continue;
+            }
         }
         if let Err(error) = pairing::confirm(
             &dir,
-            &candidate.negotiated.remote_id,
+            &remote_id,
+            peer_kind,
             authorization,
             &candidate.negotiated.hello.device_name,
         ) {
-            warn!(%error, "could not commit candidate trust; retaining active session");
+            warn!(%error, "could not commit candidate trust; active sessions unchanged");
             continue;
         }
         admission_generation.invalidate();
@@ -925,13 +1287,21 @@ async fn run() -> Result<()> {
             path: via,
             relay_endpoint,
             negotiated,
+            initiator,
             ..
         } = candidate;
-        info!(%peer, via, relay = relay_endpoint.as_deref().unwrap_or("-"), "authenticated peer promoted");
-        if let Some(previous) = active.take() {
-            previous.abort();
-            let _ = previous.await; // guard drop runs here — closed is counted
-        }
+        info!(
+            %peer,
+            via,
+            peer_kind = ?peer_kind,
+            initiator,
+            relay = relay_endpoint.as_deref().unwrap_or("-"),
+            "authenticated peer promoted"
+        );
+        generations += 1;
+        let generation = generations;
+        stop_sessions(&mut active_sessions, Some(&remote_id)).await;
+        refresh!();
         let created = metrics.created.fetch_add(1, Ordering::Relaxed) + 1;
         info!(
             created,
@@ -941,32 +1311,42 @@ async fn run() -> Result<()> {
         let metrics = metrics.clone();
         let bridge = bridge.clone();
         let toasts = toasts.clone();
-        let outbound = outbound.clone();
+        // One outbound queue per session, registered under the peer it serves: a local send for
+        // another peer must never be picked up here and failed as a stale request.
+        let (session_send_tx, session_send_rx) = mpsc::channel::<control::SendRequest>(16);
+        send_routes.route(&remote_id, session_send_tx);
         let relay_endpoint = relay_endpoint.clone();
         let desktop_status = desktop_status.clone();
         let toast_action_tx = toast_action_tx.clone();
         let pair_session_tx = pair_session_tx.clone();
+        let share_tx = share_tx.clone();
         let data_dir = dir.clone();
         let history = history.clone();
-        active_path = Some(via);
-        active = Some(tokio::spawn(async move {
+        let end_tx = event_tx.clone();
+        let local_id = device_id.clone();
+        let session_peer = remote_id.clone();
+        let handle = tokio::spawn(async move {
             let _guard = SessionGuard {
                 metrics: metrics.clone(),
                 status: desktop_status.clone(),
+                peer_id: session_peer.clone(),
             };
             if let Err(e) = serve(
                 stream,
-                peer,
                 negotiated,
+                peer_kind,
+                &local_id,
                 &metrics,
                 &bridge,
-                &outbound,
+                session_send_rx,
                 toasts.as_ref(),
                 via,
                 relay_endpoint.as_deref(),
                 &desktop_status,
                 &toast_action_tx,
                 &pair_session_tx,
+                &share_tx,
+                &end_tx,
                 &data_dir,
                 &history,
             )
@@ -974,19 +1354,36 @@ async fn run() -> Result<()> {
             {
                 warn!(%peer, error = %e, "session ended");
             }
-        }));
+            let _ = end_tx.send(DaemonEvent::SessionEnded {
+                peer_id: session_peer,
+                generation,
+            });
+        });
+        active_sessions.insert(
+            remote_id.clone(),
+            ActiveSession {
+                handle,
+                path: via,
+                initiator,
+                generation,
+            },
+        );
+        refresh!();
     }
 
     candidates.shutdown().await;
-    if let Some(session) = active.take() {
-        session.abort();
-        let _ = session.await;
+    stop_sessions(&mut active_sessions, None).await;
+    stop_dialers(&mut dialers);
+    if let Some(previous) = join_task.take() {
+        previous.abort();
+        let _ = previous.await;
     }
-    for task in pairing_relay_tasks.drain(..).chain(relay_tasks.drain(..)) {
-        task.abort();
-        let _ = task.await;
-    }
-    desktop_status.disconnected();
+    stop_workers(&mut pairing_relay_tasks).await;
+    stop_workers(&mut relay_tasks).await;
+    desktop_status.set_peers(
+        &pairing::peers(&dir),
+        pairing::selected_peer(&dir).as_deref(),
+    );
     control_task.abort();
     history_task.abort();
     let _ = control_task.await;
@@ -1162,13 +1559,17 @@ async fn park_forever(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn serve(
     stream: TcpStream,
-    peer: SocketAddr,
     negotiated: admission::Negotiated,
+    // Trust decides privileges: only a paired phone may drive notifications, the wallpaper and
+    // the peer roster. Everything else in this session is peer-to-peer and symmetric.
+    peer_kind: pairing::PeerKind,
+    local_id: &str,
     metrics: &Metrics,
     bridge: &Arc<clip::Bridge>,
-    outbound: &Arc<Mutex<mpsc::Receiver<control::SendRequest>>>,
+    mut outbound: mpsc::Receiver<control::SendRequest>,
     toasts: Option<&Arc<toast::Notifier>>,
     // "lan" or "relay". Only the keepalive interval and the log line care.
     path: &'static str,
@@ -1176,9 +1577,12 @@ async fn serve(
     desktop_status: &status::StatusFile,
     toast_action_tx: &broadcast::Sender<pb::NotifAction>,
     pair_session_tx: &broadcast::Sender<control::PairAction>,
+    share_tx: &broadcast::Sender<control::SharedUrlRequest>,
+    end_tx: &mpsc::UnboundedSender<DaemonEvent>,
     data_dir: &std::path::Path,
     history: &notification_history::History,
 ) -> Result<()> {
+    let phone = peer_kind == pairing::PeerKind::Phone;
     let idle_ping = if path.starts_with("relay") {
         RELAY_IDLE_PING
     } else {
@@ -1216,6 +1620,8 @@ async fn serve(
     // consume them, and broadcast deliberately has no durable queue across reconnects.
     let mut toast_actions = toast_action_tx.subscribe();
     let mut pair_actions = pair_session_tx.subscribe();
+    // A shared page is addressed to one peer; every other live session ignores it.
+    let mut shared_urls = share_tx.subscribe();
     // At most one image in flight, and it dies with the session: a peer that vanishes
     // mid-transfer cannot leave a partial buffer behind for the next one to inherit.
     let mut incoming: Option<image::Assembly> = None;
@@ -1227,7 +1633,7 @@ async fn serve(
     let mut sending: Option<transfer::Sending> = None;
     let mut queued = std::collections::VecDeque::<control::SendRequest>::new();
     let capable = peer_hello.transfer_protocol >= 1;
-    let lease = desktop_status.transfers.session(capable)?;
+    let lease = desktop_status.transfers.session(&remote_id, capable)?;
     let transfers = &lease.transfers;
     let owner = &lease.owner;
     let (received_tx, mut received_rx) = mpsc::channel::<transfer::Received>(4);
@@ -1410,10 +1816,7 @@ async fn serve(
                 }
                 continue;
             }
-            local_file = async {
-                let mut rx = outbound.lock().await;
-                rx.recv().await
-            }, if queued.len() < 16 => {
+            local_file = outbound.recv(), if queued.len() < 16 => {
                 let Some(request) = local_file else {
                     bail!("local outbound file queue closed")
                 };
@@ -1492,7 +1895,9 @@ async fn serve(
                 } else { outgoing_image = next_image.take(); }
                 continue;
             }
-            action = toast_actions.recv(), if !heartbeat.awaiting_pong() && control_ready => {
+            // Only the phone has notification replies to receive; a desktop peer must never be
+            // sent a toast action this computer's user clicked.
+            action = toast_actions.recv(), if phone && !heartbeat.awaiting_pong() && control_ready => {
                 match action {
                     Ok(action) => {
                         session
@@ -1513,20 +1918,47 @@ async fn serve(
             }
             action = pair_actions.recv(), if !heartbeat.awaiting_pong() && control_ready => {
                 match action {
-                    Ok(control::PairAction::Forget) => {
+                    // Only this device's own forget ends this session; another peer's does not.
+                    Ok(control::PairAction::Forget(target))
+                        if target.as_deref().is_none_or(|id| id == remote_id) =>
+                    {
                         let response = pb::PairResponse { accept: false, static_pub: Vec::new() };
                         session
                             .send(&mut stream, pb::Kind::PairResponse, &response.encode_to_vec())
                             .await?;
                         let _ = tokio::time::timeout(Duration::from_secs(2), stream.drain()).await;
                         metrics.frames_out.fetch_add(1, Ordering::Relaxed);
-                        bail!("local user forgot the paired phone");
+                        bail!("local user forgot this paired device");
                     }
                     Ok(_) => {}
                     Err(broadcast::error::RecvError::Lagged(_)) => {
-                        if pairing::peer_id(data_dir).is_none() {
-                            bail!("paired phone was forgotten");
+                        if !pairing::peers(data_dir).iter().any(|p| p.id == remote_id) {
+                            bail!("this device was forgotten");
                         }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {}
+                }
+                continue;
+            }
+            request = shared_urls.recv(), if !heartbeat.awaiting_pong() && control_ready => {
+                match request {
+                    Ok(request)
+                        if request.to.as_deref().is_none_or(|id| id == remote_id) =>
+                    {
+                        let shared = pb::SharedUrl {
+                            url: request.url,
+                            title: request.title,
+                            timestamp_ms: now_ms(),
+                            source_device: advert::hostname(),
+                        };
+                        session
+                            .send(&mut stream, pb::Kind::SharedUrl, &shared.encode_to_vec())
+                            .await?;
+                        metrics.frames_out.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Ok(_) => {}
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!(skipped = n, "shared URL ring lagged")
                     }
                     Err(broadcast::error::RecvError::Closed) => {}
                 }
@@ -1616,6 +2048,9 @@ async fn serve(
                     }
                 }
             }
+            pb::Kind::WallpaperPreview if !phone => {
+                warn!("wallpaper preview from a non-phone peer dropped");
+            }
             pb::Kind::WallpaperPreview => {
                 match pb::WallpaperPreview::decode(&envelope.payload[..]) {
                     Ok(preview) => match wallpaper::store(data_dir, &preview) {
@@ -1660,6 +2095,7 @@ async fn serve(
             }
             // A malformed notification is dropped, never fatal: the phone's shade must
             // not be able to end a session that is also carrying the clipboard.
+            pb::Kind::NotifNew if !phone => warn!("notification from a non-phone peer dropped"),
             pb::Kind::NotifNew => {
                 let Ok(notif) = pb::NotifNew::decode(&envelope.payload[..]) else {
                     warn!("malformed notification dropped");
@@ -1701,6 +2137,9 @@ async fn serve(
                     });
                 }
             }
+            pb::Kind::NotifUpdate if !phone => {
+                warn!("notification update from a non-phone peer dropped")
+            }
             pb::Kind::NotifUpdate => {
                 let Ok(notif) = pb::NotifUpdate::decode(&envelope.payload[..]) else {
                     warn!("malformed notification update dropped");
@@ -1717,6 +2156,9 @@ async fn serve(
                         messages: notif.messages,
                     });
                 }
+            }
+            pb::Kind::NotifRemove if !phone => {
+                warn!("notification removal from a non-phone peer dropped")
             }
             pb::Kind::NotifRemove => {
                 let Ok(notif) = pb::NotifRemove::decode(&envelope.payload[..]) else {
@@ -1739,9 +2181,30 @@ async fn serve(
                     bail!("peer announced an id that does not match its Noise static key");
                 }
                 info!(name = %hello.device_name, version = %hello.version, "peer named itself");
-                desktop_status.peer_name(&hello.device_name);
-                if let Err(e) = pairing::remember_name(data_dir, &hello.device_name) {
-                    warn!(error = %e, "could not persist paired phone name");
+                if phone {
+                    desktop_status.peer_name(&hello.device_name);
+                }
+                if let Err(e) = pairing::remember_name(data_dir, &remote_id, &hello.device_name) {
+                    warn!(error = %e, "could not persist the peer name");
+                }
+            }
+            pb::Kind::PeerRoster if !phone => {
+                warn!("peer roster from a non-phone peer dropped");
+            }
+            pb::Kind::PeerRoster => {
+                let Ok(roster) = pb::PeerRoster::decode(&envelope.payload[..]) else {
+                    warn!("malformed peer roster dropped");
+                    continue;
+                };
+                match pairing::apply_phone_roster(data_dir, local_id, &remote_id, &roster) {
+                    Ok(removed) => {
+                        if !removed.is_empty() {
+                            info!(removed = ?removed, "phone dropped paired devices");
+                        }
+                        desktop_status.phone_roster(&roster);
+                        let _ = end_tx.send(DaemonEvent::PeersChanged);
+                    }
+                    Err(e) => warn!(error = %e, "refused the phone's peer roster"),
                 }
             }
             pb::Kind::PairResponse => {
@@ -1750,8 +2213,11 @@ async fn serve(
                     continue;
                 };
                 if !response.accept {
-                    pairing::forget(data_dir)?;
-                    bail!("paired phone removed this desktop");
+                    // Forget exactly the peer that said so; every other pairing is that peer's
+                    // business, not this session's.
+                    pairing::forget_peer(data_dir, &remote_id)?;
+                    let _ = end_tx.send(DaemonEvent::PeersChanged);
+                    bail!("the peer removed this desktop from its paired devices");
                 }
             }
             // A file, same leniency as an image: a refused offer costs the transfer and
@@ -1975,6 +2441,337 @@ fn set_keepalive(stream: &TcpStream) -> Result<()> {
     Ok(())
 }
 
+/// Stops every dialer task, so a paused or stopped daemon performs no discovery at all.
+fn stop_dialers(dialers: &mut HashMap<String, tokio::task::JoinHandle<()>>) {
+    for (_, handle) in dialers.drain() {
+        handle.abort();
+    }
+}
+
+fn stop_dialers_for(dialers: &mut HashMap<String, tokio::task::JoinHandle<()>>, peer_id: &str) {
+    if let Some(handle) = dialers.remove(peer_id) {
+        handle.abort();
+    }
+}
+
+async fn stop_workers(tasks: &mut Vec<tokio::task::JoinHandle<()>>) {
+    for task in tasks.drain(..) {
+        task.abort();
+        let _ = task.await;
+    }
+}
+
+/// Waits, bounded, for one session to close itself after being told the user forgot it.
+async fn wait_for_session_end(
+    active: &HashMap<String, ActiveSession>,
+    peer_id: &str,
+    grace: Duration,
+) {
+    let deadline = Instant::now() + grace;
+    while active.contains_key(peer_id) && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn wait_for_all_sessions(active: &HashMap<String, ActiveSession>, grace: Duration) {
+    let deadline = Instant::now() + grace;
+    while !active.is_empty() && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Ends one peer's session (or every session), including its transfer lease. Other peers keep
+/// their sockets, clipboard ring position and in-flight files.
+async fn stop_sessions(active: &mut HashMap<String, ActiveSession>, peer_id: Option<&str>) {
+    let handles: Vec<ActiveSession> = match peer_id {
+        Some(id) => active.remove(id).into_iter().collect(),
+        None => active.drain().map(|(_, session)| session).collect(),
+    };
+    for session in handles {
+        session.handle.abort();
+        let _ = session.handle.await;
+    }
+}
+
+/// Keeps exactly one auto-dialer per eligible peer: a paired, enabled desktop that this side is
+/// responsible for dialling and that has no live session. Only the lexicographically smaller id
+/// dials, which is the same rule the duplicate-socket arbitration uses. A paused link keeps no
+/// dialer at all, so a disconnected daemon performs no discovery.
+fn refresh_dialers(
+    dialers: &mut HashMap<String, tokio::task::JoinHandle<()>>,
+    peers: &[pairing::PairedPeer],
+    active: &HashMap<String, ActiveSession>,
+    local_id: &str,
+    link_enabled: bool,
+    mut spawn: impl FnMut(String) -> tokio::task::JoinHandle<()>,
+) {
+    let wanted: Vec<String> = if link_enabled {
+        peers
+            .iter()
+            .filter(|peer| peer.kind == pairing::PeerKind::Desktop && peer.enabled)
+            .filter(|peer| local_id < peer.id.as_str())
+            .filter(|peer| !active.contains_key(&peer.id))
+            .map(|peer| peer.id.clone())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    dialers.retain(|id, handle| {
+        let keep = wanted.iter().any(|value| value == id);
+        if !keep {
+            handle.abort();
+        }
+        keep
+    });
+    for id in wanted {
+        if !dialers.contains_key(&id) {
+            let handle = spawn(id.clone());
+            dialers.insert(id, handle);
+        }
+    }
+}
+
+/// Whether a freshly authenticated socket takes over from the live one for the same peer.
+///
+/// A transfer in flight pins the current session. Otherwise a LAN socket always supersedes a
+/// Relay one, and two sockets that crossed on the same path resolve to the deterministic
+/// initiator — the smaller device id — however long the second one took to authenticate, so both
+/// machines always agree on the same survivor. Same-direction sockets are an ordinary reconnect,
+/// where the newest one replaces the dead old one.
+fn replaces_session(
+    existing_path: &str,
+    candidate_path: &str,
+    existing_initiator: bool,
+    candidate_initiator: bool,
+    local_id: &str,
+    remote_id: &str,
+    existing_has_active_transfer: bool,
+) -> bool {
+    if existing_has_active_transfer {
+        return false;
+    }
+    // LAN always outranks relay, in both directions: a relay candidate never displaces a healthy
+    // LAN session and vice versa.
+    if existing_path != "lan" && candidate_path == "lan" {
+        return true;
+    }
+    if existing_path == "lan" && candidate_path != "lan" {
+        return false;
+    }
+    if existing_path == candidate_path && existing_initiator != candidate_initiator {
+        return candidate_initiator == (local_id < remote_id);
+    }
+    true
+}
+
+/// This side's identity hello. The pairing proof binds the dialling peer as initiator and this
+/// device as responder, which is the same digest such a peer computes for itself.
+fn inbound_hello(dir: &Path, device_id: &str, remote_id: &str) -> pb::PairRequest {
+    let state = pairing::state(dir);
+    pb::PairRequest {
+        device_id: device_id.to_owned(),
+        device_name: advert::hostname(),
+        static_pub: Vec::new(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        wallpaper_hash: wallpaper::cached_hash(dir),
+        pairing: state.pairing,
+        transfer_protocol: 1,
+        device_kind: pb::DeviceKind::Desktop as i32,
+        pairing_proof: state
+            .pairing_code
+            .as_deref()
+            .map(|code| pairing::pairing_proof(code, remote_id, device_id))
+            .unwrap_or_default(),
+    }
+}
+
+/// Completes one outbound Noise handshake. `code` is present only while this side is pairing, in
+/// which case both hellos must prove the same code bound to the same two identities.
+async fn dial_stream(
+    stream: TcpStream,
+    path: &'static str,
+    relay_endpoint: Option<String>,
+    local_id: &str,
+    private_key: &[u8],
+    code: Option<&str>,
+) -> Result<CandidateSession> {
+    stream.set_nodelay(true)?;
+    set_keepalive(&stream)?;
+    let peer = stream.peer_addr()?;
+    let mut stream = stream;
+    let hello_for = |remote_id: &str| pb::PairRequest {
+        device_id: local_id.to_owned(),
+        device_name: advert::hostname(),
+        pairing: code.is_some(),
+        transfer_protocol: 1,
+        device_kind: pb::DeviceKind::Desktop as i32,
+        pairing_proof: code
+            .map(|code| pairing::pairing_proof(code, local_id, remote_id))
+            .unwrap_or_default(),
+        ..Default::default()
+    };
+    let negotiated = tokio::time::timeout(
+        admission::TIMEOUT,
+        admission::negotiate_with(&mut stream, private_key, true, hello_for),
+    )
+    .await
+    .context("dialled peer did not finish its handshake")??;
+    if let Some(code) = code {
+        // This side dialled, so it is the initiator and the proof it sent binds (local, remote).
+        // A responder that sends a proof must have computed that same digest; a legacy phone may
+        // send none, which admission then judges on its own rules.
+        let proof = &negotiated.hello.pairing_proof;
+        if !proof.is_empty() {
+            let expected = pairing::pairing_proof(code, local_id, &negotiated.remote_id);
+            if !pairing::constant_time_eq(proof, &expected) {
+                bail!("dialled peer did not prove the pairing code");
+            }
+        }
+    }
+    Ok(CandidateSession {
+        stream,
+        peer,
+        path,
+        relay_endpoint,
+        generation: 0,
+        initiator: true,
+        negotiated,
+    })
+}
+
+/// One bounded attempt at reaching a paired desktop: a short LAN discovery first, then the Relay
+/// rendezvous that peer parks under its own device id.
+async fn dial_peer_once(
+    peer_id: &str,
+    local_id: &str,
+    private_key: &[u8],
+    _dir: &Path,
+    endpoints: &[String],
+    proxy: Option<&str>,
+) -> Result<CandidateSession> {
+    if let Some(addr) = advert::discover_lan_peer(peer_id, LAN_DIAL_TIMEOUT).await {
+        match TcpStream::connect(addr).await {
+            Ok(stream) => match dial_stream(stream, "lan", None, local_id, private_key, None).await
+            {
+                Ok(candidate) => return Ok(candidate),
+                Err(error) => {
+                    warn!(%peer_id, %addr, %error, "LAN handshake failed; trying the Relay")
+                }
+            },
+            Err(error) => warn!(%peer_id, %addr, %error, "LAN connect failed; trying the Relay"),
+        }
+    }
+    let mut last = None;
+    for endpoint in endpoints {
+        let stream = match wire::dial_relay(endpoint, peer_id, proxy).await {
+            Ok(stream) => stream,
+            Err(error) => {
+                last = Some(error);
+                continue;
+            }
+        };
+        match dial_stream(
+            stream,
+            "relay",
+            Some(endpoint.clone()),
+            local_id,
+            private_key,
+            None,
+        )
+        .await
+        {
+            Ok(candidate) => return Ok(candidate),
+            Err(error) => {
+                last = Some(error.context(format!("relay {endpoint} handshake failed")));
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| anyhow::anyhow!("no route to the paired device")))
+}
+
+/// Automatic dialer for one paired desktop. It exits when main aborts it, which happens as soon as
+/// that peer has a live session or stops being an eligible target, so it never runs while connected.
+async fn run_dialer(
+    peer_id: String,
+    local_id: String,
+    private_key: Vec<u8>,
+    dir: PathBuf,
+    endpoints: Vec<String>,
+    proxy: Option<String>,
+    tx: mpsc::Sender<Result<CandidateSession>>,
+) {
+    let mut backoff = DIAL_BACKOFF_MIN;
+    loop {
+        match dial_peer_once(
+            &peer_id,
+            &local_id,
+            &private_key,
+            &dir,
+            &endpoints,
+            proxy.as_deref(),
+        )
+        .await
+        {
+            Ok(candidate) => {
+                if tx.send(Ok(candidate)).await.is_err() {
+                    return;
+                }
+                // Refused candidates (duplicate socket, changed trust) retry soon.
+                tokio::time::sleep(DIAL_BACKOFF_MIN).await;
+                backoff = DIAL_BACKOFF_MIN;
+            }
+            Err(error) => {
+                warn!(peer = %peer_id, error = %error, "outbound dial failed");
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(DIAL_BACKOFF_MAX);
+            }
+        }
+    }
+}
+
+/// `pair join <code>`: one dial of each Relay endpoint's temporary pairing rendezvous, as the
+/// initiator. A rejected handshake is final — retrying it would spend the other side's five
+/// pairing attempts and close the window the user just opened.
+async fn join_pairing(
+    rendezvous: String,
+    code: String,
+    local_id: String,
+    private_key: Vec<u8>,
+    dir: PathBuf,
+    endpoints: Vec<String>,
+    proxy: Option<String>,
+    tx: mpsc::Sender<Result<CandidateSession>>,
+) {
+    for endpoint in &endpoints {
+        if !pairing::state(&dir).pairing {
+            return;
+        }
+        let stream = match wire::dial_relay(endpoint, &rendezvous, proxy.as_deref()).await {
+            Ok(stream) => stream,
+            Err(error) => {
+                warn!(%endpoint, error = %error, "pairing rendezvous unreachable");
+                continue;
+            }
+        };
+        match dial_stream(
+            stream,
+            "relay-pair",
+            Some(endpoint.clone()),
+            &local_id,
+            &private_key,
+            Some(&code),
+        )
+        .await
+        {
+            Ok(candidate) => {
+                let _ = tx.send(Ok(candidate)).await;
+                return;
+            }
+            Err(error) => warn!(%endpoint, error = %error, "pairing handshake failed"),
+        }
+    }
+}
+
 fn config_dir() -> Result<PathBuf> {
     data_dir::resolve()
 }
@@ -1986,6 +2783,72 @@ fn queued_request_terminal(same_session: bool) -> (&'static str, &'static str) {
     } else {
         ("failed", "Session changed")
     }
+}
+
+/// One outbound file queue per live session, keyed by the peer that session serves.
+///
+/// A `SendRequest` names the peer it is for, so it must reach that peer's session and no other:
+/// with one shared receiver, whichever session polled first stole another peer's file and failed
+/// it as "Session changed". At most [`pairing::MAX_PEERS`] sessions exist, so this is a short
+/// vector rather than a hash map. Entries are replaced, never removed: a dead session's receiver
+/// closes, which [`dispatch_send_requests`] reports as a stale request.
+#[derive(Default)]
+struct SendRoutes(std::sync::Mutex<Vec<(String, mpsc::Sender<control::SendRequest>)>>);
+
+impl SendRoutes {
+    fn route(&self, peer_id: &str, tx: mpsc::Sender<control::SendRequest>) {
+        let mut routes = self.lock();
+        routes.retain(|(id, _)| id != peer_id);
+        routes.push((peer_id.to_owned(), tx));
+    }
+
+    fn sender(&self, peer_id: &str) -> Option<mpsc::Sender<control::SendRequest>> {
+        self.lock()
+            .iter()
+            .find(|(id, _)| id == peer_id)
+            .map(|(_, tx)| tx.clone())
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<(String, mpsc::Sender<control::SendRequest>)>> {
+        // Route bookkeeping only; a poisoned table must not stop local sends.
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// Hands each local send to the one session that serves its peer, and settles it here when no
+/// session does. Nothing is awaited on a peer's queue: one stalled session must not delay the
+/// sends of every other peer.
+async fn dispatch_send_requests(
+    mut requests: mpsc::Receiver<control::SendRequest>,
+    transfers: Arc<transfer::Transfers>,
+    routes: Arc<SendRoutes>,
+) {
+    while let Some(request) = requests.recv().await {
+        let Some(tx) = routes.sender(&request.owner) else {
+            fail_send_request(&transfers, request, queued_request_terminal(false));
+            continue;
+        };
+        match tx.try_send(request) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(request)) => {
+                fail_send_request(&transfers, request, ("failed", "Outbound queue is full"))
+            }
+            Err(mpsc::error::TrySendError::Closed(request)) => {
+                fail_send_request(&transfers, request, queued_request_terminal(false))
+            }
+        }
+    }
+}
+
+fn fail_send_request(
+    transfers: &transfer::Transfers,
+    mut request: control::SendRequest,
+    (state, detail): (&'static str, &'static str),
+) {
+    transfers.update(&request.owner, &request.id, 0, state, detail);
+    request.finish(Err(detail.into()));
 }
 
 #[cfg(test)]
@@ -2025,5 +2888,249 @@ mod heartbeat_tests {
         );
         assert!(heartbeat.observe(pb::Kind::Pong));
         assert!(!heartbeat.awaiting_pong());
+    }
+}
+
+#[cfg(test)]
+mod peer_tests {
+    use super::*;
+
+    fn peer(id: &str, kind: pairing::PeerKind, enabled: bool) -> pairing::PairedPeer {
+        pairing::PairedPeer {
+            id: id.into(),
+            name: id.into(),
+            kind,
+            enabled,
+            source: pairing::PeerSource::Direct,
+        }
+    }
+
+    fn live_session() -> ActiveSession {
+        ActiveSession {
+            handle: tokio::spawn(async {}),
+            path: "lan",
+            initiator: false,
+            generation: 1,
+        }
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "conduit-daemon-{name}-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn send_request(
+        owner: &str,
+    ) -> (
+        control::SendRequest,
+        tokio::sync::oneshot::Receiver<std::result::Result<(), String>>,
+    ) {
+        let (completion, done) = tokio::sync::oneshot::channel();
+        let (progress, _) = tokio::sync::watch::channel(control::TransferProgress {
+            transferred: 0,
+            total: 0,
+        });
+        (
+            control::SendRequest {
+                id: vec![7],
+                owner: owner.to_owned(),
+                path: PathBuf::from("notes.txt"),
+                completion: Some(completion),
+                progress,
+            },
+            done,
+        )
+    }
+
+    #[test]
+    fn duplicate_sockets_keep_one_deterministic_survivor() {
+        // A LAN socket replaces a Relay session unless a transfer pins the current one.
+        assert!(replaces_session(
+            "relay", "lan", false, true, "a", "b", false
+        ));
+        assert!(!replaces_session(
+            "relay", "lan", false, true, "a", "b", true
+        ));
+        // A relay candidate never displaces a healthy LAN session.
+        assert!(!replaces_session(
+            "lan", "relay", false, true, "a", "b", false
+        ));
+
+        // Both sides dialled: the smaller id is the initiator, so its own socket survives however
+        // late the crossed socket authenticated.
+        assert!(replaces_session("lan", "lan", false, true, "a", "b", false));
+        assert!(!replaces_session(
+            "lan", "lan", true, false, "a", "b", false
+        ));
+        assert!(!replaces_session(
+            "lan", "lan", false, true, "b", "a", false
+        ));
+        assert!(replaces_session("lan", "lan", true, false, "b", "a", false));
+        // Same direction is an ordinary reconnect: the newest socket replaces the dead one.
+        assert!(replaces_session("lan", "lan", true, true, "a", "b", false));
+    }
+
+    #[tokio::test]
+    async fn a_queued_file_reaches_only_the_session_that_owns_its_peer() {
+        let dir = temp_dir("routing");
+        let transfers = transfer::Transfers::start(&dir);
+        let routes = Arc::new(SendRoutes::default());
+        let (a_tx, mut a_rx) = mpsc::channel::<control::SendRequest>(4);
+        let (b_tx, mut b_rx) = mpsc::channel::<control::SendRequest>(4);
+        routes.route("peer-a", a_tx);
+        routes.route("peer-b", b_tx);
+        let (queue_tx, queue_rx) = mpsc::channel::<control::SendRequest>(4);
+        tokio::spawn(dispatch_send_requests(queue_rx, transfers, routes));
+
+        let (request, _done) = send_request("peer-a");
+        queue_tx.send(request).await.unwrap();
+        let delivered = a_rx
+            .recv()
+            .await
+            .expect("the owning session receives its own file");
+        assert_eq!(delivered.owner, "peer-a");
+        assert!(
+            b_rx.try_recv().is_err(),
+            "another peer's session must never take this file"
+        );
+
+        // A peer with no session fails at once instead of waiting to be stolen elsewhere.
+        let (request, done) = send_request("peer-gone");
+        queue_tx.send(request).await.unwrap();
+        assert_eq!(done.await.unwrap(), Err("Session changed".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn auto_dialer_only_targets_this_sides_enabled_desktops() {
+        let peers = vec![
+            peer("aaa", pairing::PeerKind::Desktop, true),
+            peer("zzz", pairing::PeerKind::Desktop, true),
+            peer("mmm", pairing::PeerKind::Desktop, false),
+            peer("phone", pairing::PeerKind::Phone, true),
+        ];
+        let active: HashMap<String, ActiveSession> = HashMap::new();
+        let mut dialers = HashMap::new();
+        let mut spawned = Vec::new();
+        refresh_dialers(&mut dialers, &peers, &active, "mmm", true, |id| {
+            spawned.push(id.clone());
+            tokio::spawn(async {})
+        });
+        assert_eq!(spawned, vec!["zzz".to_string()]);
+        assert_eq!(dialers.len(), 1);
+        // A refresh with the same state does not spawn a second dialer.
+        refresh_dialers(&mut dialers, &peers, &active, "mmm", true, |id| {
+            spawned.push(id.clone());
+            tokio::spawn(async {})
+        });
+        assert_eq!(spawned.len(), 1);
+
+        // Once that peer has a session, its dialer is gone; a disconnect brings it back.
+        let mut active = HashMap::new();
+        active.insert("zzz".to_string(), live_session());
+        refresh_dialers(&mut dialers, &peers, &active, "mmm", true, |id| {
+            spawned.push(id.clone());
+            tokio::spawn(async {})
+        });
+        assert!(dialers.is_empty());
+        assert_eq!(spawned.len(), 1);
+        active.clear();
+        refresh_dialers(&mut dialers, &peers, &active, "mmm", true, |id| {
+            spawned.push(id.clone());
+            tokio::spawn(async {})
+        });
+        assert_eq!(spawned, vec!["zzz".to_string(), "zzz".to_string()]);
+
+        // A paused link keeps no dialer and never starts one.
+        refresh_dialers(&mut dialers, &peers, &active, "mmm", false, |id| {
+            spawned.push(id.clone());
+            tokio::spawn(async {})
+        });
+        assert!(dialers.is_empty());
+        assert_eq!(spawned.len(), 2);
+        stop_dialers(&mut dialers);
+        assert!(dialers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_starting_daemon_and_a_joining_daemon_pair_end_to_end() {
+        let dir_a = temp_dir("pair-a");
+        let dir_b = temp_dir("pair-b");
+        let identity_a = wire::load_or_create_identity(&dir_a.join("identity.bin")).unwrap();
+        let identity_b = wire::load_or_create_identity(&dir_b.join("identity.bin")).unwrap();
+        let id_a = wire::device_id(&identity_a.public);
+        let id_b = wire::device_id(&identity_b.public);
+        // A shows the code, B enters it: both derive the same rendezvous and the same proof.
+        let window_a = pairing::start(&dir_a).unwrap();
+        let window_b = pairing::join(&dir_b, &window_a.code).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let responder = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let hello_dir = dir_a.clone();
+            let hello_id = id_a.clone();
+            let hello_for = |remote: &str| inbound_hello(&hello_dir, &hello_id, remote);
+            let negotiated =
+                admission::negotiate_with(&mut stream, &identity_a.private, false, hello_for)
+                    .await
+                    .unwrap();
+            (dir_a, id_a, negotiated)
+        });
+        // B dials as the initiator, exactly like `pair join`.
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let candidate = dial_stream(
+            stream,
+            "lan",
+            None,
+            &id_b,
+            &identity_b.private,
+            Some(&window_b.code),
+        )
+        .await
+        .unwrap();
+        let (dir_a, id_a, inbound) = responder.await.unwrap();
+
+        // Each side authorizes the other from the initiator's point of view, so the responder
+        // verifies (B, A) and the joining side verifies the very same digest for itself.
+        let (authorization, kind) =
+            pairing::authorize_candidate(&dir_a, &id_a, &id_b, "lan", false, &inbound.hello)
+                .unwrap();
+        assert_eq!(
+            (authorization, kind),
+            (pairing::Authorization::Paired, pairing::PeerKind::Desktop)
+        );
+        pairing::confirm(&dir_a, &id_b, kind, authorization, "Work PC").unwrap();
+        let (authorization, kind) = pairing::authorize_candidate(
+            &dir_b,
+            &id_b,
+            &id_a,
+            "lan",
+            true,
+            &candidate.negotiated.hello,
+        )
+        .unwrap();
+        assert_eq!(
+            (authorization, kind),
+            (pairing::Authorization::Paired, pairing::PeerKind::Desktop)
+        );
+        pairing::confirm(&dir_b, &id_a, kind, authorization, "Home PC").unwrap();
+        assert!(pairing::peers(&dir_a).iter().any(|peer| peer.id == id_b));
+        assert!(pairing::peers(&dir_b).iter().any(|peer| peer.id == id_a));
+        assert_eq!(
+            pairing::selected_peer(&dir_a).as_deref(),
+            Some(id_b.as_str())
+        );
+        assert_eq!(
+            pairing::selected_peer(&dir_b).as_deref(),
+            Some(id_a.as_str())
+        );
+        let _ = std::fs::remove_dir_all(&dir_a);
+        let _ = std::fs::remove_dir_all(&dir_b);
     }
 }

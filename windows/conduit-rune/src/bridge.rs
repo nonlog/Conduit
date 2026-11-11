@@ -80,6 +80,23 @@ pub struct Transfer {
 }
 
 #[derive(Clone, Default, PartialEq, Debug)]
+pub struct PeerDevice {
+    pub id: String,
+    pub name: String,
+    /// `phone` or `desktop`.
+    pub kind: String,
+    /// `connected`, `connecting`, `paused` or `offline`.
+    pub state: String,
+    /// `lan`, `relay` or empty while disconnected.
+    pub route: String,
+    pub relay: String,
+    pub enabled: bool,
+    pub selected: bool,
+    /// The route the paired phone last reported for this device.
+    pub phone_route: String,
+}
+
+#[derive(Clone, Default, PartialEq, Debug)]
 pub struct Snapshot {
     pub connection: Connection,
     pub pairing: Pairing,
@@ -87,6 +104,7 @@ pub struct Snapshot {
     pub notifications: Vec<Notification>,
     pub links: Vec<SharedLink>,
     pub transfers: Vec<Transfer>,
+    pub peers: Vec<PeerDevice>,
     pub daemon_available: bool,
 }
 
@@ -96,6 +114,9 @@ pub const OBSERVED_FILES: &[&str] = &[
     "pairing.txt",
     "peer.txt",
     "peer-name.txt",
+    "peers.tsv",
+    "paired-peers.tsv",
+    "selected-peer.txt",
     "notifications.tsv",
     "shared-links.tsv",
     "transfers.tsv",
@@ -289,14 +310,12 @@ fn scoop_root() -> Option<PathBuf> {
             if dir
                 .file_name()
                 .is_some_and(|s| s.to_string_lossy().eq_ignore_ascii_case("shims"))
-            {
-                if let Some(root) = dir
+                && let Some(root) = dir
                     .parent()
                     .map(Path::to_path_buf)
                     .and_then(valid_scoop_root)
-                {
-                    return Some(root);
-                }
+            {
+                return Some(root);
             }
         }
     }
@@ -312,13 +331,11 @@ fn scoop_root() -> Option<PathBuf> {
     {
         use winreg::{RegKey, enums::HKEY_CURRENT_USER};
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        if let Ok(run) = hkcu.open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Run") {
-            if let Ok(command) = run.get_value::<String, _>("Conduit") {
-                if let Some(root) = scoop_root_from_exe(Path::new(command.trim().trim_matches('"')))
-                {
-                    return Some(root);
-                }
-            }
+        if let Ok(run) = hkcu.open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Run")
+            && let Ok(command) = run.get_value::<String, _>("Conduit")
+            && let Some(root) = scoop_root_from_exe(Path::new(command.trim().trim_matches('"')))
+        {
+            return Some(root);
         }
     }
     None
@@ -427,10 +444,10 @@ pub fn save_material_preference(material: crate::window_material::Material) -> R
 }
 
 pub fn daemon_path() -> Option<PathBuf> {
-    if let Some(path) = env::var_os("CONDUIT_DAEMON_PATH").map(PathBuf::from) {
-        if path.is_file() {
-            return Some(path);
-        }
+    if let Some(path) = env::var_os("CONDUIT_DAEMON_PATH").map(PathBuf::from)
+        && path.is_file()
+    {
+        return Some(path);
     }
     if let Some(daemon) = portable_daemon() {
         return Some(daemon);
@@ -477,6 +494,77 @@ fn parse_transfer(line: &str) -> Option<Transfer> {
         detail: cols[6].into(),
         terminal: ["completed", "failed", "cancelled"].contains(&cols[4]),
     })
+}
+
+/// `id\tname\tkind\tstate\troute\trelay\tenabled\tselected\tphone_route`
+fn parse_peer(line: &str) -> Option<PeerDevice> {
+    let cols: Vec<_> = line.split('\t').collect();
+    if cols.len() != 9 || cols[0].is_empty() || cols[0].len() > 128 {
+        return None;
+    }
+    if !["phone", "desktop"].contains(&cols[2]) {
+        return None;
+    }
+    Some(PeerDevice {
+        id: cols[0].into(),
+        name: if cols[1].is_empty() {
+            "Paired device".into()
+        } else {
+            cols[1].into()
+        },
+        kind: cols[2].into(),
+        state: cols[3].into(),
+        route: cols[4].into(),
+        relay: cols[5].into(),
+        enabled: cols[6] == "1",
+        selected: cols[7] == "1",
+        phone_route: cols[8].into(),
+    })
+}
+
+fn parse_peers(value: &str) -> Vec<PeerDevice> {
+    value.lines().take(8).filter_map(parse_peer).collect()
+}
+
+/// An older single-peer daemon writes no roster; one honest phone row keeps the
+/// connection card and the device list telling the same story.
+fn synthetic_phone_peer(
+    status: &BTreeMap<String, String>,
+    dir: &Path,
+    linked: bool,
+    paused: bool,
+) -> PeerDevice {
+    let first = |key: &str, file: &str, max: u64| {
+        let from_status = get(status, key);
+        if from_status.is_empty() {
+            bounded(&dir.join(file), max).trim().to_owned()
+        } else {
+            from_status
+        }
+    };
+    let name = first("peer_name", "peer-name.txt", 1024);
+    PeerDevice {
+        id: first("peer_id", "peer.txt", 512),
+        name: if name.is_empty() {
+            "Android phone".into()
+        } else {
+            name
+        },
+        kind: "phone".into(),
+        state: if paused {
+            "paused"
+        } else if linked {
+            "connected"
+        } else {
+            "offline"
+        }
+        .into(),
+        route: get(status, "path"),
+        relay: get(status, "relay"),
+        enabled: !paused,
+        selected: true,
+        phone_route: String::new(),
+    }
 }
 
 pub fn snapshot() -> Snapshot {
@@ -532,9 +620,14 @@ pub fn snapshot() -> Snapshot {
     };
     #[cfg(not(windows))]
     let (autostart, explorer) = (false, false);
+    let linked = !paused && state == "linked";
+    let mut peers = parse_peers(&bounded(&dir.join("peers.tsv"), 64 * 1024));
+    if peers.is_empty() && (paired || linked) {
+        peers.push(synthetic_phone_peer(&status, &dir, linked, paused));
+    }
     Snapshot {
         connection: Connection {
-            linked: !paused && state == "linked",
+            linked,
             paused,
             state: if paused {
                 "Paused"
@@ -622,6 +715,7 @@ pub fn snapshot() -> Snapshot {
             .take(32)
             .filter_map(parse_transfer)
             .collect(),
+        peers,
         daemon_available: daemon_path().is_some(),
     }
 }
@@ -677,29 +771,62 @@ pub fn ensure_daemon() -> Result<(), String> {
         .map_err(|e| format!("Launching daemon: {e}"))
 }
 
-pub fn send_file(path: &Path) -> Result<(), String> {
+pub fn send_file_to_with_error(
+    path: &Path,
+    peer_id: Option<&str>,
+    on_error: impl FnOnce(String) + Send + 'static,
+) -> Result<(), String> {
     let metadata = fs::metadata(path).map_err(|e| format!("File unavailable: {e}"))?;
     if !metadata.is_file() || metadata.len() == 0 {
         return Err("Select a nonempty file".into());
     }
     let path = fs::canonicalize(path).map_err(|e| format!("Resolving file: {e}"))?;
-    let mut child = command()?
-        .arg("send")
+    let mut invocation = command()?;
+    invocation.arg("send");
+    if let Some(id) = peer_id {
+        invocation.arg("--to").arg(id);
+    }
+    let child = invocation
         .arg(path)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Queueing file: {e}"))?;
-    // The queue lives in the daemon; the UI remains responsive during transfers.
+    // The queue lives in the daemon; the UI remains responsive during transfers,
+    // while any offline-target or transfer rejection is surfaced back asynchronously.
     std::thread::spawn(move || {
-        let _ = child.wait();
+        if let Ok(output) = child.wait_with_output()
+            && !output.status.success()
+        {
+            let raw = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            let message = if raw.is_empty() {
+                format!("Send failed ({})", output.status)
+            } else {
+                raw.trim_start_matches("Error: ").to_owned()
+            };
+            on_error(message);
+        }
     });
     Ok(())
 }
 
+pub fn share_url(raw_url: &str, peer_id: Option<&str>) -> Result<(), String> {
+    let url = raw_url.trim();
+    if url.is_empty() || url.len() > 2048 {
+        return Err("Enter a web address to share".into());
+    }
+    if !url::Url::parse(url).is_ok_and(|parsed| ["http", "https"].contains(&parsed.scheme())) {
+        return Err("Share a http or https web address".into());
+    }
+    match peer_id {
+        Some(id) => daemon_command(&["share-url", "--to", id, url]).map(|_| ()),
+        None => daemon_command(&["share-url", url]).map(|_| ()),
+    }
+}
+
 pub fn cancel_transfer(id: &str) -> Result<(), String> {
     if !(2..=128).contains(&id.len())
-        || id.len() % 2 != 0
+        || !id.len().is_multiple_of(2)
         || !id.bytes().all(|b| b.is_ascii_hexdigit())
     {
         return Err("Invalid transfer identifier".into());
@@ -1002,6 +1129,69 @@ mod tests {
         fs::write(&daemon, []).unwrap();
         assert_eq!(portable_daemon_for(&app), Some(daemon));
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn peer_roster_rows_carry_each_devices_route_and_flags() {
+        let body = "phone\tMy phone\tphone\tconnected\trelay\ttyo:41113\t1\t1\tlan\n\
+                    studio\tStudio\tdesktop\tconnecting\tlan\t\t1\t0\t\nmalformed";
+        let peers = parse_peers(body);
+        assert_eq!(peers.len(), 2);
+        assert_eq!(peers[0].kind, "phone");
+        assert!(peers[0].enabled && peers[0].selected);
+        assert_eq!(peers[0].relay, "tyo:41113");
+        assert_eq!(peers[0].phone_route, "lan");
+        assert_eq!(peers[1].state, "connecting");
+        assert!(!peers[1].selected && peers[1].route == "lan");
+        // A roster is a bounded read, not an unbounded file parse.
+        let many = "id\tname\tdesktop\tconnected\tlan\t\t1\t0\t\n".repeat(20);
+        assert_eq!(parse_peers(&many).len(), 8);
+        assert!(parse_peer("id\tname\ttablet\tconnected\tlan\t\t1\t0\t").is_none());
+        for name in ["peers.tsv", "paired-peers.tsv", "selected-peer.txt"] {
+            assert!(OBSERVED_FILES.contains(&name), "{name} is not observed");
+        }
+    }
+
+    #[test]
+    fn a_daemon_without_a_roster_still_reports_one_phone() {
+        let dir = std::env::temp_dir().join(format!(
+            "conduit-rune-peers-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("peer.txt"), "phone-id").unwrap();
+        fs::write(dir.join("peer-name.txt"), "Pixel").unwrap();
+        let peer = synthetic_phone_peer(&BTreeMap::new(), &dir, true, false);
+        assert_eq!(peer.id, "phone-id");
+        assert_eq!(peer.name, "Pixel");
+        assert_eq!(peer.kind, "phone");
+        assert_eq!(peer.state, "connected");
+        assert!(peer.selected);
+        let paused = synthetic_phone_peer(&BTreeMap::new(), &dir, false, true);
+        assert_eq!(paused.state, "paused");
+        assert!(!paused.enabled);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn shared_links_reject_non_web_addresses_before_reaching_the_daemon() {
+        assert_eq!(
+            share_url("", None).unwrap_err(),
+            "Enter a web address to share"
+        );
+        assert_eq!(
+            share_url("not a url", None).unwrap_err(),
+            "Share a http or https web address"
+        );
+        assert_eq!(
+            share_url("file:///C:/secret", None).unwrap_err(),
+            "Share a http or https web address"
+        );
+        assert!(share_url(&format!("https://example.org/{}", "a".repeat(2048)), None).is_err());
     }
 
     #[test]

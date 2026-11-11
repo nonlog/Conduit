@@ -26,4 +26,12 @@ class PeerSelectionTest {
     fun companionConnectionKeepsClipboardGateOpenWhenPrimaryIsOffline() {
         assertEquals(true, hasConnectedPeer(LinkState.Retrying, listOf(offline, live)))
     }
+
+    @Test
+    fun pausedDesktopNeverBecomesTheActiveSendTarget() {
+        val paused = ConnectedDevice("paused", "Home", LinkState.Paused, "", enabled = false)
+        assertEquals("live", resolveActiveDeviceId(listOf(paused, live), "paused"))
+        assertEquals("paused", resolveActiveDeviceId(listOf(paused), "paused"))
+        assertEquals(false, hasConnectedPeer(LinkState.Paused, listOf(paused)))
+    }
 }

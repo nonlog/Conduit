@@ -7,29 +7,23 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
-import android.provider.Settings as AndroidSettings
 import android.util.Log
 import androidx.activity.ComponentActivity
-import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts.GetContent
 import androidx.activity.result.contract.ActivityResultContracts.GetMultipleContents
 import androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions
-import androidx.lifecycle.Lifecycle
 import androidx.compose.foundation.background
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.selection.toggleable
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -39,17 +33,20 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Surface
@@ -65,12 +62,13 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -78,15 +76,19 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import android.provider.Settings as AndroidSettings
 
 private const val TAG = "conduit.ui"
 private const val OPPO_APP_FREEZE_FEATURE = "oplus.software.pms_app_frozen"
 private const val OPPO_APP_DISABLE_FEATURE = "oppo.appdisable.support"
 
 /** What the one screen has to say. */
-enum class LinkState(val label: String) {
+enum class LinkState(
+    val label: String,
+) {
     Idle("Not linked"),
     Discovering("Looking for the desktop"),
 
@@ -97,10 +99,13 @@ enum class LinkState(val label: String) {
     Retrying("Reconnecting"),
     Pairing("Pairing on LAN"),
     Connected("Linked"),
+
+    /** The user disconnected this computer on its own; no socket, retry or notification runs. */
+    Paused("Paused"),
 }
 
 /** Discovery and retry are still an active user request and therefore must remain stoppable. */
-internal fun isLinkRequestedState(state: LinkState): Boolean = state != LinkState.Idle
+internal fun isLinkRequestedState(state: LinkState): Boolean = state != LinkState.Idle && state != LinkState.Paused
 
 /**
  * The screen's whole state. Snapshot state rather than a flow because writes come from
@@ -137,7 +142,13 @@ object LinkStatus {
     var fingerprint by mutableStateOf("-- : -- : -- : -- : -- : -- : -- : --")
 }
 
-data class ConnectedDevice(val id: String, val name: String, val state: LinkState, val path: String)
+data class ConnectedDevice(
+    val id: String,
+    val name: String,
+    val state: LinkState,
+    val path: String,
+    val enabled: Boolean = true,
+)
 
 class MainActivity : ComponentActivity() {
     /**
@@ -156,30 +167,40 @@ class MainActivity : ComponentActivity() {
     }
 
     private var scanResultHandler: ((String) -> Unit)? = null
-    private val pairingScanner = registerForActivityResult(ScanContract()) { result ->
-        pairingQrScanGate.finish()
-        val handler = scanResultHandler
-        scanResultHandler = null
-        if (!isPairingQrResultDeliverable(isDestroyed, isFinishing,
-                lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))) return@registerForActivityResult
-        val payload = result.contents ?: return@registerForActivityResult
-        val code = PairingCode.fromQrPayload(payload)
-        if (code == null) {
-            android.widget.Toast.makeText(this, "That is not a Conduit pairing QR code", android.widget.Toast.LENGTH_SHORT).show()
-        } else {
-            // ActivityResultRegistry retains pending results across recreation.
-            // Its callback can precede onResume; a valid scan must not be dropped.
-            (handler ?: ::sendPair)(code)
+    private val pairingScanner =
+        registerForActivityResult(ScanContract()) { result ->
+            pairingQrScanGate.finish()
+            val handler = scanResultHandler
+            scanResultHandler = null
+            if (!isPairingQrResultDeliverable(
+                    isDestroyed,
+                    isFinishing,
+                    lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED),
+                )
+            ) {
+                return@registerForActivityResult
+            }
+            val payload = result.contents ?: return@registerForActivityResult
+            val code = PairingCode.fromQrPayload(payload)
+            if (code == null) {
+                android.widget.Toast
+                    .makeText(this, "That is not a Conduit pairing QR code", android.widget.Toast.LENGTH_SHORT)
+                    .show()
+            } else {
+                // ActivityResultRegistry retains pending results across recreation.
+                // Its callback can precede onResume; a valid scan must not be dropped.
+                (handler ?: ::sendPair)(code)
+            }
         }
-    }
 
-    private val ask = registerForActivityResult(RequestMultiplePermissions()) { granted ->
-        granted.filterValues { !it }.keys.forEach {
-            // Not fatal, and not worth nagging over. Photo mirroring simply stays off
-            // until it is granted in Settings, and the service says so in its log.
-            Log.i(TAG, "$it denied")
+    private val ask =
+        registerForActivityResult(RequestMultiplePermissions()) { granted ->
+            granted.filterValues { !it }.keys.forEach {
+                // Not fatal, and not worth nagging over. Photo mirroring simply stays off
+                // until it is granted in Settings, and the service says so in its log.
+                Log.i(TAG, "$it denied")
+            }
         }
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -191,14 +212,20 @@ class MainActivity : ComponentActivity() {
         // pairing state must be accurate before the background service happens to start.
         if (LinkStatus.pairedDeviceId == null) LinkStatus.pairedDeviceId = Identity.peer(filesDir)
         if (LinkStatus.peerName == null) LinkStatus.peerName = Identity.peerName(filesDir)
+        // Loaded before the rows below, because the remembered master switch and each paused
+        // computer decide whether those first rows already read "Paused".
+        Settings.load(this)
         if (LinkStatus.devices.isEmpty()) {
-            LinkStatus.devices = Identity.peers(filesDir).map { ConnectedDevice(it.id, it.name, LinkState.Idle, "") }
+            LinkStatus.devices =
+                Identity.peers(filesDir).map { peer ->
+                    val state = if (!Settings.linkWanted || !peer.enabled) LinkState.Paused else LinkState.Idle
+                    ConnectedDevice(peer.id, peer.name, state, "", enabled = peer.enabled)
+                }
         }
         if (LinkStatus.selectedDeviceId == null) LinkStatus.selectedDeviceId = PairedDesktops.selected(filesDir)
         // The activity can be the first component to run, so it loads history too rather
         // than showing an empty list until the service happens to start.
         History.load(this)
-        Settings.load(this)
         refreshClipboardAccessMode()
         refreshBatteryOptimization()
         request()
@@ -221,8 +248,11 @@ class MainActivity : ComponentActivity() {
                     history = History.entries,
                     transfers = FileTransfers.entries,
                     onCancelTransfer = { id ->
-                        startService(Intent(this, SyncService::class.java)
-                            .setAction(ACTION_CANCEL_TRANSFER).putExtra(EXTRA_TRANSFER_ID, id))
+                        startService(
+                            Intent(this, SyncService::class.java)
+                                .setAction(ACTION_CANCEL_TRANSFER)
+                                .putExtra(EXTRA_TRANSFER_ID, id),
+                        )
                     },
                     hideNotifications = Settings.hideNotificationContent,
                     onHideNotifications = { Settings.hideNotificationContent = it },
@@ -244,13 +274,20 @@ class MainActivity : ComponentActivity() {
                     devices = LinkStatus.devices,
                     selectedDeviceId = LinkStatus.selectedDeviceId,
                     onSelectDevice = { id ->
-                        startService(Intent(this, SyncService::class.java)
-                            .setAction(ACTION_SELECT_DEVICE).putExtra(EXTRA_PEER_ID, id))
+                        startService(
+                            Intent(this, SyncService::class.java)
+                                .setAction(ACTION_SELECT_DEVICE)
+                                .putExtra(EXTRA_PEER_ID, id),
+                        )
                     },
                     onForgetDevice = { id ->
-                        startService(Intent(this, SyncService::class.java)
-                            .setAction(ACTION_FORGET_DEVICE).putExtra(EXTRA_PEER_ID, id))
+                        startService(
+                            Intent(this, SyncService::class.java)
+                                .setAction(ACTION_FORGET_DEVICE)
+                                .putExtra(EXTRA_PEER_ID, id),
+                        )
                     },
+                    onSetDeviceEnabled = ::setDeviceEnabled,
                     onSendFiles = ::sendFiles,
                     onClearHistory = History::clear,
                 )
@@ -265,20 +302,22 @@ class MainActivity : ComponentActivity() {
         // The picker can stay open while the desktop disappears. Re-check at the moment we
         // actually hand work to the service instead of trusting the state that made the button
         // visible before the picker launched.
-        val selected = resolveActiveDevice(
-            LinkStatus.devices,
-            LinkStatus.selectedDeviceId,
-            LinkStatus.pairedDeviceId,
-        )
+        val selected =
+            resolveActiveDevice(
+                LinkStatus.devices,
+                LinkStatus.selectedDeviceId,
+                LinkStatus.pairedDeviceId,
+            )
         if (selected?.state != LinkState.Connected) {
             val peer = selected?.name?.ifBlank { "the desktop" } ?: "the desktop"
             Log.w(TAG, "picked files while ${LinkStatus.state}; connecting instead of sending")
             send(ACTION_CONNECT)
-            android.widget.Toast.makeText(
-                this,
-                "Not linked to $peer yet - connecting, try again in a moment",
-                android.widget.Toast.LENGTH_SHORT,
-            ).show()
+            android.widget.Toast
+                .makeText(
+                    this,
+                    "Not linked to $peer yet - connecting, try again in a moment",
+                    android.widget.Toast.LENGTH_SHORT,
+                ).show()
             return
         }
         val targetId = selected?.id ?: return
@@ -286,11 +325,12 @@ class MainActivity : ComponentActivity() {
         val sending = boundedShare(unique)
         if (unique.size > sending.size) {
             Log.w(TAG, "picker returned ${unique.size} files, sending the first $MAX_SHARE_FILES")
-            android.widget.Toast.makeText(
-                this,
-                "Queuing ${sending.size} of ${unique.size} files",
-                android.widget.Toast.LENGTH_SHORT,
-            ).show()
+            android.widget.Toast
+                .makeText(
+                    this,
+                    "Queuing ${sending.size} of ${unique.size} files",
+                    android.widget.Toast.LENGTH_SHORT,
+                ).show()
         }
 
         val clip = android.content.ClipData.newRawUri("conduit", sending.first())
@@ -306,14 +346,17 @@ class MainActivity : ComponentActivity() {
             )
         }.onFailure {
             Log.w(TAG, "cannot send ${sending.size} files", it)
-            android.widget.Toast.makeText(this, "Could not queue the selected files; check read access",
-                android.widget.Toast.LENGTH_SHORT).show()
+            android.widget.Toast
+                .makeText(
+                    this,
+                    "Could not queue the selected files; check read access",
+                    android.widget.Toast.LENGTH_SHORT,
+                ).show()
         }
     }
 
     @Suppress("DEPRECATION")
-    private fun appVersionName(): String =
-        packageManager.getPackageInfo(packageName, 0).versionName ?: "unknown"
+    private fun appVersionName(): String = packageManager.getPackageInfo(packageName, 0).versionName ?: "unknown"
 
     override fun onResume() {
         super.onResume()
@@ -351,7 +394,9 @@ class MainActivity : ComponentActivity() {
         val uri = intent.data ?: return false
         val code = PairingCode.fromQrPayload(uri.toString())
         if (code == null) {
-            android.widget.Toast.makeText(this, "Invalid Conduit pairing code", android.widget.Toast.LENGTH_SHORT).show()
+            android.widget.Toast
+                .makeText(this, "Invalid Conduit pairing code", android.widget.Toast.LENGTH_SHORT)
+                .show()
             return true
         }
         sendPair(code)
@@ -368,18 +413,25 @@ class MainActivity : ComponentActivity() {
         scanResultHandler = onCode
         try {
             check(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) { "Activity is not ready for scanning" }
-            pairingScanner.launch(ScanOptions()
-                .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                .setPrompt("Scan the Conduit pairing code on your computer")
-                .setBeepEnabled(false)
-                .setBarcodeImageEnabled(false)
-                .setOrientationLocked(false)
-                .setCaptureActivity(PairingScannerActivity::class.java))
+            pairingScanner.launch(
+                ScanOptions()
+                    .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                    .setPrompt("Scan the Conduit pairing code on your computer")
+                    .setBeepEnabled(false)
+                    .setBarcodeImageEnabled(false)
+                    .setOrientationLocked(false)
+                    .setCaptureActivity(PairingScannerActivity::class.java),
+            )
         } catch (error: RuntimeException) {
             pairingQrScanGate.cancel()
             scanResultHandler = null
             Log.w(TAG, "Could not launch QR scanner", error)
-            android.widget.Toast.makeText(this, "Could not open the scanner. Enter the six-digit pairing code instead.", android.widget.Toast.LENGTH_LONG).show()
+            android.widget.Toast
+                .makeText(
+                    this,
+                    "Could not open the scanner. Enter the six-digit pairing code instead.",
+                    android.widget.Toast.LENGTH_LONG,
+                ).show()
         }
     }
 
@@ -392,12 +444,13 @@ class MainActivity : ComponentActivity() {
      * install-time or a trip to Settings the user has to make anyway.
      */
     private fun request() {
-        val wanted = buildList {
-            add(Photos.READ)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                add(Manifest.permission.POST_NOTIFICATIONS)
-            }
-        }.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        val wanted =
+            buildList {
+                add(Photos.READ)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    add(Manifest.permission.POST_NOTIFICATIONS)
+                }
+            }.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
         if (wanted.isNotEmpty()) ask.launch(wanted.toTypedArray())
     }
 
@@ -427,23 +480,41 @@ class MainActivity : ComponentActivity() {
         startForegroundService(intent)
     }
 
+    /**
+     * Pausing is a background-service action. Resuming owns a transport, so it must start and
+     * promote a foreground service within the platform's deadline.
+     */
+    private fun setDeviceEnabled(
+        id: String,
+        enabled: Boolean,
+    ) {
+        val intent =
+            Intent(this, SyncService::class.java)
+                .setAction(ACTION_SET_DEVICE_ENABLED)
+                .putExtra(EXTRA_PEER_ID, id)
+                .putExtra(EXTRA_ENABLED, enabled)
+        if (enabled) startForegroundService(intent) else startService(intent)
+    }
+
     private fun refreshClipboardAccessMode() {
         clipboardAccessibilityEnabled = ClipboardAccess.isAccessibilityEnabled(this)
         clipboardMode = ClipboardAccess.mode(this)
     }
 
     private fun refreshBatteryOptimization() {
-        batteryOptimizationIgnored = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
-        } else {
-            true
-        }
+        batteryOptimizationIgnored =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
+            } else {
+                true
+            }
     }
 
     private fun requestBatteryOptimization() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || batteryOptimizationIgnored) return
-        val request = Intent(AndroidSettings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
-            .setData(Uri.parse("package:$packageName"))
+        val request =
+            Intent(AndroidSettings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                .setData(Uri.parse("package:$packageName"))
         runCatching { startActivity(request) }
             .onFailure {
                 Log.w(TAG, "battery optimization request unavailable", it)
@@ -462,8 +533,9 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        val oplus = Intent("oplus.intent.action.settings.APP_FORZEN_OPLUS_SETTINGS")
-            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        val oplus =
+            Intent("oplus.intent.action.settings.APP_FORZEN_OPLUS_SETTINGS")
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
         runCatching { startActivity(oplus) }
             .onFailure {
                 Log.i(TAG, "Oplus app-freeze settings unavailable", it)
@@ -472,9 +544,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun openBackgroundDeliverySettings() {
-        val battery = Intent("android.settings.VIEW_ADVANCED_POWER_USAGE_DETAIL")
-            .setData(Uri.parse("package:$packageName"))
-            .putExtra("request_ignore_background_restriction", true)
+        val battery =
+            Intent("android.settings.VIEW_ADVANCED_POWER_USAGE_DETAIL")
+                .setData(Uri.parse("package:$packageName"))
+                .putExtra("request_ignore_background_restriction", true)
         runCatching { startActivity(battery) }
             .onFailure {
                 Log.w(TAG, "per-app battery settings unavailable", it)
@@ -486,7 +559,9 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class MainTab(val title: String) {
+private enum class MainTab(
+    val title: String,
+) {
     Home("Home"),
     Transfers("Transfers"),
     Clipboard("Clipboard"),
@@ -526,6 +601,7 @@ internal fun ConduitApp(
     selectedDeviceId: String? = null,
     onSelectDevice: (String) -> Unit = {},
     onForgetDevice: (String) -> Unit = {},
+    onSetDeviceEnabled: (String, Boolean) -> Unit = { _, _ -> },
 ) {
     val selected = resolveActiveDevice(devices, selectedDeviceId, pairedDeviceId)
     val effectivePeer = selected?.name?.ifBlank { "Desktop" } ?: peerName
@@ -543,64 +619,64 @@ internal fun ConduitApp(
     }
 
     MotionAlertDialog(
-            visible = showPairDialog,
-            onDismissRequest = { showPairDialog = false },
-            title = { Text("Pair desktop") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(
-                        "On Windows, open Conduit Settings and choose Pair phone. " +
-                            "Scan the QR code shown there, or enter its six-digit code. " +
-                            "Both methods work through Conduit Relay even when the devices are on different networks.",
-                    )
-                    FilledTonalButton(
-                        onClick = {
-                            onScanPairQr { code ->
-                                pairCode = code
-                                showPairDialog = false
-                                onPair(code)
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text("Scan QR code")
-                    }
-                    OutlinedTextField(
-                        value = pairCode,
-                        onValueChange = { pairCode = PairingCode.normalize(it).take(PairingCode.LENGTH) },
-                        label = { Text("Pairing code") },
-                        placeholder = { Text("123456") },
-                        supportingText = { Text("6 digits · valid for two minutes") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    TextButton(
-                        onClick = {
-                            showPairDialog = false
-                            onPair(null)
-                        },
-                    ) {
-                        Text("Search the same LAN instead")
-                    }
-                }
-            },
-            confirmButton = {
-                Button(
-                    enabled = PairingCode.isValid(pairCode),
+        visible = showPairDialog,
+        onDismissRequest = { showPairDialog = false },
+        title = { Text("Pair desktop") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "On Windows, open Conduit Settings and choose Pair phone. " +
+                        "Scan the QR code shown there, or enter its six-digit code. " +
+                        "Both methods work through Conduit Relay even when the devices are on different networks.",
+                )
+                FilledTonalButton(
                     onClick = {
-                        val code = PairingCode.normalize(pairCode)
+                        onScanPairQr { code ->
+                            pairCode = code
+                            showPairDialog = false
+                            onPair(code)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Scan QR code")
+                }
+                OutlinedTextField(
+                    value = pairCode,
+                    onValueChange = { pairCode = PairingCode.normalize(it).take(PairingCode.LENGTH) },
+                    label = { Text("Pairing code") },
+                    placeholder = { Text("123456") },
+                    supportingText = { Text("6 digits · valid for two minutes") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                TextButton(
+                    onClick = {
                         showPairDialog = false
-                        onPair(code)
+                        onPair(null)
                     },
                 ) {
-                    Text("Pair")
+                    Text("Search the same LAN instead")
                 }
-            },
-            dismissButton = {
-                TextButton(onClick = { showPairDialog = false }) { Text("Cancel") }
-            },
-        )
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = PairingCode.isValid(pairCode),
+                onClick = {
+                    val code = PairingCode.normalize(pairCode)
+                    showPairDialog = false
+                    onPair(code)
+                },
+            ) {
+                Text("Pair")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = { showPairDialog = false }) { Text("Cancel") }
+        },
+    )
 
     BackHandler(enabled = page == "history" || tab != MainTab.Home) {
         if (page == "history") page = "main" else tabName = MainTab.Home.name
@@ -634,52 +710,67 @@ internal fun ConduitApp(
         },
     ) { insets ->
         MotionPageHost(index = tab.ordinal, modifier = Modifier.padding(insets)) { shown ->
-        when (MainTab.entries[shown]) {
-            MainTab.Home -> HomeTab(
-                modifier = Modifier,
-                peerName = effectivePeer,
-                pairedDeviceId = effectiveId,
-                pairing = pairing,
-                path = effectivePath,
-                state = effectiveState,
-                history = history,
-                transfers = transfers,
-                onOpenTransfers = { tabName = MainTab.Transfers.name },
-                onConnect = onConnect,
-                onDisconnect = onDisconnect,
-                onPair = requestPair,
-                onCancelPair = onCancelPair,
-                onSendFiles = onSendFiles,
-                onOpenHistory = { tabName = MainTab.Clipboard.name },
-            )
-            MainTab.Transfers -> TransfersTab(Modifier, transfers, effectivePeer, onCancelTransfer)
-            MainTab.Clipboard -> ClipboardTab(Modifier, history, onClearHistory)
-            MainTab.Settings -> SettingsTab(
-                modifier = Modifier,
-                appVersion = appVersion,
-                pairedDeviceId = pairedDeviceId,
-                peerName = peerName,
-                pairing = pairing,
-                historyCount = history.size,
-                hideNotifications = hideNotifications,
-                onHideNotifications = onHideNotifications,
-                clipboardMode = clipboardMode,
-                clipboardAccessibilityEnabled = clipboardAccessibilityEnabled,
-                onOpenClipboardAccessibility = onOpenClipboardAccessibility,
-                batteryOptimizationIgnored = batteryOptimizationIgnored,
-                oplusAppFreezeSupported = oplusAppFreezeSupported,
-                onRequestBatteryOptimization = onRequestBatteryOptimization,
-                onOpenOplusFreezeSettings = onOpenOplusFreezeSettings,
-                onPair = requestPair,
-                onCancelPair = onCancelPair,
-                onForget = onForget,
-                devices = devices,
-                selectedDeviceId = selectedDeviceId,
-                onSelectDevice = onSelectDevice,
-                onForgetDevice = onForgetDevice,
-                onOpenHistory = { tabName = MainTab.Clipboard.name },
-            )
-        }
+            when (MainTab.entries[shown]) {
+                MainTab.Home -> {
+                    HomeTab(
+                        modifier = Modifier,
+                        peerName = effectivePeer,
+                        pairedDeviceId = effectiveId,
+                        pairing = pairing,
+                        path = effectivePath,
+                        state = effectiveState,
+                        history = history,
+                        transfers = transfers,
+                        onOpenTransfers = { tabName = MainTab.Transfers.name },
+                        onConnect = onConnect,
+                        onDisconnect = onDisconnect,
+                        onPair = requestPair,
+                        onCancelPair = onCancelPair,
+                        onSendFiles = onSendFiles,
+                        onOpenHistory = { tabName = MainTab.Clipboard.name },
+                        devices = devices,
+                        onSelectDevice = onSelectDevice,
+                        onSetDeviceEnabled = onSetDeviceEnabled,
+                    )
+                }
+
+                MainTab.Transfers -> {
+                    TransfersTab(Modifier, transfers, effectivePeer, onCancelTransfer)
+                }
+
+                MainTab.Clipboard -> {
+                    ClipboardTab(Modifier, history, onClearHistory)
+                }
+
+                MainTab.Settings -> {
+                    SettingsTab(
+                        modifier = Modifier,
+                        appVersion = appVersion,
+                        pairedDeviceId = pairedDeviceId,
+                        peerName = peerName,
+                        pairing = pairing,
+                        historyCount = history.size,
+                        hideNotifications = hideNotifications,
+                        onHideNotifications = onHideNotifications,
+                        clipboardMode = clipboardMode,
+                        clipboardAccessibilityEnabled = clipboardAccessibilityEnabled,
+                        onOpenClipboardAccessibility = onOpenClipboardAccessibility,
+                        batteryOptimizationIgnored = batteryOptimizationIgnored,
+                        oplusAppFreezeSupported = oplusAppFreezeSupported,
+                        onRequestBatteryOptimization = onRequestBatteryOptimization,
+                        onOpenOplusFreezeSettings = onOpenOplusFreezeSettings,
+                        onPair = requestPair,
+                        onCancelPair = onCancelPair,
+                        onForget = onForget,
+                        devices = devices,
+                        selectedDeviceId = selectedDeviceId,
+                        onSelectDevice = onSelectDevice,
+                        onForgetDevice = onForgetDevice,
+                        onSetDeviceEnabled = onSetDeviceEnabled,
+                        onOpenHistory = { tabName = MainTab.Clipboard.name },
+                    )
+                }
+            }
         }
     }
 }
@@ -701,22 +792,28 @@ private fun HomeTab(
     onCancelPair: () -> Unit,
     onSendFiles: (List<android.net.Uri>) -> Unit,
     onOpenHistory: () -> Unit,
+    devices: List<ConnectedDevice> = emptyList(),
+    onSelectDevice: (String) -> Unit = {},
+    onSetDeviceEnabled: (String, Boolean) -> Unit = { _, _ -> },
 ) {
-    val pickFiles = rememberLauncherForActivityResult(GetMultipleContents()) { uris ->
-        if (uris.isNotEmpty()) onSendFiles(uris)
-    }
-    val pickPhoto = rememberLauncherForActivityResult(GetContent()) { uri ->
-        if (uri != null) onSendFiles(listOf(uri))
-    }
+    val pickFiles =
+        rememberLauncherForActivityResult(GetMultipleContents()) { uris ->
+            if (uris.isNotEmpty()) onSendFiles(uris)
+        }
+    val pickPhoto =
+        rememberLauncherForActivityResult(GetContent()) { uri ->
+            if (uri != null) onSendFiles(listOf(uri))
+        }
 
     LazyColumn(
         modifier = modifier.fillMaxWidth(),
-        contentPadding = PaddingValues(
-            start = ExpressiveLayout.pageInset,
-            top = 12.dp,
-            end = ExpressiveLayout.pageInset,
-            bottom = 26.dp,
-        ),
+        contentPadding =
+            PaddingValues(
+                start = ExpressiveLayout.pageInset,
+                top = 12.dp,
+                end = ExpressiveLayout.pageInset,
+                bottom = 26.dp,
+            ),
         verticalArrangement = Arrangement.spacedBy(ExpressiveLayout.cardSpacing),
     ) {
         item {
@@ -732,7 +829,18 @@ private fun HomeTab(
                 onCancelPair = onCancelPair,
                 onSendFiles = { pickFiles.launch("*/*") },
                 onSendPhoto = { pickPhoto.launch("image/*") },
+                devices = devices,
             )
+        }
+        if (devices.isNotEmpty()) {
+            item {
+                ExpressiveComputersCard(
+                    devices = devices,
+                    sendTargetId = pairedDeviceId,
+                    onSelectDevice = onSelectDevice,
+                    onSetDeviceEnabled = onSetDeviceEnabled,
+                )
+            }
         }
         item { ExpressiveSectionTitle("Transfers") }
         item {
@@ -778,63 +886,67 @@ private fun SettingsTab(
     selectedDeviceId: String? = null,
     onSelectDevice: (String) -> Unit = {},
     onForgetDevice: (String) -> Unit = {},
+    onSetDeviceEnabled: (String, Boolean) -> Unit = { _, _ -> },
 ) {
     var showTheme by rememberSaveable { mutableStateOf(false) }
     MotionAlertDialog(
-            visible = showTheme,
-            onDismissRequest = { showTheme = false },
-            title = { Text("Theme") },
-            text = {
-                Column {
-                    listOf("system" to "Follow system", "light" to "Light", "dark" to "Dark").forEach { (value, label) ->
-                        Row(
-                            Modifier.fillMaxWidth().heightIn(min = 52.dp)
-                                .selectable(Settings.themeMode == value, role = Role.RadioButton) {
-                                    Settings.themeMode = value
-                                    showTheme = false
-                                },
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            RadioButton(selected = Settings.themeMode == value, onClick = null)
-                            Spacer(Modifier.width(12.dp))
-                            Text(label)
-                        }
+        visible = showTheme,
+        onDismissRequest = { showTheme = false },
+        title = { Text("Theme") },
+        text = {
+            Column {
+                listOf("system" to "Follow system", "light" to "Light", "dark" to "Dark").forEach { (value, label) ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 52.dp)
+                            .selectable(Settings.themeMode == value, role = Role.RadioButton) {
+                                Settings.themeMode = value
+                                showTheme = false
+                            },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = Settings.themeMode == value, onClick = null)
+                        Spacer(Modifier.width(12.dp))
+                        Text(label)
                     }
                 }
-            },
-            confirmButton = { TextButton(onClick = { showTheme = false }) { Text("Close") } },
-        )
+            }
+        },
+        confirmButton = { TextButton(onClick = { showTheme = false }) { Text("Close") } },
+    )
     var confirmForgetId by rememberSaveable { mutableStateOf<String?>(null) }
     MotionAlertDialog(
-            visible = confirmForgetId != null,
-            onDismissRequest = { confirmForgetId = null },
-            title = { Text("Forget ${devices.firstOrNull { it.id == confirmForgetId }?.name ?: peerName ?: "desktop"}?") },
-            text = {
-                Text(
-                    "This removes the pairing from this phone and tells the connected desktop to forget it too. " +
-                        "Your phone identity, clipboard history, and settings are kept.",
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val id = confirmForgetId
-                    confirmForgetId = null
-                    if (id == null) onForget() else onForgetDevice(id)
-                }) { Text("Forget") }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmForgetId = null }) { Text("Cancel") }
-            },
-        )
+        visible = confirmForgetId != null,
+        onDismissRequest = { confirmForgetId = null },
+        title = { Text("Forget ${devices.firstOrNull { it.id == confirmForgetId }?.name ?: peerName ?: "desktop"}?") },
+        text = {
+            Text(
+                "This removes the pairing from this phone and tells the connected desktop to forget it too. " +
+                    "Your phone identity, clipboard history, and settings are kept.",
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val id = confirmForgetId
+                confirmForgetId = null
+                if (id == null) onForget() else onForgetDevice(id)
+            }) { Text("Forget") }
+        },
+        dismissButton = {
+            TextButton(onClick = { confirmForgetId = null }) { Text("Cancel") }
+        },
+    )
 
     LazyColumn(
         modifier = modifier.fillMaxWidth(),
-        contentPadding = PaddingValues(
-            start = ExpressiveLayout.pageInset,
-            top = 8.dp,
-            end = ExpressiveLayout.pageInset,
-            bottom = 26.dp,
-        ),
+        contentPadding =
+            PaddingValues(
+                start = ExpressiveLayout.pageInset,
+                top = 8.dp,
+                end = ExpressiveLayout.pageInset,
+                bottom = 26.dp,
+            ),
         verticalArrangement = Arrangement.spacedBy(ExpressiveLayout.cardSpacing),
     ) {
         item { ExpressiveSectionTitle("Appearance") }
@@ -842,13 +954,20 @@ private fun SettingsTab(
             ExpressiveCard(Modifier.fillMaxWidth()) {
                 Column {
                     PreferenceRow(
-                        icon = R.drawable.ic_palette, title = "Theme",
-                        subtitle = when (Settings.themeMode) { "dark" -> "Dark"; "light" -> "Light"; else -> "Follow system" },
+                        icon = R.drawable.ic_palette,
+                        title = "Theme",
+                        subtitle =
+                            when (Settings.themeMode) {
+                                "dark" -> "Dark"
+                                "light" -> "Light"
+                                else -> "Follow system"
+                            },
                         onClick = { showTheme = true },
                     )
                     SettingsDivider()
                     SwitchPreferenceRow(
-                        icon = R.drawable.ic_palette, title = "Wallpaper accent",
+                        icon = R.drawable.ic_palette,
+                        title = "Wallpaper accent",
                         checked = Settings.wallpaperAccent,
                         onCheckedChange = { Settings.wallpaperAccent = it },
                     )
@@ -872,59 +991,68 @@ private fun SettingsTab(
                 selectedDeviceId = selectedDeviceId,
                 onSelectDevice = onSelectDevice,
                 onForgetDevice = { confirmForgetId = it },
+                onSetDeviceEnabled = onSetDeviceEnabled,
             )
         }
         item {
             MotionSettingsSection("Sync & privacy") {
-            ExpressiveCard(modifier = Modifier.fillMaxWidth()) {
-                Column {
-                    PreferenceRow(
-                        icon = R.drawable.ic_history,
-                        title = "Clipboard history",
-                        subtitle = if (historyCount == 0) "No saved items" else "$historyCount saved items",
-                        onClick = onOpenHistory,
-                    )
-                    SettingsDivider()
-                    PreferenceRow(
-                        icon = R.drawable.ic_sync,
-                        title = "Clipboard sync mode",
-                        subtitle = when (clipboardMode) {
-                            ClipboardSyncMode.Lsposed -> if (clipboardAccessibilityEnabled) {
-                                "LSPosed (root) · Accessibility standby"
-                            } else {
-                                "LSPosed (root) · Active"
-                            }
-                            ClipboardSyncMode.Accessibility ->
-                                "Accessibility · Non-root compatibility"
-                            ClipboardSyncMode.Unavailable ->
-                                "Unavailable · Enable Accessibility service"
-                        },
-                        onClick = onOpenClipboardAccessibility,
-                    )
-                    SettingsDivider()
-                    SwitchPreferenceRow(
-                        icon = R.drawable.ic_notifications,
-                        title = "Hide notification content",
-                        subtitle = "Show app names only on Windows",
-                        checked = hideNotifications,
-                        onCheckedChange = onHideNotifications,
-                    )
+                ExpressiveCard(modifier = Modifier.fillMaxWidth()) {
+                    Column {
+                        PreferenceRow(
+                            icon = R.drawable.ic_history,
+                            title = "Clipboard history",
+                            subtitle = if (historyCount == 0) "No saved items" else "$historyCount saved items",
+                            onClick = onOpenHistory,
+                        )
+                        SettingsDivider()
+                        PreferenceRow(
+                            icon = R.drawable.ic_sync,
+                            title = "Clipboard sync mode",
+                            subtitle =
+                                when (clipboardMode) {
+                                    ClipboardSyncMode.Lsposed -> {
+                                        if (clipboardAccessibilityEnabled) {
+                                            "LSPosed (root) · Accessibility standby"
+                                        } else {
+                                            "LSPosed (root) · Active"
+                                        }
+                                    }
+
+                                    ClipboardSyncMode.Accessibility -> {
+                                        "Accessibility · Non-root compatibility"
+                                    }
+
+                                    ClipboardSyncMode.Unavailable -> {
+                                        "Unavailable · Enable Accessibility service"
+                                    }
+                                },
+                            onClick = onOpenClipboardAccessibility,
+                        )
+                        SettingsDivider()
+                        SwitchPreferenceRow(
+                            icon = R.drawable.ic_notifications,
+                            title = "Hide notification content",
+                            subtitle = "Show app names only on Windows",
+                            checked = hideNotifications,
+                            onCheckedChange = onHideNotifications,
+                        )
+                    }
                 }
-            }
             }
         }
         item {
             MotionSettingsSection("Background delivery") {
-            BackgroundDeliverySettingsCard(
-                batteryOptimizationIgnored = batteryOptimizationIgnored,
-                showOplusBatteryRow = Build.MANUFACTURER.equals("oneplus", ignoreCase = true) ||
-                    Build.MANUFACTURER.equals("oppo", ignoreCase = true) ||
-                    Build.BRAND.equals("oneplus", ignoreCase = true) ||
-                    Build.BRAND.equals("oppo", ignoreCase = true),
-                oplusAppFreezeSupported = oplusAppFreezeSupported,
-                onRequestBatteryOptimization = onRequestBatteryOptimization,
-                onOpenOplusFreezeSettings = onOpenOplusFreezeSettings,
-            )
+                BackgroundDeliverySettingsCard(
+                    batteryOptimizationIgnored = batteryOptimizationIgnored,
+                    showOplusBatteryRow =
+                        Build.MANUFACTURER.equals("oneplus", ignoreCase = true) ||
+                            Build.MANUFACTURER.equals("oppo", ignoreCase = true) ||
+                            Build.BRAND.equals("oneplus", ignoreCase = true) ||
+                            Build.BRAND.equals("oppo", ignoreCase = true),
+                    oplusAppFreezeSupported = oplusAppFreezeSupported,
+                    onRequestBatteryOptimization = onRequestBatteryOptimization,
+                    onOpenOplusFreezeSettings = onOpenOplusFreezeSettings,
+                )
             }
         }
         item {
@@ -956,27 +1084,30 @@ internal fun BackgroundDeliverySettingsCard(
             PreferenceRow(
                 icon = R.drawable.ic_settings,
                 title = "Battery optimization",
-                subtitle = if (batteryOptimizationIgnored) {
-                    "Ignored · screen-off delivery is allowed"
-                } else {
-                    "Tap to allow Conduit to run while the screen is off"
-                },
+                subtitle =
+                    if (batteryOptimizationIgnored) {
+                        "Ignored · screen-off delivery is allowed"
+                    } else {
+                        "Tap to allow Conduit to run while the screen is off"
+                    },
                 onClick = onRequestBatteryOptimization,
             )
             if (showOplusBatteryRow) {
                 SettingsDivider()
                 PreferenceRow(
                     icon = R.drawable.ic_settings,
-                    title = if (oplusAppFreezeSupported) {
-                        "ColorOS app freeze"
-                    } else {
-                        "Background battery settings"
-                    },
-                    subtitle = if (oplusAppFreezeSupported) {
-                        "Disable Quick Freeze for Conduit"
-                    } else {
-                        "Allow Conduit to run while the screen is off"
-                    },
+                    title =
+                        if (oplusAppFreezeSupported) {
+                            "ColorOS app freeze"
+                        } else {
+                            "Background battery settings"
+                        },
+                    subtitle =
+                        if (oplusAppFreezeSupported) {
+                            "Disable Quick Freeze for Conduit"
+                        } else {
+                            "Allow Conduit to run while the screen is off"
+                        },
                     onClick = onOpenOplusFreezeSettings,
                 )
             }
@@ -986,33 +1117,56 @@ internal fun BackgroundDeliverySettingsCard(
 
 @Composable
 private fun DeviceManagementCard(
-    peerName: String?, pairedDeviceId: String?, pairing: Boolean,
-    onPair: () -> Unit, onCancelPair: () -> Unit, onForget: () -> Unit,
+    peerName: String?,
+    pairedDeviceId: String?,
+    pairing: Boolean,
+    onPair: () -> Unit,
+    onCancelPair: () -> Unit,
+    onForget: () -> Unit,
     devices: List<ConnectedDevice> = emptyList(),
     selectedDeviceId: String? = null,
     onSelectDevice: (String) -> Unit = {},
     onForgetDevice: (String) -> Unit = {},
+    onSetDeviceEnabled: (String, Boolean) -> Unit = { _, _ -> },
 ) {
     ExpressiveCard(Modifier.fillMaxWidth()) {
         Column {
             if (devices.isEmpty()) {
-                PreferenceRow(R.drawable.ic_desktop, peerName ?: "No paired computers",
-                    subtitle = "Pair your first computer")
+                PreferenceRow(
+                    R.drawable.ic_desktop,
+                    peerName ?: "No paired computers",
+                    subtitle = "Pair your first computer",
+                )
             } else {
                 devices.forEach { device ->
                     val selected = device.id == selectedDeviceId
+                    // The durable switch decides the label, so an offline-but-enabled computer
+                    // still offers Disconnect rather than a Connect that would do nothing.
+                    val paused = !device.enabled || device.state == LinkState.Paused
+                    val name = device.name.ifBlank { "computer" }
                     PreferenceRow(
                         icon = R.drawable.ic_desktop,
                         title = device.name.ifBlank { "Computer" },
-                        subtitle = (if (selected) "Send target · " else "") +
-                            (if (device.state == LinkState.Connected) "Connected" else "Offline") +
-                            device.path.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty(),
+                        subtitle =
+                            (if (selected) "Send target · " else "") +
+                                when {
+                                    paused -> "Paused"
+                                    device.state == LinkState.Connected -> "Connected"
+                                    else -> "Offline"
+                                } +
+                                device.path
+                                    .takeIf { it.isNotBlank() && !paused }
+                                    ?.let { " · $it" }
+                                    .orEmpty(),
                         onClick = { onSelectDevice(device.id) },
                     )
                     if (!pairing) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            TextButton(onClick = { onSetDeviceEnabled(device.id, paused) }) {
+                                Text(if (paused) "Connect" else "Disconnect")
+                            }
                             TextButton(onClick = { onForgetDevice(device.id) }) {
-                                Text("Forget ${device.name.ifBlank { "computer" }}")
+                                Text("Forget $name")
                             }
                         }
                     }
@@ -1030,10 +1184,17 @@ private fun DeviceManagementCard(
 }
 
 @Composable
-private fun DeviceActionsCard(history: List<HistoryEntry>, onOpenHistory: () -> Unit) {
+private fun DeviceActionsCard(
+    history: List<HistoryEntry>,
+    onOpenHistory: () -> Unit,
+) {
     val latest = history.firstOrNull()
     val c = MaterialTheme.colorScheme
-    val interaction = androidx.compose.runtime.remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val interaction =
+        androidx.compose.runtime.remember {
+            androidx.compose.foundation.interaction
+                .MutableInteractionSource()
+        }
     val pressed by interaction.collectIsPressedAsState()
     ExpressiveCard(
         Modifier
@@ -1105,7 +1266,11 @@ internal fun PreferenceRow(
     trailing: (@Composable () -> Unit)? = null,
 ) {
     val c = MaterialTheme.colorScheme
-    val interaction = androidx.compose.runtime.remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val interaction =
+        androidx.compose.runtime.remember {
+            androidx.compose.foundation.interaction
+                .MutableInteractionSource()
+        }
     val pressed by interaction.collectIsPressedAsState()
     Row(
         Modifier
@@ -1123,8 +1288,7 @@ internal fun PreferenceRow(
                 } else {
                     Modifier
                 },
-            )
-            .padding(start = 18.dp, end = 16.dp, top = 12.dp, bottom = 12.dp),
+            ).padding(start = 18.dp, end = 16.dp, top = 12.dp, bottom = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(16.dp),
     ) {
@@ -1212,9 +1376,10 @@ private fun HistoryScreen(
                         fontWeight = FontWeight.SemiBold,
                     )
                 },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background,
-                ),
+                colors =
+                    TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.background,
+                    ),
                 navigationIcon = {
                     TextButton(onClick = onBack, modifier = Modifier.heightIn(min = 48.dp)) {
                         Text("Back")
@@ -1232,12 +1397,13 @@ private fun HistoryScreen(
     ) { insets ->
         LazyColumn(
             modifier = Modifier.padding(insets),
-            contentPadding = PaddingValues(
-                start = ExpressiveLayout.pageInset,
-                top = 12.dp,
-                end = ExpressiveLayout.pageInset,
-                bottom = 28.dp,
-            ),
+            contentPadding =
+                PaddingValues(
+                    start = ExpressiveLayout.pageInset,
+                    top = 12.dp,
+                    end = ExpressiveLayout.pageInset,
+                    bottom = 28.dp,
+                ),
             verticalArrangement = Arrangement.spacedBy(ExpressiveLayout.cardSpacing),
         ) {
             item {
@@ -1275,7 +1441,10 @@ private fun HistoryScreen(
     }
 }
 
-internal fun filterHistory(entries: List<HistoryEntry>, query: String): List<HistoryEntry> {
+internal fun filterHistory(
+    entries: List<HistoryEntry>,
+    query: String,
+): List<HistoryEntry> {
     val needle = query.trim()
     if (needle.isEmpty()) return entries
     return entries.filter { entry ->
@@ -1342,11 +1511,12 @@ private fun SettingsGroup(
     ExpressiveCard(Modifier.fillMaxWidth()) {
         Column {
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable(onClick = onOpenHistory)
-                    .padding(horizontal = 16.dp, vertical = 14.dp)
-                    .heightIn(min = 48.dp),
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = onOpenHistory)
+                        .padding(horizontal = 16.dp, vertical = 14.dp)
+                        .heightIn(min = 48.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -1371,10 +1541,11 @@ private fun SettingsGroup(
             SettingsDivider()
 
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 14.dp)
-                    .heightIn(min = 48.dp),
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 14.dp)
+                        .heightIn(min = 48.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -1393,9 +1564,10 @@ private fun SettingsGroup(
                 Switch(
                     checked = hideNotifications,
                     onCheckedChange = onHideNotifications,
-                    modifier = Modifier.semantics {
-                        contentDescription = "Hide notification content on Windows"
-                    },
+                    modifier =
+                        Modifier.semantics {
+                            contentDescription = "Hide notification content on Windows"
+                        },
                 )
             }
         }

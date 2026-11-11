@@ -7,7 +7,7 @@ import java.nio.file.StandardCopyOption
 import java.util.Base64
 
 /** One trusted Windows identity. The id is the Noise static-public-key hash, never a hostname. */
-data class PairedDesktop(val id: String, val name: String = "")
+data class PairedDesktop(val id: String, val name: String = "", val enabled: Boolean = true)
 
 /**
  * Bounded, durable trust registry for multiple independent computers.
@@ -49,12 +49,14 @@ object PairedDesktops {
         val rows = runCatching { registry.readLines() }.getOrDefault(emptyList())
         val peers = LinkedHashMap<String, PairedDesktop>()
         for (line in rows.take(MAX_PEERS * 3)) {
-            val cols = line.split('\t', limit = 2)
-            if (cols.size != 2 || !validId(cols[0])) continue
+            // Two columns is the pre-switch v0.1.21 form, which means "connected".
+            val cols = line.split('\t')
+            if (cols.size < 2 || !validId(cols[0])) continue
             val name = runCatching {
                 String(Base64.getUrlDecoder().decode(cols[1]), Charsets.UTF_8)
             }.getOrNull() ?: continue
-            peers.putIfAbsent(cols[0], PairedDesktop(cols[0], safeName(name)))
+            val enabled = cols.size < 3 || cols[2].trim() != "0"
+            peers.putIfAbsent(cols[0], PairedDesktop(cols[0], safeName(name), enabled))
             if (peers.size == MAX_PEERS) break
         }
         // A pre-registry phone (or a separate old component) may have saved the
@@ -79,9 +81,13 @@ object PairedDesktops {
     fun remember(dir: File, id: String) {
         require(validId(id)) { "invalid Noise device id" }
         val peers = list(dir).toMutableList()
-        if (peers.none { it.id == id }) {
+        val existing = peers.indexOfFirst { it.id == id }
+        if (existing < 0) {
             require(peers.size < MAX_PEERS) { "maximum paired desktops reached" }
             peers.add(PairedDesktop(id))
+        } else {
+            // A fresh pairing handshake is an explicit "use this computer" signal.
+            peers[existing] = peers[existing].copy(enabled = true)
         }
         save(dir, peers)
         // Legacy pointer is the main Link's next reconnection target, not the whole
@@ -104,6 +110,24 @@ object PairedDesktops {
             save(dir, peers)
         }
         if (readOne(File(dir, LEGACY_ID)) == id) writeAtomic(File(dir, LEGACY_NAME), name + "\n")
+    }
+
+    /** Per-computer Connect/Disconnect. Unlike [remove] it keeps the trust decision. */
+    @Synchronized
+    fun setEnabled(dir: File, id: String, enabled: Boolean) {
+        val peers = list(dir).toMutableList()
+        val i = peers.indexOfFirst { it.id == id }
+        if (i < 0 || peers[i].enabled == enabled) return
+        peers[i] = peers[i].copy(enabled = enabled)
+        save(dir, peers)
+    }
+
+    /** A master Connect tap resumes every trusted computer the user paused one by one. */
+    @Synchronized
+    fun enableAll(dir: File) {
+        val peers = list(dir)
+        if (peers.all { it.enabled }) return
+        save(dir, peers.map { it.copy(enabled = true) })
     }
 
     @Synchronized
@@ -138,7 +162,8 @@ object PairedDesktops {
         require(peers.size <= MAX_PEERS)
         val text = peers.joinToString("\n", postfix = if (peers.isEmpty()) "" else "\n") {
             it.id + "\t" + Base64.getUrlEncoder().withoutPadding()
-                .encodeToString(it.name.toByteArray(Charsets.UTF_8))
+                .encodeToString(it.name.toByteArray(Charsets.UTF_8)) +
+                "\t" + if (it.enabled) "1" else "0"
         }
         writeAtomic(File(dir, REGISTRY), text)
     }

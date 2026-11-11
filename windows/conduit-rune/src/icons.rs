@@ -62,6 +62,11 @@ lucide!(
     r#"<rect x="5" y="2" width="14" height="20" rx="2" fill="none" stroke="currentColor" stroke-width="1.75"/><path d="M11 18h2" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>"#
 );
 lucide!(
+    MONITOR,
+    "lucide-monitor",
+    r#"<rect x="2" y="3" width="20" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.75"/><path d="M8 21h8M12 17v4" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>"#
+);
+lucide!(
     SEND,
     "lucide-send",
     r#"<path d="m22 2-7 20-4-9-9-4 20-7ZM22 2 11 13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>"#
@@ -145,6 +150,7 @@ mod tests {
             &FILE_VIDEO,
             &FILE_AUDIO,
             &FILE_TEXT,
+            &MONITOR,
             &CLOSE,
         ] {
             assert!(

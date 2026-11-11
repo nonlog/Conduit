@@ -5,7 +5,7 @@ use crate::{
 };
 use anyhow::{bail, Context, Result};
 use prost::Message as _;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -150,7 +150,8 @@ fn terminal(state: &str) -> bool {
 }
 #[derive(Default)]
 struct State {
-    live: Option<(String, bool)>,
+    /// peer id -> (session owner token, peer supports targeted cancellation)
+    live: HashMap<String, (String, bool)>,
     paused: bool,
     rows: VecDeque<Row>,
 }
@@ -217,7 +218,8 @@ fn restore_snapshot(body: &str) -> VecDeque<Row> {
 pub struct Transfers {
     state: Mutex<State>,
     changed: watch::Sender<u64>,
-    sessions: watch::Sender<Option<String>>,
+    /// Live session owners. A local send is valid only while its own owner is still here.
+    sessions: watch::Sender<Vec<String>>,
     pub wake: Notify,
 }
 impl Transfers {
@@ -232,10 +234,10 @@ impl Transfers {
             }
         };
         let (changed, mut rx) = watch::channel(0u64);
-        let (sessions, _) = watch::channel(None);
+        let (sessions, _) = watch::channel(Vec::new());
         let this = Arc::new(Self {
             state: Mutex::new(State {
-                live: None,
+                live: HashMap::new(),
                 rows,
                 paused: false,
             }),
@@ -308,18 +310,27 @@ impl Transfers {
             })
             .collect()
     }
-    pub fn session(self: &Arc<Self>, capable: bool) -> Result<Lease> {
+    /// Opens one peer's session slot. Every transfer row it creates is owned by the returned
+    /// lease, so a replacement session for the same peer can never settle the old session's work.
+    pub fn session(self: &Arc<Self>, peer_id: &str, capable: bool) -> Result<Lease> {
         let owner = hex(&new_id()?);
         {
             let mut state = self.state.lock().unwrap();
             if state.paused {
                 bail!("Connection paused by user");
             }
-            state.live = Some((owner.clone(), capable));
-            self.sessions.send_replace(Some(owner.clone()));
+            state
+                .live
+                .insert(peer_id.to_owned(), (owner.clone(), capable));
+            self.sessions.send_modify(|owners| {
+                if !owners.contains(&owner) {
+                    owners.push(owner.clone());
+                }
+            });
         }
         Ok(Lease {
             transfers: self.clone(),
+            peer_id: peer_id.to_owned(),
             owner,
         })
     }
@@ -338,24 +349,49 @@ impl Transfers {
         s.rows.push_back(row);
         Ok(())
     }
-    pub fn owner(&self) -> Result<String> {
-        self.state
-            .lock()
-            .unwrap()
-            .live
-            .as_ref()
-            .map(|(owner, _)| owner.clone())
-            .context("no authenticated phone session")
+    /// The live session owner a new local send must use.
+    ///
+    /// An explicitly requested peer never falls back: silently sending a file to a different
+    /// device than the user named would be worse than refusing. Without a request, the selected
+    /// peer wins, then the pinned phone.
+    pub fn owner_for(
+        &self,
+        requested: Option<&str>,
+        selected: Option<&str>,
+        phone: Option<&str>,
+    ) -> Result<String> {
+        let state = self.state.lock().unwrap();
+        let owner = |id: &str| state.live.get(id).map(|(owner, _)| owner.clone());
+        match requested {
+            Some(id) => owner(id).context("Selected device is offline"),
+            None => selected
+                .and_then(owner)
+                .or_else(|| phone.and_then(owner))
+                .context("no authenticated peer session"),
+        }
     }
     /// Includes queued and receiver-confirmation work, not only byte streaming.
     pub fn has_active(&self) -> bool {
         let state = self.state.lock().unwrap();
-        state.live.as_ref().is_some_and(|(owner, _)| {
-            state
-                .rows
-                .iter()
-                .any(|row| &row.owner == owner && !terminal(row.state))
-        })
+        state
+            .live
+            .values()
+            .any(|(owner, _)| Self::active_in(&state, owner))
+    }
+    /// Active work belonging to exactly one peer. Used before disabling a peer, so a local trust
+    /// change can never silently abandon a transfer in flight.
+    pub fn has_active_for(&self, peer_id: &str) -> bool {
+        let state = self.state.lock().unwrap();
+        state
+            .live
+            .get(peer_id)
+            .is_some_and(|(owner, _)| Self::active_in(&state, owner))
+    }
+    fn active_in(state: &State, owner: &str) -> bool {
+        state
+            .rows
+            .iter()
+            .any(|row| row.owner == owner && !terminal(row.state))
     }
 
     /// Serialize pause against both local send admission and remote offers. Persistence
@@ -367,24 +403,22 @@ impl Transfers {
     ) -> Result<()> {
         let mut state = self.state.lock().unwrap();
         if !enabled
-            && state.live.as_ref().is_some_and(|(owner, _)| {
-                state
-                    .rows
-                    .iter()
-                    .any(|row| &row.owner == owner && !terminal(row.state))
-            })
+            && state
+                .live
+                .values()
+                .any(|(owner, _)| Self::active_in(&state, owner))
         {
             bail!("Transfers are active. Cancel them or wait for completion before disconnecting.");
         }
         persist()?;
         state.paused = !enabled;
         if !enabled {
-            state.live = None;
-            self.sessions.send_replace(None);
+            state.live.clear();
+            self.sessions.send_replace(Vec::new());
         }
         Ok(())
     }
-    pub fn session_changes(&self) -> watch::Receiver<Option<String>> {
+    pub fn session_changes(&self) -> watch::Receiver<Vec<String>> {
         self.sessions.subscribe()
     }
     pub fn enqueue(
@@ -396,13 +430,10 @@ impl Transfers {
         let mut s = self.state.lock().unwrap();
         let owner = s
             .live
-            .as_ref()
-            .context("no authenticated phone session")?
-            .0
-            .clone();
-        if owner != expected_owner {
-            bail!("phone session changed while opening the file; send again");
-        }
+            .values()
+            .find(|(live, _)| live == expected_owner)
+            .map(|(owner, _)| owner.clone())
+            .context("no authenticated peer session")?;
         let id = new_id()?;
         let name = path
             .file_name()
@@ -432,7 +463,7 @@ impl Transfers {
             bail!("invalid transfer id");
         }
         let mut s = self.state.lock().unwrap();
-        if s.paused || s.live.as_ref().is_none_or(|(live, _)| live != owner) {
+        if s.paused || !s.live.values().any(|(live, _)| live == owner) {
             bail!("incoming transfer belongs to a disconnected session");
         }
         Self::add(
@@ -493,7 +524,7 @@ impl Transfers {
     /// Serialises the queued-to-offered transition against a legacy peer's queued cancellation.
     pub fn claim(&self, owner: &str, id: &[u8], total: u64) -> bool {
         let mut s = self.state.lock().unwrap();
-        if s.live.as_ref().is_none_or(|(live, _)| live != owner) {
+        if !s.live.values().any(|(live, _)| live == owner) {
             return false;
         }
         let Some(row) = s.rows.iter_mut().find(|r| r.owner == owner && r.id == id) else {
@@ -510,7 +541,18 @@ impl Transfers {
     }
     pub fn cancel(&self, id: &[u8]) -> Result<()> {
         let mut s = self.state.lock().unwrap();
-        let (owner, capable) = s.live.clone().context("no authenticated phone session")?;
+        let owner = s
+            .rows
+            .iter()
+            .find(|r| r.id == id)
+            .map(|r| r.owner.clone())
+            .context("transfer is no longer in this session")?;
+        let capable = s
+            .live
+            .values()
+            .find(|(live, _)| live == &owner)
+            .map(|(_, capable)| *capable)
+            .context("the transfer's session has ended")?;
         let row = s
             .rows
             .iter_mut()
@@ -529,23 +571,27 @@ impl Transfers {
         }
         drop(s);
         self.changed();
-        self.wake.notify_one();
+        self.wake.notify_waiters();
         Ok(())
     }
 }
 pub struct Lease {
     pub transfers: Arc<Transfers>,
+    pub peer_id: String,
     pub owner: String,
 }
 impl Drop for Lease {
     fn drop(&mut self) {
         let mut s = self.transfers.state.lock().unwrap();
-        if s.live
-            .as_ref()
-            .is_some_and(|(owner, _)| owner == &self.owner)
-        {
-            s.live = None;
-            self.transfers.sessions.send_replace(None);
+        let ours = s
+            .live
+            .get(&self.peer_id)
+            .is_some_and(|(owner, _)| owner == &self.owner);
+        if ours {
+            s.live.remove(&self.peer_id);
+            self.transfers.sessions.send_modify(|owners| {
+                owners.retain(|owner| owner != &self.owner);
+            });
         }
         for r in &mut s.rows {
             if r.owner == self.owner && !terminal(r.state) {
@@ -763,7 +809,7 @@ impl Receiving {
     }
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Release);
-        self.wake.notify_one();
+        self.wake.notify_waiters();
     }
 }
 fn flag_cancelled(flag: &AtomicBool) -> bool {
@@ -781,7 +827,7 @@ mod tests {
 
     fn registry() -> Arc<Transfers> {
         let (changed, _) = watch::channel(0);
-        let (sessions, _) = watch::channel(None);
+        let (sessions, _) = watch::channel(Vec::new());
         Arc::new(Transfers {
             state: Mutex::new(State::default()),
             changed,
@@ -804,31 +850,33 @@ mod tests {
     #[test]
     fn pause_blocks_new_admission_but_keeps_history_and_can_resume() -> Result<()> {
         let registry = registry();
-        let old = registry.session(true)?;
+        let old = registry.session("phone", true)?;
         let history = registry.snapshot();
         registry.set_link_enabled(false, || Ok(()))?;
-        assert!(registry.owner().is_err());
-        assert!(registry.session(true).is_err());
+        assert!(registry
+            .owner_for(Some("phone"), None, Some("phone"))
+            .is_err());
+        assert!(registry.session("phone", true).is_err());
         assert!(registry
             .enqueue(&old.owner, Path::new("late.bin"), 4)
             .is_err());
         assert!(registry.incoming(&old.owner, &incoming_offer(44)).is_err());
         assert_eq!(registry.snapshot(), history);
         registry.set_link_enabled(true, || Ok(()))?;
-        let new = registry.session(true)?;
+        let new = registry.session("phone", true)?;
         drop(old);
-        assert_eq!(registry.owner()?, new.owner);
+        assert_eq!(registry.owner_for(None, None, Some("phone"))?, new.owner);
         Ok(())
     }
 
     #[test]
     fn active_transfer_or_failed_persistence_does_not_disconnect() -> Result<()> {
         let registry = registry();
-        let live = registry.session(true)?;
+        let live = registry.session("phone", true)?;
         assert!(registry
             .set_link_enabled(false, || bail!("disk full"))
             .is_err());
-        assert_eq!(registry.owner()?, live.owner);
+        assert_eq!(registry.owner_for(None, None, Some("phone"))?, live.owner);
         let (id, _) = registry.enqueue(&live.owner, Path::new("busy.bin"), 4)?;
         let mut saved = false;
         assert!(registry
@@ -838,7 +886,7 @@ mod tests {
             })
             .is_err());
         assert!(!saved);
-        assert_eq!(registry.owner()?, live.owner);
+        assert_eq!(registry.owner_for(None, None, Some("phone"))?, live.owner);
         registry.update(&live.owner, &id, 4, "completed", "");
         registry.set_link_enabled(false, || Ok(()))?;
         assert!(registry.snapshot().contains("completed"));
@@ -858,7 +906,7 @@ mod tests {
         let registry = registry();
         registry.state.lock().unwrap().rows = restored;
         assert_eq!(registry.snapshot(), body);
-        let lease = registry.session(true)?;
+        let lease = registry.session("phone", true)?;
         let (id, _) = registry.enqueue(&lease.owner, Path::new("new.bin"), 10)?;
         let updated = registry.snapshot();
         assert!(updated.contains(&first));
@@ -911,7 +959,7 @@ mod tests {
         assert_eq!(registry.snapshot(), original);
         tokio::time::sleep(Duration::from_millis(350)).await;
         assert_eq!(std::fs::read_to_string(&path)?, original);
-        let lease = registry.session(true)?;
+        let lease = registry.session("phone", true)?;
         registry.enqueue(&lease.owner, Path::new("new.bin"), 8)?;
         tokio::time::sleep(Duration::from_millis(350)).await;
         let latest = std::fs::read_to_string(&path)?;
@@ -953,7 +1001,7 @@ mod tests {
     #[test]
     fn cancellation_is_targeted_and_legacy_claim_is_atomic() -> Result<()> {
         let registry = registry();
-        let lease = registry.session(false)?;
+        let lease = registry.session("phone", false)?;
         let (first, owner) = registry.enqueue(&lease.owner, Path::new("one.bin"), 4)?;
         let (second, _) = registry.enqueue(&lease.owner, Path::new("two.bin"), 4)?;
         registry.cancel(&first)?;
@@ -975,7 +1023,7 @@ mod tests {
     #[test]
     fn completed_publication_wins_a_cancel_race_and_history_is_bounded() -> Result<()> {
         let registry = registry();
-        let lease = registry.session(true)?;
+        let lease = registry.session("phone", true)?;
         let offer = incoming_offer(1);
         registry.incoming(&lease.owner, &offer)?;
         registry.cancel(&offer.transfer_id)?;
@@ -1012,9 +1060,9 @@ mod tests {
     fn old_session_requests_and_drops_cannot_affect_the_replacement() -> Result<()> {
         let registry = registry();
         let sessions = registry.session_changes();
-        let old = registry.session(true)?;
+        let old = registry.session("phone", true)?;
         let (id, owner) = registry.enqueue(&old.owner, Path::new("old.bin"), 4)?;
-        let new = registry.session(true)?;
+        let new = registry.session("phone", true)?;
         assert!(registry.enqueue(&owner, Path::new("stale.bin"), 4).is_err());
         let (new_id, new_owner) = registry.enqueue(&new.owner, Path::new("new.bin"), 4)?;
         assert!(!registry.claim(&owner, &id, 4));
@@ -1026,18 +1074,19 @@ mod tests {
             .lock()
             .unwrap()
             .live
-            .as_ref()
+            .get("phone")
             .is_some_and(|(live, _)| live == &new.owner));
-        assert_eq!(sessions.borrow().as_deref(), Some(new.owner.as_str()));
+        assert!(sessions.borrow().contains(&new.owner));
+        let new_owner = new.owner.clone();
         drop(new);
-        assert!(sessions.borrow().is_none());
+        assert!(!sessions.borrow().contains(&new_owner));
         Ok(())
     }
 
     #[test]
     fn duplicate_offer_cannot_replace_an_active_row_or_evict_active_state() -> Result<()> {
         let registry = registry();
-        let lease = registry.session(true)?;
+        let lease = registry.session("phone", true)?;
         for id in 1..=HISTORY as u8 {
             registry.incoming(&lease.owner, &incoming_offer(id))?;
         }
@@ -1046,6 +1095,74 @@ mod tests {
             .incoming(&lease.owner, &incoming_offer(99))
             .is_err());
         assert_eq!(registry.state.lock().unwrap().rows.len(), HISTORY);
+        Ok(())
+    }
+
+    #[test]
+    fn one_peer_session_cannot_settle_or_cancel_another_peers_work() -> Result<()> {
+        let registry = registry();
+        let phone = registry.session("phone", true)?;
+        let desktop = registry.session("studio", true)?;
+        let (phone_id, phone_owner) = registry.enqueue(&phone.owner, Path::new("phone.bin"), 4)?;
+        let (desktop_id, desktop_owner) =
+            registry.enqueue(&desktop.owner, Path::new("desktop.bin"), 4)?;
+        assert_ne!(phone_owner, desktop_owner);
+        assert!(registry.claim(&desktop_owner, &desktop_id, 4));
+        assert!(registry.cancel(&phone_id).is_ok());
+        assert!(registry.cancelled(&phone_owner, &phone_id));
+        assert!(!registry.cancelled(&desktop_owner, &desktop_id));
+        assert!(registry.has_active_for("studio"));
+        assert!(registry.has_active_for("phone"));
+        let sessions = registry.session_changes();
+        drop(desktop);
+        assert!(!registry.has_active_for("studio"));
+        assert!(registry.has_active_for("phone"));
+        // The phone's own work and its live slot survive the other peer's disconnect.
+        assert!(registry.cancelled(&phone_owner, &phone_id));
+        assert_eq!(registry.owner_for(None, None, Some("phone"))?, phone.owner);
+        assert!(registry
+            .owner_for(Some("studio"), None, Some("phone"))
+            .is_err());
+        assert!(registry
+            .owner_for(Some("studio"), None, Some("phone"))
+            .unwrap_err()
+            .to_string()
+            .contains("Selected device is offline"));
+        assert!(sessions.borrow().contains(&phone.owner));
+        assert!(registry.snapshot().contains("phone.bin"));
+        assert!(registry.snapshot().contains("Session disconnected"));
+        Ok(())
+    }
+
+    #[test]
+    fn an_explicit_peer_never_falls_back_to_the_phone() -> Result<()> {
+        let registry = registry();
+        let phone = registry.session("phone", true)?;
+        assert!(registry
+            .owner_for(Some("studio"), None, Some("phone"))
+            .is_err());
+        assert!(registry
+            .owner_for(None, Some("studio"), Some("phone"))
+            .is_ok());
+        let desktop = registry.session("studio", false)?;
+        assert_eq!(
+            registry.owner_for(None, Some("phone"), Some("phone"))?,
+            phone.owner
+        );
+        assert_eq!(
+            registry.owner_for(Some("studio"), Some("phone"), Some("phone"))?,
+            desktop.owner
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replacing_a_peers_session_keeps_the_new_owner_live() -> Result<()> {
+        let registry = registry();
+        let old = registry.session("studio", true)?;
+        let new = registry.session("studio", true)?;
+        drop(old);
+        assert_eq!(registry.owner_for(Some("studio"), None, None)?, new.owner);
         Ok(())
     }
 

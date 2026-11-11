@@ -39,13 +39,24 @@ impl Generation {
     }
 }
 
-pub async fn negotiate<S: AsyncRead + AsyncWrite + Unpin>(
+/// One Noise XX handshake plus the mutual identity hello, on the candidate's own stream.
+///
+/// The hello is built after the handshake because it may need the authenticated peer id — a
+/// pairing proof binds both device ids, and the initiator only learns the responder's id once the
+/// handshake has completed. `initiator` decides who speaks first on the wire.
+pub async fn negotiate_with<S, F>(
     stream: &mut S,
     private_key: &[u8],
-    hello: &pb::PairRequest,
-) -> Result<Negotiated> {
-    let mut session = Session::handshake(stream, private_key, false).await?;
+    initiator: bool,
+    hello_for: F,
+) -> Result<Negotiated>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    F: FnOnce(&str) -> pb::PairRequest,
+{
+    let mut session = Session::handshake(stream, private_key, initiator).await?;
     let remote_id = wire::device_id(&session.peer_static);
+    let hello = hello_for(&remote_id);
     session
         .send(stream, pb::Kind::PairRequest, &hello.encode_to_vec())
         .await?;
@@ -62,6 +73,17 @@ pub async fn negotiate<S: AsyncRead + AsyncWrite + Unpin>(
         remote_id,
         hello: peer,
     })
+}
+
+/// Inbound form: this side answers, and the hello does not depend on the peer's id. Kept as the
+/// convenience wrapper for callers that do not need the authenticated id while building it.
+#[allow(dead_code)]
+pub async fn negotiate<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
+    private_key: &[u8],
+    hello: &pb::PairRequest,
+) -> Result<Negotiated> {
+    negotiate_with(stream, private_key, false, |_| hello.clone()).await
 }
 
 #[cfg(test)]
@@ -118,6 +140,52 @@ mod tests {
         .await
         .is_err());
         assert!(generation.accepts(ticket));
+    }
+
+    #[tokio::test]
+    async fn initiator_side_negotiates_and_sees_the_peer_id_before_its_hello() {
+        for initiator in [true, false] {
+            let local = key();
+            let peer = key();
+            let local_id = wire::device_id(&local.public);
+            let peer_id = wire::device_id(&peer.public);
+            let (mut stream, mut other) = tokio::io::duplex(4096);
+            let peer_id_for_task = peer_id.clone();
+            let local_id_for_task = local_id.clone();
+            let peer_task = tokio::spawn(async move {
+                negotiate_with(&mut other, &peer.private, !initiator, |remote_id: &str| {
+                    assert_eq!(remote_id, local_id_for_task);
+                    pb::PairRequest {
+                        device_id: peer_id_for_task,
+                        transfer_protocol: 1,
+                        pairing_proof: b"proof built from the peer id".to_vec(),
+                        ..Default::default()
+                    }
+                })
+                .await
+                .unwrap()
+            });
+            let seen = peer_id.clone();
+            let candidate = negotiate_with(&mut stream, &local.private, initiator, |remote_id| {
+                assert_eq!(remote_id, seen);
+                pb::PairRequest {
+                    device_id: wire::device_id(&local.public),
+                    transfer_protocol: 1,
+                    ..Default::default()
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(candidate.remote_id, peer_id);
+            assert_eq!(candidate.hello.transfer_protocol, 1);
+            assert_eq!(
+                candidate.hello.pairing_proof,
+                b"proof built from the peer id"
+            );
+            let other = peer_task.await.unwrap();
+            assert_eq!(other.remote_id, local_id);
+            assert_eq!(other.hello.device_id, local_id);
+        }
     }
 
     #[tokio::test]

@@ -17,6 +17,13 @@ class UiModelTest {
     }
 
     @Test
+    fun pausedDesktopIsNotAUserRequestedLink() {
+        // The master switch stays tappable, but no retry, socket or notification is implied.
+        assertTrue(!isLinkRequestedState(LinkState.Paused))
+        assertEquals("Paused", LinkState.Paused.label)
+    }
+
+    @Test
     fun successfulPairingRouteStopsAdvertisingPairingState() {
         assertEquals("LAN", completedPairingPath(viaRelay = false, relayId = null))
         assertEquals("Relay · WA", completedPairingPath(viaRelay = true, relayId = "wa"))

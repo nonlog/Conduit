@@ -6,10 +6,10 @@ import org.junit.Test
 
 class BootReceiverTest {
     @Test
-    fun bootRestoreRequiresBothUserIntentAndAPairedPeer() {
-        assertTrue(shouldStartLinkOnBoot(linkWanted = true, hasPairedPeer = true))
-        assertFalse(shouldStartLinkOnBoot(linkWanted = false, hasPairedPeer = true))
-        assertFalse(shouldStartLinkOnBoot(linkWanted = true, hasPairedPeer = false))
-        assertFalse(shouldStartLinkOnBoot(linkWanted = false, hasPairedPeer = false))
+    fun bootRestoreRequiresBothUserIntentAndAnEnabledPeer() {
+        assertTrue(shouldStartLinkOnBoot(linkWanted = true, hasEnabledPeer = true))
+        assertFalse(shouldStartLinkOnBoot(linkWanted = false, hasEnabledPeer = true))
+        assertFalse(shouldStartLinkOnBoot(linkWanted = true, hasEnabledPeer = false))
+        assertFalse(shouldStartLinkOnBoot(linkWanted = false, hasEnabledPeer = false))
     }
 }

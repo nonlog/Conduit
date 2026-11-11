@@ -50,22 +50,7 @@ pub async fn park(
     rendezvous: &str,
     relay_proxy: Option<&str>,
 ) -> Result<tokio::net::TcpStream> {
-    let mut stream = match relay_proxy {
-        Some(proxy) => connect_socks5(proxy, endpoint)
-            .await
-            .with_context(|| format!("dialling relay {endpoint} through {proxy}"))?,
-        None => tokio::net::TcpStream::connect(endpoint)
-            .await
-            .with_context(|| format!("dialling relay {endpoint}"))?,
-    };
-    stream.set_nodelay(true)?;
-    // A parked responder can sit here for hours before a phone arrives. The relay enables
-    // keepalive on its half, but that is not enough: if the relay/NAT path dies silently,
-    // the server may reap its waiter while Windows keeps this local socket in ESTABLISHED.
-    // Without client-side keepalive `peek()` below can then wait forever and `park_forever`
-    // never creates the replacement responder, leaving every reconnecting phone waiting by
-    // itself. Enable keepalive *before* parking, not only after a partner has already arrived.
-    relay_waiter_keepalive(&stream)?;
+    let mut stream = relay_connect(endpoint, relay_proxy).await?;
     let preamble = relay_preamble(rendezvous, RELAY_RESPONDER)?;
     stream.write_all(&preamble).await?;
     stream.flush().await?;
@@ -74,6 +59,44 @@ pub async fn park(
     if stream.peek(&mut probe).await? == 0 {
         bail!("relay closed the parked connection");
     }
+    Ok(stream)
+}
+
+/// Dials a Relay rendezvous as the initiator, for a connection this side starts.
+///
+/// Unlike [`park`] there is deliberately no `peek()`: this connection is the one that asks the
+/// relay for a partner, so waiting for inbound bytes would deadlock against a relay that only
+/// splices once both sides have arrived. The caller's Noise handshake supplies the read deadline.
+pub async fn dial_relay(
+    endpoint: &str,
+    rendezvous: &str,
+    relay_proxy: Option<&str>,
+) -> Result<tokio::net::TcpStream> {
+    let mut stream = relay_connect(endpoint, relay_proxy).await?;
+    let preamble = relay_preamble(rendezvous, RELAY_INITIATOR)?;
+    stream.write_all(&preamble).await?;
+    stream.flush().await?;
+    Ok(stream)
+}
+
+/// The parts of a relay dial both roles share: reach it (optionally through a SOCKS5 proxy),
+/// disable Nagle and enable keepalive before anything can sit parked for hours.
+async fn relay_connect(endpoint: &str, relay_proxy: Option<&str>) -> Result<tokio::net::TcpStream> {
+    let stream = match relay_proxy {
+        Some(proxy) => connect_socks5(proxy, endpoint)
+            .await
+            .with_context(|| format!("dialling relay {endpoint} through {proxy}"))?,
+        None => tokio::net::TcpStream::connect(endpoint)
+            .await
+            .with_context(|| format!("dialling relay {endpoint}"))?,
+    };
+    stream.set_nodelay(true)?;
+    // A parked connection can sit here for hours before a partner arrives. The relay enables
+    // keepalive on its half, but that is not enough: if the relay/NAT path dies silently, the
+    // server may reap its waiter while Windows keeps the local socket in ESTABLISHED. Without
+    // client-side keepalive `peek()` in [`park`] can then wait forever and `park_forever` never
+    // creates the replacement responder, leaving every reconnecting peer waiting by itself.
+    relay_waiter_keepalive(&stream)?;
     Ok(stream)
 }
 
@@ -413,6 +436,38 @@ mod tests {
         assert!(!relay_id_byte(RELAY_RESPONDER));
         assert!(relay_preamble("short", RELAY_RESPONDER).is_err());
         assert!(relay_preamble(&id, b'?').is_err());
+    }
+
+    #[tokio::test]
+    async fn dial_relay_writes_its_preamble_and_does_not_wait_for_a_partner() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        let id = device_id(&[7u8; 32]);
+        let expected = id.clone();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut preamble = [0u8; 48];
+            stream.read_exact(&mut preamble).await.unwrap();
+            assert_eq!(&preamble[..4], RELAY_MAGIC);
+            assert_eq!(preamble[4], RELAY_INITIATOR);
+            assert_eq!(&preamble[5..], expected.as_bytes());
+            // A splash-only relay never answers before a partner arrives; the dial must not care.
+            let mut body = [0u8; 5];
+            stream.read_exact(&mut body).await.unwrap();
+            assert_eq!(&body, b"hello");
+        });
+
+        let mut stream =
+            tokio::time::timeout(Duration::from_millis(500), dial_relay(&endpoint, &id, None))
+                .await
+                .expect("dial_relay must return without waiting for a partner")
+                .unwrap();
+        stream.write_all(b"hello").await.unwrap();
+        server.await.unwrap();
+
+        assert!(dial_relay(&endpoint, "short", None).await.is_err());
     }
 
     #[test]

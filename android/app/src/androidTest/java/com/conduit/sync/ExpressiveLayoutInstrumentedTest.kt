@@ -1,42 +1,43 @@
 package com.conduit.sync
 
 import android.graphics.Bitmap
-import androidx.compose.material3.MotionScheme
-import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.test.onNodeWithText
-import androidx.compose.ui.test.assertIsOn
-import androidx.compose.ui.test.assertIsOff
-import java.io.FileInputStream
-import org.junit.Assert.assertSame
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MotionScheme
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import java.io.File
-import java.io.FileOutputStream
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 
 /** Runs on a clean GitHub Actions emulator, never on the user's linked device. */
 @OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
@@ -160,10 +161,16 @@ class ExpressiveLayoutInstrumentedTest {
                 }
             }
         }
-        val files = compose.onNodeWithContentDescription("Send files")
-            .assertIsDisplayed().getUnclippedBoundsInRoot()
-        val photo = compose.onNodeWithContentDescription("Send photo")
-            .assertIsDisplayed().getUnclippedBoundsInRoot()
+        val files =
+            compose
+                .onNodeWithContentDescription("Send files")
+                .assertIsDisplayed()
+                .getUnclippedBoundsInRoot()
+        val photo =
+            compose
+                .onNodeWithContentDescription("Send photo")
+                .assertIsDisplayed()
+                .getUnclippedBoundsInRoot()
         assertEquals(56f, (files.bottom - files.top).value, 0.75f)
         assertEquals(56f, (photo.bottom - photo.top).value, 0.75f)
         assertTrue("Large fonts must stack rather than clip action text", photo.top > files.bottom)
@@ -241,8 +248,15 @@ class ExpressiveLayoutInstrumentedTest {
         var calls = 0
         compose.setContent {
             ConduitTheme(darkOverride = true) {
-                SwitchPreferenceRow(R.drawable.ic_palette, "Test preference", checked = enabled,
-                    onCheckedChange = { enabled = it; calls++ })
+                SwitchPreferenceRow(
+                    R.drawable.ic_palette,
+                    "Test preference",
+                    checked = enabled,
+                    onCheckedChange = {
+                        enabled = it
+                        calls++
+                    },
+                )
             }
         }
         val row = compose.onNodeWithContentDescription("Test preference")
@@ -282,12 +296,25 @@ class ExpressiveLayoutInstrumentedTest {
 
     @Test
     fun homeShowsTransferCountButKeepsTerminalHistoryOnTransfersPage() {
-        val history = listOf(
-            FileTransfer(FileTransferDirection.ToPhone, "qa-received.bin",
-                2097152L, 2097152L, "qa-received", TransferPhase.Completed),
-            FileTransfer(FileTransferDirection.ToDesktop, "qa-cancelled.bin",
-                0L, 1048576L, "qa-cancelled", TransferPhase.Cancelled),
-        )
+        val history =
+            listOf(
+                FileTransfer(
+                    FileTransferDirection.ToPhone,
+                    "qa-received.bin",
+                    2097152L,
+                    2097152L,
+                    "qa-received",
+                    TransferPhase.Completed,
+                ),
+                FileTransfer(
+                    FileTransferDirection.ToDesktop,
+                    "qa-cancelled.bin",
+                    0L,
+                    1048576L,
+                    "qa-cancelled",
+                    TransferPhase.Cancelled,
+                ),
+            )
         compose.setContent { ConduitTheme(darkOverride = false) { DashboardFixture(transfers = history) } }
         compose.onNodeWithContentDescription("Open transfer history").assertIsDisplayed()
         compose.onNodeWithText("File transfers", useUnmergedTree = true).assertExists()
@@ -303,13 +330,23 @@ class ExpressiveLayoutInstrumentedTest {
 
     @Test
     fun homeSummarizesActiveTransferAndPreservesCancellationInHistory() {
-        val active = FileTransfer(FileTransferDirection.ToDesktop, "upload-in-progress.bin",
-            262144L, 1048576L, "active-upload", TransferPhase.Sending, canCancel = true)
+        val active =
+            FileTransfer(
+                FileTransferDirection.ToDesktop,
+                "upload-in-progress.bin",
+                262144L,
+                1048576L,
+                "active-upload",
+                TransferPhase.Sending,
+                canCancel = true,
+            )
         var cancelledId: String? = null
         compose.setContent {
             ConduitTheme(darkOverride = true) {
-                DashboardFixture(transfers = listOf(active),
-                    onCancelTransfer = { cancelledId = it })
+                DashboardFixture(
+                    transfers = listOf(active),
+                    onCancelTransfer = { cancelledId = it },
+                )
             }
         }
         compose.onNodeWithContentDescription("Open transfer history").assertIsDisplayed()
@@ -343,10 +380,16 @@ class ExpressiveLayoutInstrumentedTest {
                 }
             }
         }
-        val first = compose.onNodeWithText("Battery optimization", useUnmergedTree = true)
-            .assertIsDisplayed().getUnclippedBoundsInRoot()
-        val second = compose.onNodeWithText("Background battery settings", useUnmergedTree = true)
-            .assertIsDisplayed().getUnclippedBoundsInRoot()
+        val first =
+            compose
+                .onNodeWithText("Battery optimization", useUnmergedTree = true)
+                .assertIsDisplayed()
+                .getUnclippedBoundsInRoot()
+        val second =
+            compose
+                .onNodeWithText("Background battery settings", useUnmergedTree = true)
+                .assertIsDisplayed()
+                .getUnclippedBoundsInRoot()
         assertTrue("OEM battery controls must occupy separate vertical rows", second.top >= first.bottom)
         saveScreenshot("oneplus-battery-settings-light-large-font.png")
         compose.onNodeWithText("Battery optimization").performClick()
@@ -361,17 +404,79 @@ class ExpressiveLayoutInstrumentedTest {
     private fun DashboardFixture(
         transfers: List<FileTransfer> = emptyList(),
         onCancelTransfer: (String) -> Unit = {},
+        devices: List<ConnectedDevice> = emptyList(),
+        onSelectDevice: (String) -> Unit = {},
+        onSetDeviceEnabled: (String, Boolean) -> Unit = { _, _ -> },
     ) {
         ConduitApp(
-            appVersion = "test", peerName = "Desktop", pairedDeviceId = "ui-fixture", pairing = false,
-            path = "LAN", state = LinkState.Connected, history = emptyList(), transfers = transfers,
-            onCancelTransfer = onCancelTransfer, hideNotifications = false, onHideNotifications = {},
-            clipboardMode = ClipboardSyncMode.Unavailable, clipboardAccessibilityEnabled = false,
-            onOpenClipboardAccessibility = {}, batteryOptimizationIgnored = true,
-            oplusAppFreezeSupported = false, onRequestBatteryOptimization = {}, onOpenOplusFreezeSettings = {},
-            onConnect = {}, onDisconnect = {}, onPair = {}, onScanPairQr = {}, onCancelPair = {},
-            onForget = {}, onSendFiles = {}, onClearHistory = {},
+            appVersion = "test",
+            peerName = "Desktop",
+            pairedDeviceId = "ui-fixture",
+            pairing = false,
+            path = "LAN",
+            state = LinkState.Connected,
+            history = emptyList(),
+            transfers = transfers,
+            onCancelTransfer = onCancelTransfer,
+            hideNotifications = false,
+            onHideNotifications = {},
+            clipboardMode = ClipboardSyncMode.Unavailable,
+            clipboardAccessibilityEnabled = false,
+            onOpenClipboardAccessibility = {},
+            batteryOptimizationIgnored = true,
+            oplusAppFreezeSupported = false,
+            onRequestBatteryOptimization = {},
+            onOpenOplusFreezeSettings = {},
+            onConnect = {},
+            onDisconnect = {},
+            onPair = {},
+            onScanPairQr = {},
+            onCancelPair = {},
+            onForget = {},
+            onSendFiles = {},
+            onClearHistory = {},
+            devices = devices,
+            onSelectDevice = onSelectDevice,
+            onSetDeviceEnabled = onSetDeviceEnabled,
         )
+    }
+
+    @Test
+    fun homeShowsComputersCardOnlyWhenAComputerIsPaired() {
+        compose.setContent { ConduitTheme(darkOverride = true) { DashboardFixture() } }
+        compose.onNodeWithTag("home-computers-card").assertDoesNotExist()
+        compose.onNodeWithText("Computers").assertDoesNotExist()
+    }
+
+    @Test
+    fun computersCardPausesOneComputerWithoutDroppingTheOther() {
+        val devices =
+            listOf(
+                ConnectedDevice("desk-a", "Home PC", LinkState.Connected, "LAN"),
+                ConnectedDevice("desk-b", "Office PC", LinkState.Paused, "", enabled = false),
+            )
+        var toggled: Pair<String, Boolean>? = null
+        var selected: String? = null
+        compose.setContent {
+            ConduitTheme(darkOverride = true) {
+                DashboardFixture(
+                    devices = devices,
+                    onSelectDevice = { selected = it },
+                    onSetDeviceEnabled = { id, on -> toggled = id to on },
+                )
+            }
+        }
+        compose.onNodeWithTag("home-computers-card").assertIsDisplayed()
+        compose.onNodeWithText("1/2 online").assertIsDisplayed()
+        compose.onNodeWithText("Send target · Connected · LAN").assertIsDisplayed()
+        compose.onNodeWithText("Paused").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Disconnect Home PC").assertIsDisplayed().performClick()
+        compose.runOnIdle { assertEquals("desk-a" to false, toggled) }
+        compose.onNodeWithContentDescription("Connect Office PC").assertIsDisplayed().performClick()
+        compose.runOnIdle { assertEquals("desk-b" to true, toggled) }
+        compose.onNodeWithText("Office PC").performClick()
+        compose.runOnIdle { assertEquals("desk-b", selected) }
+        saveScreenshot("home-computers-card.png")
     }
 
     private fun saveScreenshot(name: String) {
@@ -380,13 +485,19 @@ class ExpressiveLayoutInstrumentedTest {
         val folder = File(context.getExternalFilesDir(null), "ui-smoke").apply { mkdirs() }
         val png = File(folder, name)
         FileOutputStream(png).use {
-            compose.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG, 100, it)
+            compose
+                .onRoot()
+                .captureToImage()
+                .asAndroidBitmap()
+                .compress(Bitmap.CompressFormat.PNG, 100, it)
         }
+
         // Copy through the emulator shell while the test APK still exists. AGP uninstalls
         // it after tests and removes app-specific external storage, so pulling that later loses PNGs.
-        fun shell(command: String): String = instrumentation.uiAutomation.executeShellCommand(command).use { fd ->
-            FileInputStream(fd.fileDescriptor).use { it.readBytes().decodeToString().trim() }
-        }
+        fun shell(command: String): String =
+            instrumentation.uiAutomation.executeShellCommand(command).use { fd ->
+                FileInputStream(fd.fileDescriptor).use { it.readBytes().decodeToString().trim() }
+            }
         // UiAutomation executes an argv, NOT a shell script: chaining with && merely
         // passes those words to mkdir. Separate commands ensure the PNG is really copied.
         val destination = "/sdcard/Download/conduit-ui-smoke/$name"
@@ -394,6 +505,5 @@ class ExpressiveLayoutInstrumentedTest {
         assertTrue(shell("cp ${png.absolutePath} $destination").isBlank())
         val exportedBytes = shell("stat -c %s $destination").toLongOrNull()
         assertEquals("Screenshot must survive AGP test-app uninstall", png.length(), exportedBytes)
-
     }
 }

@@ -9,6 +9,7 @@ import java.util.Base64
 object PairingCode {
     const val LENGTH = 6
     private const val DOMAIN = "conduit-pair-v2:"
+    private const val PROOF_DOMAIN = "conduit-pair-proof-v1:"
 
     fun normalize(value: String): String =
         value.filter { it in '0'..'9' }
@@ -43,4 +44,15 @@ object PairingCode {
             .digest((DOMAIN + normalized).toByteArray(Charsets.UTF_8))
         return Base64.getUrlEncoder().withoutPadding().encodeToString(digest)
     }
+
+    /**
+     * Binds the pair handshake to the human code and both Noise identities, so neither side can
+     * be tricked into pairing with whoever happens to answer the code's Relay rendezvous.
+     * Windows computes the same digest with itself as responder.
+     */
+    fun proof(code: String, initiatorId: String, responderId: String): ByteArray =
+        MessageDigest.getInstance("SHA-256").digest(
+            (PROOF_DOMAIN + normalize(code) + ":" + initiatorId + ":" + responderId)
+                .toByteArray(Charsets.UTF_8),
+        )
 }

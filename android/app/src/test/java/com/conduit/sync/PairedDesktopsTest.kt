@@ -103,4 +103,46 @@ class PairedDesktopsTest {
         }
         assertEquals(PairedDesktops.MAX_PEERS, PairedDesktops.list(dir).size)
     }
+
+    @Test
+    fun pausedDesktopStaysPairedAndKeepsItsSwitchAcrossRenames() = withDir { dir ->
+        PairedDesktops.remember(dir, home)
+        PairedDesktops.rename(dir, home, "Home")
+        PairedDesktops.setEnabled(dir, home, false)
+        assertFalse(PairedDesktops.list(dir).single().enabled)
+        PairedDesktops.rename(dir, home, "Home PC")
+        PairedDesktops.choose(dir, home)
+        assertEquals(listOf(PairedDesktop(home, "Home PC", enabled = false)), PairedDesktops.list(dir))
+        // Re-pairing is an explicit "use this computer" and resumes it.
+        PairedDesktops.remember(dir, home)
+        assertTrue(PairedDesktops.list(dir).single().enabled)
+    }
+
+    @Test
+    fun registryWritesThreeColumnsAndReadsTheLegacyTwoColumnForm() = withDir { dir ->
+        PairedDesktops.remember(dir, home)
+        PairedDesktops.rename(dir, home, "Home")
+        PairedDesktops.setEnabled(dir, home, false)
+        val row = File(dir, "paired-desktops.tsv").readText().trim()
+        assertEquals(3, row.split('\t').size)
+        assertEquals("0", row.split('\t')[2])
+        // A v0.1.21 registry has no switch column at all, so every row means connected.
+        File(dir, "paired-desktops.tsv").writeText(
+            row.split('\t').take(2).joinToString("\t") + "\n",
+        )
+        assertTrue(PairedDesktops.list(dir).single().enabled)
+    }
+
+    @Test
+    fun masterResumeReturnsEveryPausedComputerToTheRoster() = withDir { dir ->
+        PairedDesktops.remember(dir, home)
+        PairedDesktops.remember(dir, work)
+        PairedDesktops.setEnabled(dir, home, false)
+        PairedDesktops.setEnabled(dir, work, false)
+        PairedDesktops.enableAll(dir)
+        assertEquals(listOf(true, true), PairedDesktops.list(dir).map { it.enabled })
+        // A peer that is already enabled is left alone instead of being rewritten.
+        PairedDesktops.setEnabled(dir, work, true)
+        assertEquals(listOf(true, true), PairedDesktops.list(dir).map { it.enabled })
+    }
 }

@@ -114,14 +114,11 @@ fn take_launch_notices() -> Vec<String> {
         if entry
             .metadata()
             .is_ok_and(|metadata| metadata.len() <= 4096)
+            && let Ok(message) = std::fs::read_to_string(entry.path())
+            && let Some(safe) =
+                send_error_from_args(&["Conduit".into(), "--send-error".into(), message])
         {
-            if let Ok(message) = std::fs::read_to_string(entry.path()) {
-                if let Some(safe) =
-                    send_error_from_args(&["Conduit".into(), "--send-error".into(), message])
-                {
-                    notices.push(safe);
-                }
-            }
+            notices.push(safe);
         }
         let _ = std::fs::remove_file(entry.path());
         if notices.len() >= 8 {
@@ -220,10 +217,12 @@ struct Ui {
     notification_retention: TextEdit,
     manual_proxy: TextEdit,
     receive_dir: TextEdit,
+    share_link: TextEdit,
+    join_code: TextEdit,
     proxy_mode: String,
     tray_icon: bool,
     settings_dirty: bool,
-    confirm: Option<&'static str>,
+    confirm: Option<String>,
     notice: Option<Notice>,
     notice_generation: u64,
     busy: bool,
@@ -262,6 +261,8 @@ impl Ui {
             ),
             manual_proxy: TextEdit::new(snap.settings.manual_proxy.clone()),
             receive_dir: TextEdit::new(snap.settings.receive_dir.clone()),
+            share_link: TextEdit::new(""),
+            join_code: TextEdit::new(""),
             proxy_mode: snap.settings.proxy_mode.clone(),
             tray_icon: snap.settings.tray_icon,
             snap,
@@ -391,16 +392,23 @@ impl Ui {
 
     fn set_transparency(&mut self, percent: u8, persist: bool) {
         self.transparency = percent.min(100);
-        if persist {
-            if let Err(error) = bridge::save_transparency_preference(self.transparency) {
-                self.show_notice(error, NoticeKind::Error);
-            }
+        if persist && let Err(error) = bridge::save_transparency_preference(self.transparency) {
+            self.show_notice(error, NoticeKind::Error);
         }
     }
 
     fn operation(
         &mut self,
         message: &'static str,
+        task: impl FnOnce() -> Result<(), String> + Send + 'static,
+    ) {
+        self.operation_as(message, notices::completion_message(message), task);
+    }
+
+    fn operation_as(
+        &mut self,
+        message: &'static str,
+        success: &'static str,
         task: impl FnOnce() -> Result<(), String> + Send + 'static,
     ) {
         // Avoid racing two destructive settings/pairing operations while the
@@ -427,11 +435,11 @@ impl Ui {
                     {
                         ui.dismiss_notice();
                     } else {
-                        ui.complete_notice(ticket, result, notices::completion_message(message));
-                        if message == "Starting pairing" {
-                            if let Some(notice) = &mut ui.notice {
-                                notice.pairing = true;
-                            }
+                        ui.complete_notice(ticket, result, success);
+                        if message == "Starting pairing"
+                            && let Some(notice) = &mut ui.notice
+                        {
+                            notice.pairing = true;
                         }
                     }
                 });
@@ -520,14 +528,96 @@ impl Ui {
     }
 
     fn open_picker(&mut self) {
-        self.operation("Opening file picker", || {
-            let Some(path) = rfd::FileDialog::new()
-                .set_title("Send a file to your phone")
-                .pick_file()
-            else {
+        self.open_picker_for(None);
+    }
+
+    /// Naming a computer is the only send path that bypasses the selected device.
+    fn open_picker_for(&mut self, peer_id: Option<&str>) {
+        if let Some(id) = peer_id
+            && self
+                .snap
+                .peers
+                .iter()
+                .find(|peer| peer.id == id)
+                .is_some_and(|peer| peer.state != "connected")
+        {
+            self.show_notice(
+                "Connect to this device before sending files.",
+                NoticeKind::Error,
+            );
+            return;
+        }
+        let peer_id = peer_id.map(str::to_owned);
+        let handle = HANDLE.get().cloned();
+        self.operation("Opening file picker", move || {
+            let Some(path) = rfd::FileDialog::new().set_title("Send a file").pick_file() else {
                 return Ok(());
             };
-            bridge::send_file(&path)
+            bridge::send_file_to_with_error(&path, peer_id.as_deref(), move |error| {
+                let next = bridge::snapshot();
+                if let Some(handle) = handle {
+                    handle.update(move |ui, _| {
+                        ui.sync(next);
+                        ui.show_notice(&error, NoticeKind::Error);
+                    });
+                }
+            })
+        });
+    }
+
+    fn peer_command(&mut self, action: &'static str, id: String) {
+        let (message, success) = match action {
+            "select" => ("Updating send target", "Send target updated"),
+            "forget" => ("Forgetting device", "Device unpaired"),
+            "connect" => ("Connecting computer", "Computer connection enabled"),
+            _ => ("Disconnecting computer", "Computer disconnected"),
+        };
+        self.operation_as(message, success, move || {
+            bridge::daemon_command(&["peer", action, &id]).map(|_| ())
+        });
+    }
+
+    fn join_pairing(&mut self) {
+        let code: String = self
+            .join_code
+            .text
+            .chars()
+            .filter(char::is_ascii_digit)
+            .collect();
+        if code.len() != 6 {
+            self.show_notice(
+                "Enter the six-digit code shown on the other computer",
+                NoticeKind::Error,
+            );
+            return;
+        }
+        self.operation_as("Joining pairing", "Pairing request sent", move || {
+            bridge::daemon_command(&["pair", "join", &code]).map(|_| ())
+        });
+    }
+
+    fn send_shared_link(&mut self) {
+        if self.busy {
+            return;
+        }
+        let url = self.share_link.text.trim().to_owned();
+        self.busy = true;
+        let ticket = self.show_notice("Sharing link…", NoticeKind::Progress);
+        let handle = HANDLE.get().cloned();
+        std::thread::spawn(move || {
+            let result = bridge::share_url(&url, None);
+            let next = bridge::snapshot();
+            if let Some(handle) = handle {
+                handle.update(move |ui, _| {
+                    ui.busy = false;
+                    // A rejected address stays in the field so it can be fixed.
+                    if result.is_ok() {
+                        ui.share_link.replace_text("");
+                    }
+                    ui.sync(next);
+                    ui.complete_notice(ticket, result, "Link sent");
+                });
+            }
         });
     }
 
@@ -616,7 +706,16 @@ impl Ui {
         self.operation("Queueing files", move || {
             let mut failures = Vec::new();
             for path in files {
-                if let Err(error) = bridge::send_file(&path) {
+                let handle = HANDLE.get().cloned();
+                if let Err(error) = bridge::send_file_to_with_error(&path, None, move |error| {
+                    let next = bridge::snapshot();
+                    if let Some(handle) = handle {
+                        handle.update(move |ui, _| {
+                            ui.sync(next);
+                            ui.show_notice(&error, NoticeKind::Error);
+                        });
+                    }
+                }) {
                     failures.push(error);
                 }
             }
@@ -628,12 +727,12 @@ impl Ui {
         });
     }
 
-    fn confirm_action(&mut self, what: &'static str) -> bool {
-        if self.confirm == Some(what) {
+    fn confirm_action(&mut self, what: &str) -> bool {
+        if self.confirm.as_deref() == Some(what) {
             self.confirm = None;
             true
         } else {
-            self.confirm = Some(what);
+            self.confirm = Some(what.to_owned());
             false
         }
     }
@@ -990,6 +1089,19 @@ fn nav(page: Page, selected: bool, paint: Paint) -> El {
 }
 
 fn sidebar(ui: &Ui, paint: Paint, compact: bool) -> El {
+    let devices = ui.snap.peers.len();
+    let desktops = ui
+        .snap
+        .peers
+        .iter()
+        .filter(|peer| peer.kind == "desktop")
+        .count();
+    let online = ui
+        .snap
+        .peers
+        .iter()
+        .filter(|peer| peer.state == "connected")
+        .count();
     let logo = icon(&icons::CONDUIT, 24.0)
         .key("conduit-brand-icon")
         .color(paint.t.text);
@@ -1033,7 +1145,7 @@ fn sidebar(ui: &Ui, paint: Paint, compact: bool) -> El {
             row()
                 .key("sidebar-device")
                 .role("button")
-                .label("Manage phone pairing")
+                .label("Manage device pairing")
                 .w_full()
                 .h(46.0)
                 .px(10.0)
@@ -1044,42 +1156,55 @@ fn sidebar(ui: &Ui, paint: Paint, compact: bool) -> El {
                 .fill(paint.inset)
                 .hover(paint.hover_wash)
                 .on_press(|ui: &mut Ui| ui.navigate(Page::Pairing))
-                .child(icon(&icons::SMARTPHONE, 17.0).color(paint.subdued))
+                .child(
+                    icon(
+                        if desktops > 0 {
+                            &icons::MONITOR
+                        } else {
+                            &icons::SMARTPHONE
+                        },
+                        17.0,
+                    )
+                    .color(paint.subdued),
+                )
                 .child(
                     col()
                         .grow(1.0)
                         .min_w(0.0)
                         .gap(3.0)
                         .child(
-                            text(if ui.snap.connection.linked {
-                                "Phone connected"
+                            text(if devices > 1 {
+                                format!("{devices} paired devices")
+                            } else if ui.snap.connection.linked {
+                                "Phone connected".into()
                             } else if ui.snap.connection.paused {
-                                "Connection paused"
+                                "Connection paused".into()
                             } else {
-                                "Connect a phone"
+                                "Connect a phone".into()
                             })
                             .font(rune::TextStyle::new(11.0, 580.0))
-                            .color(paint.t.text),
+                            .color(paint.t.text)
+                            .truncate(),
                         )
                         .child(
-                            text(if ui.snap.connection.linked {
-                                "Encrypted connection"
+                            text(if online > 1 {
+                                format!("{online} online")
+                            } else if ui.snap.connection.linked {
+                                "Encrypted connection".into()
                             } else {
-                                "Ready when you are"
+                                "Ready when you are".into()
                             })
                             .font(rune::TextStyle::new(10.0, 450.0))
                             .color(paint.faint),
                         ),
                 )
-                .child(
-                    el().size(6.0, 6.0)
-                        .radius(3.0)
-                        .fill(if ui.snap.connection.linked {
-                            paint.green
-                        } else {
-                            paint.faint
-                        }),
-                ),
+                .child(el().size(6.0, 6.0).radius(3.0).fill(
+                    if ui.snap.connection.linked || online > 0 {
+                        paint.green
+                    } else {
+                        paint.faint
+                    },
+                )),
         )
 }
 
@@ -1587,13 +1712,13 @@ fn notification_toolbar(ui: &Ui, paint: Paint) -> El {
         ))
         .child(button(
             "clear-notifications",
-            if ui.confirm == Some("notifications") {
+            if ui.confirm.as_deref() == Some("notifications") {
                 "Confirm clear"
             } else {
                 "Clear history"
             },
             paint,
-            ui.confirm == Some("notifications"),
+            ui.confirm.as_deref() == Some("notifications"),
             |ui| {
                 if ui.confirm_action("notifications") {
                     ui.operation("Clearing notifications", || {
@@ -1869,6 +1994,7 @@ fn links(ui: &Ui, paint: Paint) -> El {
         paint,
         col()
             .gap(14.0)
+            .child(share_link_block(ui, paint))
             .child(
                 row()
                     .justify_between()
@@ -1881,13 +2007,13 @@ fn links(ui: &Ui, paint: Paint) -> El {
                     ))
                     .child(button(
                         "clear-links",
-                        if ui.confirm == Some("links") {
+                        if ui.confirm.as_deref() == Some("links") {
                             "Confirm clear"
                         } else {
                             "Clear"
                         },
                         paint,
-                        ui.confirm == Some("links"),
+                        ui.confirm.as_deref() == Some("links"),
                         |ui| {
                             if ui.confirm_action("links") {
                                 ui.operation("Clearing links", || bridge::clear_history("links"));
@@ -1896,6 +2022,55 @@ fn links(ui: &Ui, paint: Paint) -> El {
                     )),
             )
             .child(list),
+    )
+}
+
+fn share_link_block(ui: &Ui, paint: Paint) -> El {
+    tonal_block(
+        paint,
+        col()
+            .key("share-link")
+            .w_full()
+            .gap(10.0)
+            .child(heading("Send a link", paint))
+            .child(muted("Share a web address with the selected device.", paint).max_lines(2))
+            .child(
+                row()
+                    .w_full()
+                    .center_y()
+                    .gap(10.0)
+                    .child(
+                        row()
+                            .role("textbox")
+                            .grow(1.0)
+                            .min_w(0.0)
+                            .h(40.0)
+                            .px(12.0)
+                            .center_y()
+                            .fill(paint.inset)
+                            .radius(10.0)
+                            .continuous_corners()
+                            .child(
+                                text_input(&ui.share_link, type_::BODY)
+                                    .key("share-link-input")
+                                    .w_full()
+                                    .single_line()
+                                    .placeholder("https://example.org", paint.t.text_secondary)
+                                    .label("Web address to share")
+                                    .color(paint.t.text)
+                                    .caret(paint.accent, paint.accent.alpha(0.22))
+                                    .on_edit(|ui: &mut Ui| &mut ui.share_link),
+                            ),
+                    )
+                    .child(action_button(
+                        "share-link-submit",
+                        "Send link",
+                        Some(&icons::SEND),
+                        paint,
+                        true,
+                        |ui| ui.send_shared_link(),
+                    )),
+            ),
     )
 }
 
@@ -1977,46 +2152,7 @@ fn pairing(ui: &Ui, paint: Paint) -> El {
             ),
         );
     } else {
-        if p.paired {
-            content = content.child(tonal_block(
-                paint,
-                row()
-                    .w_full()
-                    .center_y()
-                    .gap(12.0)
-                    .child(icon(&icons::SMARTPHONE, 25.0).color(paint.accent))
-                    .child(
-                        col()
-                            .grow(1.0)
-                            .min_w(0.0)
-                            .gap(5.0)
-                            .child(
-                                text(&p.device)
-                                    .font(rune::TextStyle::new(17.0, 620.0))
-                                    .color(paint.t.text)
-                                    .truncate(),
-                            )
-                            .child(muted("Trusted phone", paint)),
-                    )
-                    .child(button(
-                        "forget-pair",
-                        if ui.confirm == Some("forget") {
-                            "Confirm unpair"
-                        } else {
-                            "Forget device"
-                        },
-                        paint,
-                        ui.confirm == Some("forget"),
-                        |ui| {
-                            if ui.confirm_action("forget") {
-                                ui.operation("Forgetting device", || {
-                                    bridge::daemon_command(&["pair", "forget"]).map(|_| ())
-                                })
-                            }
-                        },
-                    )),
-            ));
-        } else {
+        if ui.snap.peers.is_empty() {
             content = content.child(
                 muted(
                     "Connect your Android phone using a QR code or six-digit code.",
@@ -2025,7 +2161,106 @@ fn pairing(ui: &Ui, paint: Paint) -> El {
                 .max_lines(2),
             );
         }
-        content = content.child(row().child(action_button(
+        let mut devices = col().key("paired-devices").w_full().gap(10.0);
+        for peer in &ui.snap.peers {
+            let phone = peer.kind == "phone";
+            let id = peer.id.clone();
+            let (state, reachable) = peer_route_label(peer);
+            let forget = if phone {
+                "forget".to_owned()
+            } else {
+                format!("forget-peer-{id}")
+            };
+            let confirming = ui.confirm.as_deref() == Some(forget.as_str());
+            let toggle_target = id.clone();
+            let forget_target = id.clone();
+            let enabled = peer.enabled;
+            devices = devices.child(tonal_block(
+                paint,
+                row()
+                    .key(format!("paired-{id}"))
+                    .w_full()
+                    .center_y()
+                    .gap(12.0)
+                    .child(
+                        icon(
+                            if phone {
+                                &icons::SMARTPHONE
+                            } else {
+                                &icons::MONITOR
+                            },
+                            25.0,
+                        )
+                        .color(paint.accent),
+                    )
+                    .child(
+                        col()
+                            .grow(1.0)
+                            .min_w(0.0)
+                            .gap(5.0)
+                            .child(
+                                text(peer.name.clone())
+                                    .font(rune::TextStyle::new(16.0, 620.0))
+                                    .color(paint.t.text)
+                                    .truncate(),
+                            )
+                            .child(
+                                row()
+                                    .gap(8.0)
+                                    .center_y()
+                                    .child(muted(
+                                        if phone {
+                                            "Trusted phone"
+                                        } else {
+                                            "Paired computer"
+                                        },
+                                        paint,
+                                    ))
+                                    .child(tag(state, paint, reachable)),
+                            ),
+                    )
+                    .child(button(
+                        format!("pair-toggle-{id}"),
+                        if enabled { "Disconnect" } else { "Connect" },
+                        paint,
+                        false,
+                        move |ui| {
+                            ui.peer_command(
+                                if enabled { "disconnect" } else { "connect" },
+                                toggle_target.clone(),
+                            )
+                        },
+                    ))
+                    .child(button(
+                        if phone {
+                            "forget-pair".to_owned()
+                        } else {
+                            format!("forget-peer-{id}")
+                        },
+                        if confirming {
+                            "Confirm unpair"
+                        } else {
+                            "Forget"
+                        },
+                        paint,
+                        confirming,
+                        move |ui| {
+                            if !ui.confirm_action(&forget) {
+                                return;
+                            }
+                            let target = forget_target.clone();
+                            if phone {
+                                ui.operation("Forgetting device", || {
+                                    bridge::daemon_command(&["pair", "forget"]).map(|_| ())
+                                });
+                            } else {
+                                ui.peer_command("forget", target);
+                            }
+                        },
+                    )),
+            ));
+        }
+        content = content.child(devices).child(row().child(action_button(
             "start-pair",
             "Start pairing",
             Some(&icons::QR_CODE),
@@ -2037,6 +2272,56 @@ fn pairing(ui: &Ui, paint: Paint) -> El {
                 })
             },
         )));
+        content = content.child(tonal_block(
+            paint,
+            col()
+                .w_full()
+                .gap(10.0)
+                .child(heading("Connect to another computer", paint))
+                .child(
+                    muted(
+                        "Open Pairing on the other computer and enter its six-digit code here.",
+                        paint,
+                    )
+                    .max_lines(2),
+                )
+                .child(
+                    row()
+                        .w_full()
+                        .center_y()
+                        .gap(10.0)
+                        .child(
+                            row()
+                                .role("textbox")
+                                .w(150.0)
+                                .h(40.0)
+                                .px(12.0)
+                                .center_y()
+                                .fill(paint.inset)
+                                .radius(10.0)
+                                .continuous_corners()
+                                .child(
+                                    text_input(&ui.join_code, type_::BODY)
+                                        .key("join-pair-input")
+                                        .w_full()
+                                        .single_line()
+                                        .placeholder("000000", paint.t.text_secondary)
+                                        .label("Six-digit pairing code")
+                                        .color(paint.t.text)
+                                        .caret(paint.accent, paint.accent.alpha(0.22))
+                                        .on_edit(|ui: &mut Ui| &mut ui.join_code),
+                                ),
+                        )
+                        .child(action_button(
+                            "join-pair-submit",
+                            "Pair computer",
+                            Some(&icons::MONITOR),
+                            paint,
+                            false,
+                            |ui| ui.join_pairing(),
+                        )),
+                ),
+        ));
     }
     content = content.child(
         muted(
@@ -2720,12 +3005,137 @@ fn about(ui: &Ui, paint: Paint) -> El {
     )
 }
 
+fn peer_route_label(peer: &bridge::PeerDevice) -> (&'static str, bool) {
+    match peer.state.as_str() {
+        "connected" if peer.route.to_ascii_lowercase().contains("relay") => ("Relay", true),
+        "connected" if peer.route.to_ascii_lowercase().contains("lan") => ("Direct LAN", true),
+        "connected" => ("Connected", true),
+        "connecting" => ("Connecting", false),
+        "paused" => ("Paused", false),
+        _ => ("Offline", false),
+    }
+}
+
+fn other_computers(ui: &Ui, paint: Paint) -> El {
+    let desktops: Vec<_> = ui
+        .snap
+        .peers
+        .iter()
+        .filter(|peer| peer.kind == "desktop")
+        .collect();
+    let online = desktops
+        .iter()
+        .filter(|peer| peer.state == "connected")
+        .count();
+    let mut rows = col().key("other-computer-rows").w_full().gap(10.0);
+    for peer in desktops {
+        let (state, reachable) = peer_route_label(peer);
+        let id = peer.id.clone();
+        let mut name_row = row().gap(8.0).center_y().child(
+            text(peer.name.clone())
+                .font(rune::TextStyle::new(14.0, 600.0))
+                .color(paint.t.text)
+                .truncate(),
+        );
+        if peer.selected {
+            name_row = name_row.child(tag("Send target", paint, true));
+        }
+        let mut detail = row()
+            .gap(8.0)
+            .center_y()
+            .child(tag(state, paint, reachable));
+        if !peer.phone_route.is_empty() {
+            detail = detail.child(muted("Online via phone", paint));
+        }
+        let identity = col()
+            .grow(1.0)
+            .min_w(0.0)
+            .gap(6.0)
+            .child(name_row)
+            .child(detail);
+        let mut actions = row().gap(6.0).center_y();
+        if !peer.selected {
+            let target = id.clone();
+            actions = actions.child(button(
+                format!("select-peer-{id}"),
+                "Set target",
+                paint,
+                false,
+                move |ui| ui.peer_command("select", target.clone()),
+            ));
+        }
+        let target = id.clone();
+        actions = actions.child(action_button(
+            format!("send-peer-{id}"),
+            "Send file",
+            Some(&icons::SEND),
+            paint,
+            false,
+            move |ui| ui.open_picker_for(Some(&target)),
+        ));
+        let target = id.clone();
+        let (toggle, action) = if peer.enabled {
+            ("Disconnect", "disconnect")
+        } else {
+            ("Connect", "connect")
+        };
+        actions = actions.child(button(
+            format!("toggle-peer-{id}"),
+            toggle,
+            paint,
+            false,
+            move |ui| ui.peer_command(action, target.clone()),
+        ));
+        rows = rows.child(tonal_block(
+            paint,
+            row()
+                .key(format!("peer-row-{id}"))
+                .w_full()
+                .center_y()
+                .gap(12.0)
+                .child(
+                    el().size(36.0, 36.0)
+                        .radius(10.0)
+                        .continuous_corners()
+                        .fill(paint.inset)
+                        .center()
+                        .child(icon(&icons::MONITOR, 18.0).color(paint.subdued)),
+                )
+                .child(identity)
+                .child(actions),
+        ));
+    }
+    card(
+        "other-computers",
+        paint,
+        col()
+            .w_full()
+            .gap(12.0)
+            .child(
+                row()
+                    .w_full()
+                    .center_y()
+                    .justify_between()
+                    .child(section_heading(
+                        &icons::MONITOR,
+                        "Other computers",
+                        "Send files and links to a paired PC",
+                        paint,
+                    ))
+                    .child(tag(format!("{online} online"), paint, online > 0)),
+            )
+            .child(rows),
+    )
+}
+
 fn content(ui: &Ui, paint: Paint, compact: bool) -> El {
     let mut body = col().key("page-content").w_full().min_w(0.0).gap(18.0);
     if ui.page == Page::Overview {
-        body = body
-            .child(summary_connection(ui, paint, compact))
-            .child(overview(ui, paint));
+        body = body.child(summary_connection(ui, paint, compact));
+        if ui.snap.peers.iter().any(|peer| peer.kind == "desktop") {
+            body = body.child(other_computers(ui, paint));
+        }
+        body = body.child(overview(ui, paint));
     } else {
         body = body.child(match ui.page {
             Page::Transfers => transfers(ui, paint),
@@ -2832,6 +3242,12 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
     };
     let paint = Paint::new(dark).with_backdrop(ui.backdrop_active, ui.transparency);
     let searchable = matches!(ui.page, Page::Transfers | Page::Notifications | Page::Links);
+    let header_online = ui
+        .snap
+        .peers
+        .iter()
+        .filter(|peer| peer.state == "connected")
+        .count();
     let mut right = row().gap(10.0).center_y();
     if searchable && !compact {
         right = right.child(search_field(ui, paint));
@@ -2847,22 +3263,22 @@ fn view(ui: &Ui, cx: &mut Cx<Ui>) -> El {
                 .fill(paint.inset)
                 .gap(7.0)
                 .center_y()
-                .child(
-                    el().size(6.0, 6.0)
-                        .radius(3.0)
-                        .fill(if ui.snap.connection.linked {
-                            paint.green
-                        } else {
-                            paint.faint
-                        }),
-                )
-                .child(
-                    text(if ui.snap.connection.linked {
-                        "Connected"
-                    } else if ui.snap.connection.paused {
-                        "Paused"
+                .child(el().size(6.0, 6.0).radius(3.0).fill(
+                    if ui.snap.connection.linked || header_online > 0 {
+                        paint.green
                     } else {
-                        "Offline"
+                        paint.faint
+                    },
+                ))
+                .child(
+                    text(if ui.snap.peers.len() > 1 {
+                        format!("{header_online} of {} online", ui.snap.peers.len())
+                    } else if ui.snap.connection.linked {
+                        "Connected".into()
+                    } else if ui.snap.connection.paused {
+                        "Paused".into()
+                    } else {
+                        "Offline".into()
                     })
                     .font(rune::TextStyle::new(11.0, 560.0))
                     .color(paint.subdued),
@@ -3190,6 +3606,45 @@ fn qa_offline(ui: &mut Ui) {
     ui.snap.connection = bridge::Connection::default();
     ui.snap.transfers.clear();
 }
+/// A phone plus two computers: one selected over direct LAN, one still connecting over Relay.
+fn qa_multipeer(ui: &mut Ui) {
+    qa_overview(ui);
+    ui.page = Page::Overview;
+    ui.snap.peers = vec![
+        bridge::PeerDevice {
+            id: "qa-phone".into(),
+            name: "Android phone".into(),
+            kind: "phone".into(),
+            state: "connected".into(),
+            route: "lan".into(),
+            enabled: true,
+            selected: true,
+            ..Default::default()
+        },
+        bridge::PeerDevice {
+            id: "qa-studio".into(),
+            name: "Studio desktop".into(),
+            kind: "desktop".into(),
+            state: "connected".into(),
+            route: "lan".into(),
+            enabled: true,
+            selected: true,
+            phone_route: "lan".into(),
+            ..Default::default()
+        },
+        bridge::PeerDevice {
+            id: "qa-office".into(),
+            name: "Office desktop".into(),
+            kind: "desktop".into(),
+            state: "connecting".into(),
+            route: "relay".into(),
+            enabled: true,
+            ..Default::default()
+        },
+    ];
+    ui.snap.pairing.paired = true;
+    ui.snap.pairing.device = "Android phone".into();
+}
 
 fn setup_watcher(handle: AppHandle<Ui>) {
     std::thread::spawn(move || {
@@ -3357,6 +3812,7 @@ fn main() {
             ("qa-links", qa_links),
             ("qa-pairing", qa_pairing),
             ("qa-settings", qa_settings),
+            ("qa-multipeer", qa_multipeer),
             ("qa-offline", qa_offline),
         ],
         on_key: Some(on_key),
@@ -3710,6 +4166,160 @@ mod tests {
         });
         rt.frame(0.3);
         assert!(rt.find("transfer-failed-video").is_none());
+    }
+
+    #[test]
+    fn other_computers_list_each_desktop_with_target_send_and_toggle_actions() {
+        for size in [(760.0, 510.0), (1020.0, 605.0)] {
+            let mut ui = Ui::init();
+            qa_multipeer(&mut ui);
+            let mut rt = Runtime::new(ui, view, size, Env::new(true, 1.0));
+            rt.frame(0.0);
+            rt.frame(1.0 / 60.0);
+            for key in [
+                "other-computers",
+                "peer-row-qa-studio",
+                "peer-row-qa-office",
+                // The phone is not a computer; it keeps its own connection card.
+                "connection",
+            ] {
+                let (x, y) = rt
+                    .find(key)
+                    .unwrap_or_else(|| panic!("missing {key} at {size:?}"));
+                assert!(
+                    x >= 0.0 && x <= size.0 && y >= 0.0 && y <= size.1,
+                    "{key} is clipped at {size:?}: {x}, {y}"
+                );
+            }
+            // The transfer summary stays reachable below the device list.
+            assert!(rt.find("overview-summary").is_some());
+            // The selected computer needs no target button; the other one does.
+            assert!(rt.find("select-peer-qa-studio").is_none());
+            assert!(rt.find("select-peer-qa-office").is_some());
+            assert!(rt.find("send-peer-qa-studio").is_some());
+            assert!(rt.find("toggle-peer-qa-office").is_some());
+        }
+    }
+
+    #[test]
+    fn other_computers_stay_hidden_until_a_desktop_is_paired() {
+        let mut ui = Ui::init();
+        qa_overview(&mut ui);
+        ui.snap.peers = vec![bridge::PeerDevice {
+            id: "qa-phone".into(),
+            kind: "phone".into(),
+            state: "connected".into(),
+            ..Default::default()
+        }];
+        let mut rt = Runtime::new(ui, view, (1020.0, 605.0), Env::new(true, 1.0));
+        rt.frame(0.0);
+        assert!(rt.find("other-computers").is_none());
+        assert!(rt.find("connection").is_some());
+    }
+
+    #[test]
+    fn pairing_lists_every_paired_device_with_join_and_share_inputs() {
+        for size in [(760.0, 510.0), (1020.0, 605.0)] {
+            let mut ui = Ui::init();
+            qa_multipeer(&mut ui);
+            ui.page = Page::Pairing;
+            ui.snap.pairing.active = false;
+            let mut rt = Runtime::new(ui, view, size, Env::new(true, 1.0));
+            rt.frame(0.0);
+            rt.frame(1.0 / 60.0);
+            for key in [
+                "paired-qa-phone",
+                "paired-qa-studio",
+                "pair-toggle-qa-phone",
+                "pair-toggle-qa-studio",
+                "forget-pair",
+                "forget-peer-qa-studio",
+                "join-pair-input",
+                "join-pair-submit",
+                "start-pair",
+            ] {
+                assert!(rt.find(key).is_some(), "missing {key} at {size:?}");
+            }
+        }
+        let mut ui = Ui::init();
+        qa_multipeer(&mut ui);
+        ui.page = Page::Pairing;
+        ui.snap.pairing.active = false;
+        // Tall enough that the join field is not below the scroll fold.
+        let mut rt = Runtime::new(ui, view, (1020.0, 1000.0), Env::new(true, 1.0));
+        rt.frame(0.0);
+        let (x, y) = rt.find("join-pair-input").expect("join field");
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.key(KeyEvent {
+            key: Key::Text("123456".into()),
+            mods: rune::Mods::default(),
+        });
+        rt.frame(1.0 / 30.0);
+        assert_eq!(rt.state.join_code.text, "123456");
+        // Unpairing a computer takes two deliberate presses.
+        let (x, y) = rt.find("forget-peer-qa-studio").expect("forget button");
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.1);
+        assert_eq!(rt.state.confirm.as_deref(), Some("forget-peer-qa-studio"));
+        assert!(rt.find("paired-qa-studio").is_some());
+    }
+
+    #[test]
+    fn active_pairing_qr_is_unchanged_by_the_device_list() {
+        let mut ui = Ui::init();
+        qa_multipeer(&mut ui);
+        ui.page = Page::Pairing;
+        ui.snap.pairing.active = true;
+        let mut rt = Runtime::new(ui, view, (760.0, 510.0), Env::new(true, 1.0));
+        rt.frame(0.0);
+        assert!(rt.find("pairing-qr").is_some());
+        assert!(rt.find("join-pair-input").is_none());
+    }
+
+    #[test]
+    fn shared_links_page_offers_a_typed_web_address_field() {
+        let mut ui = Ui::init();
+        qa_links(&mut ui);
+        let mut rt = Runtime::new(ui, view, (760.0, 510.0), Env::new(true, 1.0));
+        rt.frame(0.0);
+        rt.frame(1.0 / 60.0);
+        for key in ["share-link-input", "share-link-submit", "links"] {
+            assert!(rt.find(key).is_some(), "missing {key}");
+        }
+        let (x, y) = rt.find("share-link-input").expect("share field");
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.key(KeyEvent {
+            key: Key::Text("https://example.org".into()),
+            mods: rune::Mods::default(),
+        });
+        rt.frame(1.0 / 30.0);
+        assert_eq!(rt.state.share_link.text, "https://example.org");
+    }
+
+    #[test]
+    fn peer_route_labels_cover_every_reported_state() {
+        let peer = |state: &str, route: &str| bridge::PeerDevice {
+            state: state.into(),
+            route: route.into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            peer_route_label(&peer("connected", "lan")),
+            ("Direct LAN", true)
+        );
+        assert_eq!(
+            peer_route_label(&peer("connected", "relay")),
+            ("Relay", true)
+        );
+        assert_eq!(
+            peer_route_label(&peer("connecting", "")),
+            ("Connecting", false)
+        );
+        assert_eq!(peer_route_label(&peer("paused", "")), ("Paused", false));
+        assert_eq!(peer_route_label(&peer("offline", "")), ("Offline", false));
     }
 
     #[test]
