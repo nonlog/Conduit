@@ -3,9 +3,10 @@
 //! One data directory holds up to [`MAX_PEERS`] trusted devices: the pinned phone and, optionally,
 //! other desktops on the same LAN or Relay. `paired-peers.tsv` is authoritative; `peer.txt` and
 //! `peer-name.txt` are kept only as derived compatibility files for older tooling. A pairing
-//! window is still a short user-opened interval, but both LAN discovery and the temporary
-//! Relay rendezvous derived from the human pairing code may use it, and a desktop-to-desktop
-//! pair is bound to the code with [`pairing_proof`] so a relay cannot splice two unrelated pairs.
+//! window is a short user-opened interval on this computer for its phone, reached by LAN
+//! discovery or the temporary Relay rendezvous derived from the human pairing code and bound to
+//! the code with [`pairing_proof`]. Computers never pair with each other: a sibling desktop enters
+//! `paired-peers.tsv` only through the paired phone's roster.
 
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -23,9 +24,6 @@ const PEER_FILE: &str = "peer.txt";
 const PEER_NAME_FILE: &str = "peer-name.txt";
 const PEERS_FILE: &str = "paired-peers.tsv";
 const SELECTED_FILE: &str = "selected-peer.txt";
-/// Locally forgotten phone-sourced desktops. A roster cannot resurrect a device the user removed
-/// here until the phone drops it and lists it again.
-const DISMISSED_FILE: &str = "dismissed-peers.txt";
 const PAIRING_FILE: &str = "pairing.txt";
 /// Marks data directories that have already entered the explicit-pairing model. Without this, an
 /// offline phone could resurrect itself through the one-time legacy Relay migration after the user
@@ -43,12 +41,11 @@ const PAIRING_DOMAIN: &[u8] = b"conduit-pair-v2:";
 const PROOF_DOMAIN: &str = "conduit-pair-proof-v1";
 /// Wrong pairing proofs a single opening of the window tolerates before it closes itself.
 const MAX_ATTEMPTS: u32 = 5;
-const MAX_DISMISSED: usize = 64;
 pub const WINDOW: Duration = Duration::from_secs(120);
 
-/// Serializes every read-modify-write of the registry, the tombstones and the pairing window in
-/// this process. The main loop and the session tasks both write these files, and a lost update
-/// here is a lost trust decision; the files themselves are the shared state, not this lock.
+/// Serializes every read-modify-write of the registry and the pairing window in this process. The
+/// main loop and the session tasks both write these files, and a lost update here is a lost trust
+/// decision; the files themselves are the shared state, not this lock.
 static REGISTRY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn lock_registry() -> std::sync::MutexGuard<'static, ()> {
@@ -196,27 +193,6 @@ pub fn start(dir: &Path) -> Result<PairingWindow> {
     })
 }
 
-/// Opens this side's window with a code entered for another device, so both ends derive the same
-/// rendezvous and the same proof. Used by `pair join <code>`.
-pub fn join(dir: &Path, code: &str) -> Result<PairingWindow> {
-    let _guard = lock_registry();
-    let code = normalize_code(code);
-    if code.len() != CODE_LEN {
-        bail!("a pairing code is exactly {CODE_LEN} digits");
-    }
-    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    let expires_ms = now_ms().saturating_add(WINDOW.as_millis());
-    atomic_write(
-        &dir.join(PAIRING_FILE),
-        &format!("expires_ms={expires_ms}\ncode={code}\nattempts=0\n"),
-    )?;
-    Ok(PairingWindow {
-        rendezvous: pairing_rendezvous(&code),
-        code,
-        expires_ms,
-    })
-}
-
 pub fn cancel(dir: &Path) -> Result<bool> {
     let _guard = lock_registry();
     remove_if_exists(&dir.join(PAIRING_FILE))
@@ -231,7 +207,6 @@ pub fn forget(dir: &Path) -> Result<bool> {
         PEER_NAME_FILE,
         PEERS_FILE,
         SELECTED_FILE,
-        DISMISSED_FILE,
         STATUS_PEERS_FILE,
         PAIRING_FILE,
     ] {
@@ -266,7 +241,8 @@ pub fn remember_name(dir: &Path, id: &str, name: &str) -> Result<()> {
 /// opened pairing on both sides. LAN discovery and the temporary pairing-code Relay rendezvous
 /// are both acceptable pairing transports; the normal long-lived Relay rendezvous never is.
 /// The announced form factor decides which privileges the session gets, so a phone cannot claim
-/// the desktop role and a desktop cannot join the PC-to-PC mesh without proving the code.
+/// the desktop role, and a desktop never pairs here at all: siblings enter only through the
+/// paired phone's roster, after which they reconnect on their own keys as [`Authorization::Trusted`].
 /// `initiator` is true when this side dialled, which is what fixes the id order of the proof.
 pub fn authorize_candidate(
     dir: &Path,
@@ -325,17 +301,22 @@ pub fn authorize_candidate(
         note_failed_attempt(dir);
         bail!("pairing must use LAN discovery or the temporary pairing-code rendezvous");
     }
+    if announced == PeerKind::Desktop {
+        // Two computers never pair: a sibling is trusted only because the paired phone listed it,
+        // and a window is no substitute for that roster. This is not a wrong code, so it must not
+        // spend one of the window's attempts.
+        bail!("computers do not pair with each other; pair each computer with your phone");
+    }
     // Whichever side dialled is the initiator, on this end of the check as well.
     let expected = if initiator {
         pairing_proof(&window.code, local_id, remote_id)
     } else {
         pairing_proof(&window.code, remote_id, local_id)
     };
-    // Whoever joins a pairing code already knows it, and a desktop may only enter the PC mesh by
-    // proving it. An empty proof is only possible for a legacy phone scanning this PC on the LAN,
-    // and never while a phone is already trusted or this very device is a second one beside it.
+    // Whoever joins a pairing code already knows it, so a phone may only be pinned by proving it.
+    // An empty proof is only possible for a legacy phone scanning this PC on the LAN, and never
+    // while a phone is already trusted or this very device is a second one beside it.
     let proof_required = via == "relay-pair"
-        || announced == PeerKind::Desktop
         || !hello.pairing_proof.is_empty()
         || known.as_ref().map_or_else(
             || peers.iter().any(|peer| peer.kind == PeerKind::Phone),
@@ -372,11 +353,6 @@ pub fn confirm(
     let mut peers = peers_locked(dir);
     if authorization != Authorization::Trusted {
         let name = clean_name(name);
-        let mut dismissed = dismissed_peers(dir);
-        if dismissed.iter().any(|id| id == remote_id) {
-            dismissed.retain(|id| id != remote_id);
-            write_dismissed(dir, &dismissed)?;
-        }
         match peers.iter_mut().find(|peer| peer.id == remote_id) {
             Some(peer) => {
                 // An explicit re-pair keeps the kind this computer already trusted and restores a
@@ -513,6 +489,7 @@ fn encode_peers(peers: &[PairedPeer]) -> String {
         .collect()
 }
 
+#[cfg(test)]
 fn write_peers(dir: &Path, peers: &[PairedPeer]) -> Result<()> {
     let _guard = lock_registry();
     write_peers_locked(dir, peers)
@@ -593,23 +570,13 @@ pub fn enable_all_peers(dir: &Path) -> Result<usize> {
     Ok(changed)
 }
 
-/// Locally forgets one device. A desktop that this PC learned from the phone's roster is also
-/// tombstoned, so the next roster cannot silently add it back. The tombstone is durable before the
-/// registry loses the peer: a crash in between must not let the roster resurrect the device.
+/// Locally forgets one device. A desktop the phone still lists comes back on the next roster, so
+/// forgetting a sibling here means forgetting it on the phone too.
 pub fn forget_peer(dir: &Path, id: &str) -> Result<bool> {
     let _guard = lock_registry();
     let peers = peers_locked(dir);
-    let Some(peer) = peers.iter().find(|peer| peer.id == id).cloned() else {
+    if !peers.iter().any(|peer| peer.id == id) {
         return Ok(false);
-    };
-    if peer.kind == PeerKind::Desktop && peer.source == PeerSource::Phone {
-        let mut dismissed = dismissed_peers(dir);
-        dismissed.retain(|value| value != id);
-        dismissed.push(id.to_owned());
-        // A full ring drops the oldest tombstone, never the id the user just forgot here.
-        let excess = dismissed.len().saturating_sub(MAX_DISMISSED);
-        dismissed.drain(..excess);
-        write_dismissed(dir, &dismissed)?;
     }
     let remaining: Vec<PairedPeer> = peers.into_iter().filter(|peer| peer.id != id).collect();
     write_peers_locked(dir, &remaining)?;
@@ -624,32 +591,11 @@ pub fn forget_peer(dir: &Path, id: &str) -> Result<bool> {
     Ok(true)
 }
 
-fn dismissed_peers(dir: &Path) -> Vec<String> {
-    std::fs::read_to_string(dir.join(DISMISSED_FILE))
-        .map(|body| {
-            body.lines()
-                .map(str::trim)
-                .filter(|value| valid_id(value))
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn write_dismissed(dir: &Path, dismissed: &[String]) -> Result<()> {
-    if dismissed.is_empty() {
-        remove_if_exists(&dir.join(DISMISSED_FILE))?;
-        return Ok(());
-    }
-    let body: String = dismissed.iter().map(|id| id.clone() + "\n").collect();
-    atomic_write(&dir.join(DISMISSED_FILE), &body)
-}
-
 /// Applies the roster the paired phone pushes whenever its own paired-device list changes.
 ///
 /// Only the persisted phone may do this; a desktop session has no authority over this PC's trust.
-/// Desktop entries the phone dropped are removed (and their local tombstone cleared), valid new
-/// desktops are added disabled-preserving, and locally forgotten ids stay forgotten.
+/// The roster is the single source of truth for sibling desktops: entries the phone dropped are
+/// removed, new ones are added disabled-preserving.
 pub fn apply_phone_roster(
     dir: &Path,
     local_id: &str,
@@ -681,7 +627,6 @@ pub fn apply_phone_roster(
         })
         .map(|peer| peer.id.clone())
         .collect();
-    let dismissed = dismissed_peers(dir);
     let mut next: Vec<PairedPeer> = peers
         .clone()
         .into_iter()
@@ -691,7 +636,6 @@ pub fn apply_phone_roster(
         if entry.device_id == local_id
             || !valid_id(&entry.device_id)
             || PeerKind::announced(entry.device_kind) != PeerKind::Desktop
-            || dismissed.iter().any(|id| id == &entry.device_id)
         {
             continue;
         }
@@ -713,17 +657,6 @@ pub fn apply_phone_roster(
     }
     if next != peers {
         write_peers_locked(dir, &next)?;
-    }
-    // A tombstone only shields this PC from the phone re-adding a device the user removed here.
-    // Once the phone drops that device itself, the tombstone is stale and would block a future
-    // re-pair, so only ids the incoming roster still lists survive.
-    let kept: Vec<String> = dismissed
-        .iter()
-        .filter(|id| listed.contains(&id.as_str()))
-        .cloned()
-        .collect();
-    if kept != dismissed {
-        write_dismissed(dir, &kept)?;
     }
     Ok(removed)
 }
@@ -947,12 +880,11 @@ pub struct CloneRepair {
 }
 
 /// Every file that describes *which* devices this PC trusts. Backed up together, cleared together.
-const TRUST_FILES: [&str; 8] = [
+const TRUST_FILES: [&str; 7] = [
     PEER_FILE,
     PEER_NAME_FILE,
     PEERS_FILE,
     SELECTED_FILE,
-    DISMISSED_FILE,
     STATUS_PEERS_FILE,
     PAIRING_FILE,
     PAIRING_MODEL_FILE,
@@ -1074,21 +1006,48 @@ mod tests {
     }
 
     #[test]
-    fn desktop_window_pairing_requires_a_matching_proof() {
-        let dir = temp("proof");
+    fn computers_do_not_pair_with_each_other() {
+        let dir = temp("no-desktop-pairing");
         let (a, b, _) = ids();
         let window = start(&dir).unwrap();
-        let candidate = hello(PeerKind::Desktop, true, pairing_proof(&window.code, &b, &a));
-        let (authorization, kind) =
-            authorize_candidate(&dir, &a, &b, "relay-pair", false, &candidate).unwrap();
-        assert_eq!(authorization, Authorization::Paired);
-        assert_eq!(kind, PeerKind::Desktop);
-        confirm(&dir, &b, kind, authorization, "Studio PC").unwrap();
-        assert_eq!(peers(&dir).len(), 1);
-        assert_eq!(selected_peer(&dir).as_deref(), Some(b.as_str()));
-        assert!(!state(&dir).pairing);
+        // Even the exact code is not enough: only the paired phone's roster may add a sibling.
+        for via in ["lan", "relay-pair"] {
+            let candidate = hello(PeerKind::Desktop, true, pairing_proof(&window.code, &b, &a));
+            let error = authorize_candidate(&dir, &a, &b, via, false, &candidate).unwrap_err();
+            assert!(
+                error.to_string().contains("computers do not pair"),
+                "{error:#}"
+            );
+        }
+        // Refusing a computer is not a wrong code, so the window keeps its attempts.
+        assert!(state(&dir).pairing);
+        assert!(peers(&dir).is_empty());
 
-        // Reconnecting as a trusted peer no longer needs the window or a proof.
+        // Once the phone's roster lists that sibling, its ordinary reconnect is trusted.
+        let phone = "P".repeat(ID_LEN);
+        confirm(
+            &dir,
+            &phone,
+            PeerKind::Phone,
+            Authorization::Paired,
+            "Phone",
+        )
+        .unwrap();
+        apply_phone_roster(
+            &dir,
+            &a,
+            &phone,
+            &pb::PeerRoster {
+                peers: vec![pb::PeerInfo {
+                    device_id: b.clone(),
+                    device_name: "Studio PC".into(),
+                    device_kind: pb::DeviceKind::Desktop as i32,
+                    online: true,
+                    ..Default::default()
+                }],
+            },
+        )
+        .unwrap();
         let (authorization, kind) = authorize_candidate(
             &dir,
             &a,
@@ -1109,11 +1068,11 @@ mod tests {
         let (a, b, c) = ids();
         start(&dir).unwrap();
         for _ in 0..4 {
-            let candidate = hello(PeerKind::Desktop, true, pairing_proof("000000", &b, &a));
+            let candidate = hello(PeerKind::Phone, true, pairing_proof("000000", &b, &a));
             assert!(authorize_candidate(&dir, &a, &b, "lan", false, &candidate).is_err());
             assert!(state(&dir).pairing);
         }
-        let candidate = hello(PeerKind::Desktop, true, pairing_proof("000000", &c, &a));
+        let candidate = hello(PeerKind::Phone, true, pairing_proof("000000", &c, &a));
         assert!(authorize_candidate(&dir, &a, &c, "lan", false, &candidate).is_err());
         assert!(!state(&dir).pairing, "the window must have closed itself");
         assert!(!dir.join(PAIRING_FILE).exists());
@@ -1276,71 +1235,37 @@ mod tests {
     }
 
     #[test]
-    fn a_paired_desktop_keeps_its_kind_while_a_pairing_window_is_open() {
+    fn a_known_desktop_keeps_its_kind_while_a_pairing_window_is_open() {
         let dir = temp("kind-lock");
         let (a, b, _) = ids();
-        let window = start(&dir).unwrap();
-        let proof = pairing_proof(&window.code, &b, &a);
-        let (authorization, kind) = authorize_candidate(
+        write_peers(
             &dir,
-            &a,
-            &b,
-            "relay-pair",
-            false,
-            &hello(PeerKind::Desktop, true, proof),
+            &[PairedPeer {
+                id: b.clone(),
+                name: "Studio".into(),
+                kind: PeerKind::Desktop,
+                enabled: true,
+                source: PeerSource::Phone,
+            }],
         )
         .unwrap();
-        confirm(&dir, &b, kind, authorization, "Studio").unwrap();
-        // The same device re-announcing itself as a phone must stay the desktop this PC trusted.
-        let window = start(&dir).unwrap();
-        let proof = pairing_proof(&window.code, &b, &a);
+        start(&dir).unwrap();
+        // A sibling reconnecting on its own keys is trusted, and a window cannot promote it to
+        // phone.
         let (authorization, kind) = authorize_candidate(
             &dir,
             &a,
             &b,
-            "relay-pair",
+            "relay",
             false,
-            &hello(PeerKind::Phone, true, proof),
+            &hello(PeerKind::Phone, false, vec![]),
         )
         .unwrap();
         assert_eq!(
             (authorization, kind),
             (Authorization::Trusted, PeerKind::Desktop)
         );
-        confirm(&dir, &b, kind, authorization, "Studio").unwrap();
-        assert_eq!(peers(&dir)[0].kind, PeerKind::Desktop);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_disabled_desktop_re_enables_only_by_proving_the_code() {
-        let dir = temp("repair-disable");
-        let (a, b, _) = ids();
-        let window = start(&dir).unwrap();
-        let proof = pairing_proof(&window.code, &b, &a);
-        let (authorization, kind) = authorize_candidate(
-            &dir,
-            &a,
-            &b,
-            "relay-pair",
-            false,
-            &hello(PeerKind::Desktop, true, proof),
-        )
-        .unwrap();
-        confirm(&dir, &b, kind, authorization, "Studio").unwrap();
-        assert!(set_peer_enabled(&dir, &b, false).unwrap());
-        // Outside a pairing the disabled device is refused on its own keys.
-        assert!(authorize_candidate(
-            &dir,
-            &a,
-            &b,
-            "relay",
-            false,
-            &hello(PeerKind::Desktop, false, vec![])
-        )
-        .is_err());
-        // An open window alone is not enough: a desktop must prove the code to come back.
-        let window = start(&dir).unwrap();
+        // A hello that claims pairing is refused even from a device this PC already trusts.
         assert!(authorize_candidate(
             &dir,
             &a,
@@ -1350,22 +1275,60 @@ mod tests {
             &hello(PeerKind::Desktop, true, vec![])
         )
         .is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_disabled_desktop_stays_refused_while_a_sibling_window_is_open() {
+        let dir = temp("disabled-desktop");
+        let (a, b, _) = ids();
+        write_peers(
+            &dir,
+            &[PairedPeer {
+                id: b.clone(),
+                name: "Studio".into(),
+                kind: PeerKind::Desktop,
+                enabled: false,
+                source: PeerSource::Phone,
+            }],
+        )
+        .unwrap();
+        assert!(authorize_candidate(
+            &dir,
+            &a,
+            &b,
+            "relay",
+            false,
+            &hello(PeerKind::Desktop, false, vec![])
+        )
+        .is_err());
+        // Even the right code cannot re-enable it: computers never pair with each other.
+        let window = start(&dir).unwrap();
         let proof = pairing_proof(&window.code, &b, &a);
-        let (authorization, kind) = authorize_candidate(
+        assert!(authorize_candidate(
             &dir,
             &a,
             &b,
             "lan",
             false,
-            &hello(PeerKind::Desktop, true, proof),
+            &hello(PeerKind::Desktop, true, proof)
+        )
+        .is_err());
+        // The explicit local switch is what brings it back.
+        assert!(set_peer_enabled(&dir, &b, true).unwrap());
+        let (authorization, kind) = authorize_candidate(
+            &dir,
+            &a,
+            &b,
+            "relay",
+            false,
+            &hello(PeerKind::Desktop, false, vec![]),
         )
         .unwrap();
         assert_eq!(
             (authorization, kind),
-            (Authorization::Paired, PeerKind::Desktop)
+            (Authorization::Trusted, PeerKind::Desktop)
         );
-        confirm(&dir, &b, kind, authorization, "Studio").unwrap();
-        assert!(peers(&dir).iter().all(|peer| peer.enabled));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1444,8 +1407,8 @@ mod tests {
     }
 
     #[test]
-    fn tombstoned_peer_is_not_resurrected_by_a_later_roster() {
-        let dir = temp("tombstone");
+    fn the_phone_roster_is_the_only_source_of_truth_for_siblings() {
+        let dir = temp("roster-truth");
         let (local, phone, desktop) = ids();
         write_peers(
             &dir,
@@ -1467,78 +1430,6 @@ mod tests {
             ],
         )
         .unwrap();
-        assert!(forget_peer(&dir, &desktop).unwrap());
-        assert!(dismissed_peers(&dir).contains(&desktop));
-        assert!(!forget_peer(&dir, &desktop).unwrap(), "already forgotten");
-        let roster = pb::PeerRoster {
-            peers: vec![pb::PeerInfo {
-                device_id: desktop.clone(),
-                device_name: "Studio".into(),
-                device_kind: pb::DeviceKind::Desktop as i32,
-                ..Default::default()
-            }],
-        };
-        let removed = apply_phone_roster(&dir, &local, &phone, &roster).unwrap();
-        assert!(removed.is_empty());
-        assert!(!peers(&dir).iter().any(|peer| peer.id == desktop));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_full_tombstone_ring_keeps_the_device_the_user_just_forgot() {
-        let dir = temp("tombstone-ring");
-        let (_, phone, desktop) = ids();
-        let stale: Vec<String> = (0..MAX_DISMISSED)
-            .map(|index| format!("{index:0width$}", width = ID_LEN))
-            .collect();
-        write_dismissed(&dir, &stale).unwrap();
-        write_peers(
-            &dir,
-            &[
-                PairedPeer {
-                    id: phone.clone(),
-                    name: "Phone".into(),
-                    kind: PeerKind::Phone,
-                    enabled: true,
-                    source: PeerSource::Direct,
-                },
-                PairedPeer {
-                    id: desktop.clone(),
-                    name: "Studio".into(),
-                    kind: PeerKind::Desktop,
-                    enabled: true,
-                    source: PeerSource::Phone,
-                },
-            ],
-        )
-        .unwrap();
-        assert!(forget_peer(&dir, &desktop).unwrap());
-        let dismissed = dismissed_peers(&dir);
-        assert_eq!(dismissed.len(), MAX_DISMISSED);
-        assert!(dismissed.contains(&desktop));
-        assert!(
-            !dismissed.contains(&stale[0]),
-            "the oldest tombstone is the one that goes"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_roster_that_no_longer_lists_a_desktop_clears_its_tombstone() {
-        let dir = temp("stale-tombstone");
-        let (local, phone, desktop) = ids();
-        write_peers(
-            &dir,
-            &[PairedPeer {
-                id: phone.clone(),
-                name: "Phone".into(),
-                kind: PeerKind::Phone,
-                enabled: true,
-                source: PeerSource::Direct,
-            }],
-        )
-        .unwrap();
-        write_dismissed(&dir, &[desktop.clone()]).unwrap();
         let listing = pb::PeerRoster {
             peers: vec![pb::PeerInfo {
                 device_id: desktop.clone(),
@@ -1547,18 +1438,18 @@ mod tests {
                 ..Default::default()
             }],
         };
-        // The phone still lists it, so the local tombstone keeps it out.
-        apply_phone_roster(&dir, &local, &phone, &listing).unwrap();
-        assert!(!peers(&dir).iter().any(|peer| peer.id == desktop));
-        assert_eq!(dismissed_peers(&dir), vec![desktop.clone()]);
-        // Once the phone forgets it too, the tombstone is stale and must not block a re-pair.
-        apply_phone_roster(&dir, &local, &phone, &pb::PeerRoster::default()).unwrap();
-        assert!(dismissed_peers(&dir).is_empty());
-        apply_phone_roster(&dir, &local, &phone, &listing).unwrap();
+        // Forgetting a sibling only on this PC is undone by the phone still listing it.
+        assert!(forget_peer(&dir, &desktop).unwrap());
+        assert!(apply_phone_roster(&dir, &local, &phone, &listing)
+            .unwrap()
+            .is_empty());
         assert!(peers(&dir).iter().any(|peer| peer.id == desktop));
+        // Forgetting it on the phone is what removes it here, with no local tombstone to clear.
+        let removed = apply_phone_roster(&dir, &local, &phone, &pb::PeerRoster::default()).unwrap();
+        assert_eq!(removed, vec![desktop.clone()]);
+        assert!(!peers(&dir).iter().any(|peer| peer.id == desktop));
         let _ = std::fs::remove_dir_all(&dir);
     }
-
     #[test]
     fn roster_is_only_accepted_from_the_paired_phone() {
         let dir = temp("roster-authority");
@@ -1720,7 +1611,6 @@ mod tests {
         std::fs::write(dir.join(PEER_NAME_FILE), "My phone").unwrap();
         std::fs::write(dir.join(PEERS_FILE), "registry").unwrap();
         std::fs::write(dir.join(SELECTED_FILE), "selected").unwrap();
-        std::fs::write(dir.join(DISMISSED_FILE), "dismissed").unwrap();
         std::fs::write(dir.join(STATUS_PEERS_FILE), "snapshot").unwrap();
         std::fs::write(
             dir.join("transfers.tsv"),
@@ -1741,7 +1631,7 @@ mod tests {
             std::fs::read_to_string(dir.join("transfers.tsv")).unwrap(),
             "transfer history must not change"
         );
-        for file in [PEER_FILE, PEERS_FILE, SELECTED_FILE, DISMISSED_FILE] {
+        for file in [PEER_FILE, PEERS_FILE, SELECTED_FILE, STATUS_PEERS_FILE] {
             assert!(!dir.join(file).exists(), "{file} survived the repair");
         }
         assert!(dir.join(PAIRING_MODEL_FILE).exists());

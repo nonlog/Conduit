@@ -29,7 +29,6 @@ const RELOAD_COMMAND: &str = "\0reload\0";
 const PAIR_START_COMMAND: &str = "\0pair-start\0";
 const PAIR_CANCEL_COMMAND: &str = "\0pair-cancel\0";
 const PAIR_FORGET_COMMAND: &str = "\0pair-forget\0";
-const PAIR_JOIN_COMMAND: &str = "\0pair-join\0";
 const LINK_PAUSE_COMMAND: &str = "\0link-disconnect\0";
 const LINK_RESUME_COMMAND: &str = "\0link-connect\0";
 const PEER_CONNECT_COMMAND: &str = "\0peer-connect\0";
@@ -76,8 +75,6 @@ pub enum PairAction {
     Cancel,
     /// `None` forgets every paired device; `Some(id)` forgets exactly one.
     Forget(Option<String>),
-    /// Joins another device's pairing code through its temporary Relay rendezvous.
-    Join(String),
     Disconnect,
     Connect,
     PeerConnect(String),
@@ -288,9 +285,6 @@ fn trust_action(request: &str) -> Option<PairAction> {
             if let Some(rest) = request.strip_prefix(PAIR_FORGET_COMMAND) {
                 let id = id(rest);
                 return Some(PairAction::Forget((!id.is_empty()).then_some(id)));
-            }
-            if let Some(rest) = request.strip_prefix(PAIR_JOIN_COMMAND) {
-                return Some(PairAction::Join(id(rest)));
             }
             if let Some(rest) = request.strip_prefix(PEER_CONNECT_COMMAND) {
                 return Some(PairAction::PeerConnect(id(rest)));
@@ -513,7 +507,6 @@ pub async fn pair(action: PairAction) -> Result<()> {
             Some(id) => simple_command(&format!("{PAIR_FORGET_COMMAND}{id}"), what).await,
             None => simple_command(PAIR_FORGET_COMMAND, what).await,
         },
-        PairAction::Join(code) => simple_command(&format!("{PAIR_JOIN_COMMAND}{code}"), what).await,
         PairAction::Disconnect => simple_command(LINK_PAUSE_COMMAND, what).await,
         PairAction::Connect => simple_command(LINK_RESUME_COMMAND, what).await,
         PairAction::PeerConnect(id) => {
@@ -604,13 +597,6 @@ mod tests {
         assert_eq!(
             trust_action(&format!("{PAIR_FORGET_COMMAND}studio")),
             Some(PairAction::Forget(Some("studio".into())))
-        );
-        assert_eq!(
-            trust_action(&format!("{PAIR_JOIN_COMMAND}12 34 56")).map(|action| match action {
-                PairAction::Join(code) => code,
-                other => panic!("unexpected {other:?}"),
-            }),
-            Some("12 34 56".into())
         );
         for (command, want) in [
             (PEER_CONNECT_COMMAND, "connect"),

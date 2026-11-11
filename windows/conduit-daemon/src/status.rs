@@ -178,12 +178,14 @@ impl StatusFile {
                 };
                 row.phone_route = if entry.paused {
                     "paused".into()
+                } else if !entry.online {
+                    String::new()
                 } else if entry.route.eq_ignore_ascii_case("lan") {
                     "lan".into()
                 } else if entry.route.eq_ignore_ascii_case("relay") {
                     "relay".into()
                 } else {
-                    String::new()
+                    "online".into()
                 };
             }
         });
@@ -366,6 +368,7 @@ mod tests {
             peers: vec![
                 crate::wire::pb::PeerInfo {
                     device_id: "studio".into(),
+                    online: true,
                     route: "LAN".into(),
                     ..Default::default()
                 },
@@ -384,6 +387,18 @@ mod tests {
         );
         assert!(lines[1].ends_with("\tlan"), "{body}");
         assert!(lines[0].ends_with("\tpaused"), "{body}");
+        // A sibling the phone reports as offline keeps no reported route.
+        status.phone_roster(&crate::wire::pb::PeerRoster {
+            peers: vec![crate::wire::pb::PeerInfo {
+                device_id: "studio".into(),
+                route: "LAN".into(),
+                ..Default::default()
+            }],
+        });
+        assert!(
+            read_peers(&dir).lines().nth(1).unwrap().ends_with('\t'),
+            "{body}"
+        );
         // The phone going away clears every reported phone route.
         status.disconnected("phone");
         let body = read_peers(&dir);

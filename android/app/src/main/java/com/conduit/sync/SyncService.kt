@@ -433,13 +433,13 @@ class SyncService : Service() {
         val live = connectedSnapshot
         rosterSent.keys.retainAll(live.map { it.first }.toSet())
         for ((id, session) in live) {
-            // A session that already closed would only produce an "offline" toast, not a roster.
             val delivered = rosterSent[id]
             val target = session to session.sessionGeneration
             if (!session.hasOpenSocket) continue
             if (delivered != null && delivered.first == target && delivered.second == roster) continue
-            rosterSent[id] = target to roster
-            session.sendRoster(roster)
+            if (session.sendRoster(roster)) {
+                rosterSent[id] = target to roster
+            }
         }
     }
 

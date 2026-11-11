@@ -385,7 +385,7 @@ async fn run() -> Result<()> {
             let dir = config_dir()?;
             std::fs::create_dir_all(&dir)?;
             let action = args.next().context(
-                "usage: conduit-daemon pair <status|start|cancel|forget [id]|join <code>|rekey-imported --confirm>",
+                "usage: conduit-daemon pair <status|start|cancel|forget [id]|rekey-imported --confirm>",
             )?;
             let confirmation = args.next();
             if action == "rekey-imported" {
@@ -409,24 +409,12 @@ async fn run() -> Result<()> {
                 println!("Restart Conduit and pair the phone to this computer again.");
                 return Ok(());
             }
-            if action == "join" {
-                let code = confirmation
-                    .context("usage: conduit-daemon pair join <code>")?
-                    .to_string_lossy()
-                    .into_owned();
-                if args.next().is_some() {
-                    bail!("usage: conduit-daemon pair join <code>");
-                }
-                control::pair(control::PairAction::Join(code.clone())).await?;
-                println!("Joining pairing code {}.", pairing::format_code(&code));
-                return Ok(());
-            }
             let target = confirmation
                 .as_ref()
                 .filter(|_| action == "forget")
                 .map(|value| value.to_string_lossy().into_owned());
             if confirmation.is_some() && action != "forget" {
-                bail!("usage: conduit-daemon pair <status|start|cancel|forget|join <code>|rekey-imported --confirm>");
+                bail!("usage: conduit-daemon pair <status|start|cancel|forget|rekey-imported --confirm>");
             }
             match action.to_string_lossy().as_ref() {
                 "status" => {
@@ -505,7 +493,7 @@ async fn run() -> Result<()> {
                         println!("Paired devices updated; no daemon is currently running.");
                     }
                 },
-                _ => bail!("usage: conduit-daemon pair <status|start|cancel|forget [id]|join <code>|rekey-imported --confirm>"),
+                _ => bail!("usage: conduit-daemon pair <status|start|cancel|forget [id]|rekey-imported --confirm>"),
             }
             return Ok(());
         }
@@ -615,16 +603,16 @@ async fn run() -> Result<()> {
             return Ok(());
         }
         bail!(
-            "unknown command {:?}; usage: conduit-daemon [send [--to <id>] <file> | share-url [--to <id>] <url> [title] | status | pair <status|start|cancel|forget [id]|join <code>> | peer <connect|disconnect|select|forget> <id> | autostart <install|remove|status> | explorer <install|remove|status> | config ...]",
+            "unknown command {:?}; usage: conduit-daemon [send [--to <id>] <file> | share-url [--to <id>] <url> [title] | status | pair <status|start|cancel|forget [id]|rekey-imported --confirm> | peer <connect|disconnect|select|forget> <id> | autostart <install|remove|status> | explorer <install|remove|status> | config ...]",
             command
         );
     }
 
     let dir = config_dir()?;
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let (listener, desktop_status) = claim_instance(&dir, PORT).await?;
     let user_config = config::Config::load(&dir)?;
     let mut link_enabled = link_intent::load(&dir)?;
-    let desktop_status = Arc::new(status::StatusFile::new(&dir)?);
     desktop_status
         .transfers
         .set_link_enabled(link_enabled, || Ok(()))?;
@@ -636,16 +624,6 @@ async fn run() -> Result<()> {
     let device_id = wire::device_id(&identity.public);
     let fingerprint = wire::fingerprint(&identity.public);
     info!(id = %device_id, %fingerprint, "identity");
-
-    // Bind before creating clipboard/toast/control workers. Besides being the LAN listener, this
-    // is the process's zero-extra-resource single-instance gate: a manual launch racing the Run
-    // entry exits here before it can own any long-lived Conduit resource.
-    let listener = TcpListener::bind(("0.0.0.0", PORT))
-        .await
-        .with_context(|| {
-            format!("binding Conduit listener on port {PORT}; is another daemon running?")
-        })?;
-    info!(port = PORT, "listening");
 
     let history = notification_history::History::new(&dir, user_config.retention_days())?;
     user_config.publish_effective(&dir, DEFAULT_RELAYS)?;
@@ -765,7 +743,6 @@ async fn run() -> Result<()> {
     let mut candidates = tokio::task::JoinSet::<Result<CandidateSession>>::new();
     let mut admission_generation = admission::Generation::default();
     let mut generations: u64 = 0;
-    let mut join_task: Option<tokio::task::JoinHandle<()>> = None;
     let (dial_tx, mut dial_rx) = mpsc::channel::<Result<CandidateSession>>(4);
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<DaemonEvent>();
     info!(
@@ -915,10 +892,6 @@ async fn run() -> Result<()> {
                                 if let Err(error) = pairing::cancel(&dir) {
                                     warn!(%error, "could not remove pairing window; paused admission still blocks it");
                                 }
-                                if let Some(previous) = join_task.take() {
-                                    previous.abort();
-                                    let _ = previous.await;
-                                }
                                 stop_workers(&mut relay_tasks).await;
                                 stop_workers(&mut pairing_relay_tasks).await;
                                 (relay_tasks, relay_rx) = empty_relay_workers();
@@ -959,10 +932,6 @@ async fn run() -> Result<()> {
                     }
                     control::PairAction::Start => match pairing::start(&dir) {
                         Ok(window) => {
-                            if let Some(previous) = join_task.take() {
-                                previous.abort();
-                                let _ = previous.await;
-                            }
                             stop_workers(&mut pairing_relay_tasks).await;
                             let (tasks, rx) = start_pairing_relay_workers(
                                 &relay_endpoints,
@@ -977,37 +946,7 @@ async fn run() -> Result<()> {
                         }
                         Err(e) => Err(format!("{e:#}")),
                     },
-                    control::PairAction::Join(_) if !link_enabled => {
-                        Err("Connection is paused. Connect before joining pairing.".into())
-                    }
-                    control::PairAction::Join(code) => match pairing::join(&dir, &code) {
-                        Ok(window) => {
-                            if let Some(previous) = join_task.take() {
-                                previous.abort();
-                                let _ = previous.await;
-                            }
-                            stop_workers(&mut pairing_relay_tasks).await;
-                            (pairing_relay_tasks, pairing_relay_rx) = empty_relay_workers();
-                            info!(code = %pairing::format_code(&window.code), "joining a pairing code");
-                            join_task = Some(tokio::spawn(join_pairing(
-                                window.rendezvous,
-                                window.code,
-                                device_id.clone(),
-                                identity.private.clone(),
-                                dir.clone(),
-                                relay_endpoints.clone(),
-                                relay_proxy.clone(),
-                                dial_tx.clone(),
-                            )));
-                            Ok(())
-                        }
-                        Err(e) => Err(format!("{e:#}")),
-                    },
                     control::PairAction::Cancel => {
-                        if let Some(previous) = join_task.take() {
-                            previous.abort();
-                            let _ = previous.await;
-                        }
                         let result = pairing::cancel(&dir).map(|_| ()).map_err(|e| format!("{e:#}"));
                         if result.is_ok() {
                             stop_workers(&mut pairing_relay_tasks).await;
@@ -1037,10 +976,6 @@ async fn run() -> Result<()> {
                             if result.is_ok() {
                                 stop_workers(&mut pairing_relay_tasks).await;
                                 (pairing_relay_tasks, pairing_relay_rx) = empty_relay_workers();
-                                if let Some(previous) = join_task.take() {
-                                    previous.abort();
-                                    let _ = previous.await;
-                                }
                                 let _ = pair_session_tx.send(control::PairAction::Forget(None));
                                 wait_for_all_sessions(&active_sessions, FORGET_GRACE).await;
                                 stop_sessions(&mut active_sessions, None).await;
@@ -1374,10 +1309,6 @@ async fn run() -> Result<()> {
     candidates.shutdown().await;
     stop_sessions(&mut active_sessions, None).await;
     stop_dialers(&mut dialers);
-    if let Some(previous) = join_task.take() {
-        previous.abort();
-        let _ = previous.await;
-    }
     stop_workers(&mut pairing_relay_tasks).await;
     stop_workers(&mut relay_tasks).await;
     desktop_status.set_peers(
@@ -2201,6 +2132,12 @@ async fn serve(
                         if !removed.is_empty() {
                             info!(removed = ?removed, "phone dropped paired devices");
                         }
+                        // The rows must exist before the roster decorates them with the phone's
+                        // reported route, which is exactly the first delivery of a new sibling.
+                        desktop_status.set_peers(
+                            &pairing::peers(data_dir),
+                            pairing::selected_peer(data_dir).as_deref(),
+                        );
                         desktop_status.phone_roster(&roster);
                         let _ = end_tx.send(DaemonEvent::PeersChanged);
                     }
@@ -2729,51 +2666,24 @@ async fn run_dialer(
     }
 }
 
-/// `pair join <code>`: one dial of each Relay endpoint's temporary pairing rendezvous, as the
-/// initiator. A rejected handshake is final — retrying it would spend the other side's five
-/// pairing attempts and close the window the user just opened.
-async fn join_pairing(
-    rendezvous: String,
-    code: String,
-    local_id: String,
-    private_key: Vec<u8>,
-    dir: PathBuf,
-    endpoints: Vec<String>,
-    proxy: Option<String>,
-    tx: mpsc::Sender<Result<CandidateSession>>,
-) {
-    for endpoint in &endpoints {
-        if !pairing::state(&dir).pairing {
-            return;
-        }
-        let stream = match wire::dial_relay(endpoint, &rendezvous, proxy.as_deref()).await {
-            Ok(stream) => stream,
-            Err(error) => {
-                warn!(%endpoint, error = %error, "pairing rendezvous unreachable");
-                continue;
-            }
-        };
-        match dial_stream(
-            stream,
-            "relay-pair",
-            Some(endpoint.clone()),
-            &local_id,
-            &private_key,
-            Some(&code),
-        )
-        .await
-        {
-            Ok(candidate) => {
-                let _ = tx.send(Ok(candidate)).await;
-                return;
-            }
-            Err(error) => warn!(%endpoint, error = %error, "pairing handshake failed"),
-        }
-    }
-}
-
 fn config_dir() -> Result<PathBuf> {
     data_dir::resolve()
+}
+
+/// Claims the daemon listener and then the derived status files, in that order.
+///
+/// The listener is the process's zero-extra-resource single-instance gate, so it must come first:
+/// a duplicate manual launch racing the Run entry then exits owning no long-lived resource and,
+/// critically, without rewriting `status.txt` and `peers.tsv` to their empty startup state.
+async fn claim_instance(dir: &Path, port: u16) -> Result<(TcpListener, Arc<status::StatusFile>)> {
+    let listener = TcpListener::bind(("0.0.0.0", port))
+        .await
+        .with_context(|| {
+            format!("binding Conduit listener on port {port}; is another daemon running?")
+        })?;
+    info!(port, "listening");
+    let status = Arc::new(status::StatusFile::new(dir)?);
+    Ok((listener, status))
 }
 
 /// A queued cancellation is an expected user action, not a stale-queue protocol failure.
@@ -3059,76 +2969,126 @@ mod peer_tests {
     }
 
     #[tokio::test]
-    async fn a_starting_daemon_and_a_joining_daemon_pair_end_to_end() {
-        let dir_a = temp_dir("pair-a");
-        let dir_b = temp_dir("pair-b");
+    async fn a_duplicate_launch_fails_before_rewriting_the_status_files() {
+        let dir = temp_dir("single-instance");
+        let status = "state=linked\nlink_enabled=true\n";
+        let peers = "phone\tPhone\tphone\tconnected\tlan\n";
+        std::fs::write(dir.join("status.txt"), status).unwrap();
+        std::fs::write(dir.join("peers.tsv"), peers).unwrap();
+        // A stand-in for the resident daemon owns the port, so this launch is the duplicate.
+        let resident = TcpListener::bind(("0.0.0.0", 0)).await.unwrap();
+        let port = resident.local_addr().unwrap().port();
+        let error = claim_instance(&dir, port)
+            .await
+            .err()
+            .expect("the second bind must fail");
+        assert!(format!("{error:#}").contains("another daemon"), "{error:#}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("status.txt")).unwrap(),
+            status
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("peers.tsv")).unwrap(),
+            peers
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_sibling_with_the_code_is_refused_and_a_roster_entry_is_trusted() {
+        let dir_a = temp_dir("mesh-a");
+        let dir_b = temp_dir("mesh-b");
         let identity_a = wire::load_or_create_identity(&dir_a.join("identity.bin")).unwrap();
         let identity_b = wire::load_or_create_identity(&dir_b.join("identity.bin")).unwrap();
         let id_a = wire::device_id(&identity_a.public);
         let id_b = wire::device_id(&identity_b.public);
-        // A shows the code, B enters it: both derive the same rendezvous and the same proof.
-        let window_a = pairing::start(&dir_a).unwrap();
-        let window_b = pairing::join(&dir_b, &window_a.code).unwrap();
+        let window = pairing::start(&dir_a).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        // Two accepts: the refused pairing attempt, then the roster-trusted reconnect.
+        let (inbound_tx, mut inbound_rx) = mpsc::channel::<admission::Negotiated>(2);
+        let listening_id = id_a.clone();
+        let listening_dir = dir_a.clone();
         let responder = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let hello_dir = dir_a.clone();
-            let hello_id = id_a.clone();
-            let hello_for = |remote: &str| inbound_hello(&hello_dir, &hello_id, remote);
-            let negotiated =
-                admission::negotiate_with(&mut stream, &identity_a.private, false, hello_for)
-                    .await
-                    .unwrap();
-            (dir_a, id_a, negotiated)
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let hello_for = |remote: &str| inbound_hello(&listening_dir, &listening_id, remote);
+                let negotiated =
+                    admission::negotiate_with(&mut stream, &identity_a.private, false, hello_for)
+                        .await
+                        .unwrap();
+                inbound_tx.send(negotiated).await.unwrap();
+            }
         });
-        // B dials as the initiator, exactly like `pair join`.
+        // B enters A's code and dials, which is all the old `pair join` did.
         let stream = TcpStream::connect(addr).await.unwrap();
-        let candidate = dial_stream(
+        dial_stream(
             stream,
             "lan",
             None,
             &id_b,
             &identity_b.private,
-            Some(&window_b.code),
+            Some(&window.code),
         )
         .await
         .unwrap();
-        let (dir_a, id_a, inbound) = responder.await.unwrap();
-
-        // Each side authorizes the other from the initiator's point of view, so the responder
-        // verifies (B, A) and the joining side verifies the very same digest for itself.
-        let (authorization, kind) =
+        let inbound = inbound_rx.recv().await.unwrap();
+        let error =
             pairing::authorize_candidate(&dir_a, &id_a, &id_b, "lan", false, &inbound.hello)
-                .unwrap();
-        assert_eq!(
-            (authorization, kind),
-            (pairing::Authorization::Paired, pairing::PeerKind::Desktop)
+                .unwrap_err();
+        assert!(
+            error.to_string().contains("computers do not pair"),
+            "{error:#}"
         );
-        pairing::confirm(&dir_a, &id_b, kind, authorization, "Work PC").unwrap();
-        let (authorization, kind) = pairing::authorize_candidate(
-            &dir_b,
-            &id_b,
-            &id_a,
-            "lan",
-            true,
-            &candidate.negotiated.hello,
+        assert!(pairing::peers(&dir_a).is_empty());
+
+        // The phone is the only way in: it lists B, and B's ordinary reconnect is then trusted.
+        let phone = "P".repeat(43);
+        pairing::confirm(
+            &dir_a,
+            &phone,
+            pairing::PeerKind::Phone,
+            pairing::Authorization::Paired,
+            "Phone",
         )
         .unwrap();
+        pairing::apply_phone_roster(
+            &dir_a,
+            &id_a,
+            &phone,
+            &pb::PeerRoster {
+                peers: vec![pb::PeerInfo {
+                    device_id: id_b.clone(),
+                    device_name: "Work PC".into(),
+                    device_kind: pb::DeviceKind::Desktop as i32,
+                    online: true,
+                    ..Default::default()
+                }],
+            },
+        )
+        .unwrap();
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let candidate = dial_stream(stream, "lan", None, &id_b, &identity_b.private, None)
+            .await
+            .unwrap();
+        let (authorization, kind) = pairing::authorize_candidate(
+            &dir_a,
+            &id_a,
+            &id_b,
+            "lan",
+            false,
+            &inbound_rx
+                .recv()
+                .await
+                .expect("the reconnect is negotiated")
+                .hello,
+        )
+        .unwrap();
+        responder.await.unwrap();
+        assert_eq!(candidate.negotiated.remote_id, id_a);
         assert_eq!(
             (authorization, kind),
-            (pairing::Authorization::Paired, pairing::PeerKind::Desktop)
-        );
-        pairing::confirm(&dir_b, &id_a, kind, authorization, "Home PC").unwrap();
-        assert!(pairing::peers(&dir_a).iter().any(|peer| peer.id == id_b));
-        assert!(pairing::peers(&dir_b).iter().any(|peer| peer.id == id_a));
-        assert_eq!(
-            pairing::selected_peer(&dir_a).as_deref(),
-            Some(id_b.as_str())
-        );
-        assert_eq!(
-            pairing::selected_peer(&dir_b).as_deref(),
-            Some(id_a.as_str())
+            (pairing::Authorization::Trusted, pairing::PeerKind::Desktop)
         );
         let _ = std::fs::remove_dir_all(&dir_a);
         let _ = std::fs::remove_dir_all(&dir_b);

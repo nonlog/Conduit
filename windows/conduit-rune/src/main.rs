@@ -218,7 +218,6 @@ struct Ui {
     manual_proxy: TextEdit,
     receive_dir: TextEdit,
     share_link: TextEdit,
-    join_code: TextEdit,
     proxy_mode: String,
     tray_icon: bool,
     settings_dirty: bool,
@@ -262,7 +261,6 @@ impl Ui {
             manual_proxy: TextEdit::new(snap.settings.manual_proxy.clone()),
             receive_dir: TextEdit::new(snap.settings.receive_dir.clone()),
             share_link: TextEdit::new(""),
-            join_code: TextEdit::new(""),
             proxy_mode: snap.settings.proxy_mode.clone(),
             tray_icon: snap.settings.tray_icon,
             snap,
@@ -568,31 +566,11 @@ impl Ui {
     fn peer_command(&mut self, action: &'static str, id: String) {
         let (message, success) = match action {
             "select" => ("Updating send target", "Send target updated"),
-            "forget" => ("Forgetting device", "Device unpaired"),
             "connect" => ("Connecting computer", "Computer connection enabled"),
             _ => ("Disconnecting computer", "Computer disconnected"),
         };
         self.operation_as(message, success, move || {
             bridge::daemon_command(&["peer", action, &id]).map(|_| ())
-        });
-    }
-
-    fn join_pairing(&mut self) {
-        let code: String = self
-            .join_code
-            .text
-            .chars()
-            .filter(char::is_ascii_digit)
-            .collect();
-        if code.len() != 6 {
-            self.show_notice(
-                "Enter the six-digit code shown on the other computer",
-                NoticeKind::Error,
-            );
-            return;
-        }
-        self.operation_as("Joining pairing", "Pairing request sent", move || {
-            bridge::daemon_command(&["pair", "join", &code]).map(|_| ())
         });
     }
 
@@ -2152,7 +2130,8 @@ fn pairing(ui: &Ui, paint: Paint) -> El {
             ),
         );
     } else {
-        if ui.snap.peers.is_empty() {
+        let phones = ui.snap.peers.iter().filter(|peer| peer.kind == "phone");
+        if phones.clone().next().is_none() {
             content = content.child(
                 muted(
                     "Connect your Android phone using a QR code or six-digit code.",
@@ -2162,18 +2141,11 @@ fn pairing(ui: &Ui, paint: Paint) -> El {
             );
         }
         let mut devices = col().key("paired-devices").w_full().gap(10.0);
-        for peer in &ui.snap.peers {
-            let phone = peer.kind == "phone";
+        for peer in phones {
             let id = peer.id.clone();
             let (state, reachable) = peer_route_label(peer);
-            let forget = if phone {
-                "forget".to_owned()
-            } else {
-                format!("forget-peer-{id}")
-            };
-            let confirming = ui.confirm.as_deref() == Some(forget.as_str());
+            let confirming = ui.confirm.as_deref() == Some("forget-pair");
             let toggle_target = id.clone();
-            let forget_target = id.clone();
             let enabled = peer.enabled;
             devices = devices.child(tonal_block(
                 paint,
@@ -2182,17 +2154,7 @@ fn pairing(ui: &Ui, paint: Paint) -> El {
                     .w_full()
                     .center_y()
                     .gap(12.0)
-                    .child(
-                        icon(
-                            if phone {
-                                &icons::SMARTPHONE
-                            } else {
-                                &icons::MONITOR
-                            },
-                            25.0,
-                        )
-                        .color(paint.accent),
-                    )
+                    .child(icon(&icons::SMARTPHONE, 25.0).color(paint.accent))
                     .child(
                         col()
                             .grow(1.0)
@@ -2208,14 +2170,7 @@ fn pairing(ui: &Ui, paint: Paint) -> El {
                                 row()
                                     .gap(8.0)
                                     .center_y()
-                                    .child(muted(
-                                        if phone {
-                                            "Trusted phone"
-                                        } else {
-                                            "Paired computer"
-                                        },
-                                        paint,
-                                    ))
+                                    .child(muted("Trusted phone", paint))
                                     .child(tag(state, paint, reachable)),
                             ),
                     )
@@ -2232,11 +2187,7 @@ fn pairing(ui: &Ui, paint: Paint) -> El {
                         },
                     ))
                     .child(button(
-                        if phone {
-                            "forget-pair".to_owned()
-                        } else {
-                            format!("forget-peer-{id}")
-                        },
+                        "forget-pair",
                         if confirming {
                             "Confirm unpair"
                         } else {
@@ -2244,18 +2195,13 @@ fn pairing(ui: &Ui, paint: Paint) -> El {
                         },
                         paint,
                         confirming,
-                        move |ui| {
-                            if !ui.confirm_action(&forget) {
+                        |ui| {
+                            if !ui.confirm_action("forget-pair") {
                                 return;
                             }
-                            let target = forget_target.clone();
-                            if phone {
-                                ui.operation("Forgetting device", || {
-                                    bridge::daemon_command(&["pair", "forget"]).map(|_| ())
-                                });
-                            } else {
-                                ui.peer_command("forget", target);
-                            }
+                            ui.operation("Forgetting device", || {
+                                bridge::daemon_command(&["pair", "forget"]).map(|_| ())
+                            });
                         },
                     )),
             ));
@@ -2272,60 +2218,10 @@ fn pairing(ui: &Ui, paint: Paint) -> El {
                 })
             },
         )));
-        content = content.child(tonal_block(
-            paint,
-            col()
-                .w_full()
-                .gap(10.0)
-                .child(heading("Connect to another computer", paint))
-                .child(
-                    muted(
-                        "Open Pairing on the other computer and enter its six-digit code here.",
-                        paint,
-                    )
-                    .max_lines(2),
-                )
-                .child(
-                    row()
-                        .w_full()
-                        .center_y()
-                        .gap(10.0)
-                        .child(
-                            row()
-                                .role("textbox")
-                                .w(150.0)
-                                .h(40.0)
-                                .px(12.0)
-                                .center_y()
-                                .fill(paint.inset)
-                                .radius(10.0)
-                                .continuous_corners()
-                                .child(
-                                    text_input(&ui.join_code, type_::BODY)
-                                        .key("join-pair-input")
-                                        .w_full()
-                                        .single_line()
-                                        .placeholder("000000", paint.t.text_secondary)
-                                        .label("Six-digit pairing code")
-                                        .color(paint.t.text)
-                                        .caret(paint.accent, paint.accent.alpha(0.22))
-                                        .on_edit(|ui: &mut Ui| &mut ui.join_code),
-                                ),
-                        )
-                        .child(action_button(
-                            "join-pair-submit",
-                            "Pair computer",
-                            Some(&icons::MONITOR),
-                            paint,
-                            false,
-                            |ui| ui.join_pairing(),
-                        )),
-                ),
-        ));
     }
     content = content.child(
         muted(
-            "Each computer needs its own identity. Do not copy identity.bin between PCs.",
+            "Other computers paired with your phone appear automatically on Overview — no PC-to-PC pairing needed.",
             paint,
         )
         .w_full()
@@ -3006,12 +2902,18 @@ fn about(ui: &Ui, paint: Paint) -> El {
 }
 
 fn peer_route_label(peer: &bridge::PeerDevice) -> (&'static str, bool) {
+    if !peer.enabled || peer.state == "paused" {
+        return ("Paused", false);
+    }
+    let route = peer.route.to_ascii_lowercase();
     match peer.state.as_str() {
-        "connected" if peer.route.to_ascii_lowercase().contains("relay") => ("Relay", true),
-        "connected" if peer.route.to_ascii_lowercase().contains("lan") => ("Direct LAN", true),
+        "connected" if route.contains("lan") => ("Direct LAN", true),
+        "connected" if route.contains("relay") => ("Direct Relay", true),
         "connected" => ("Connected", true),
+        _ if matches!(peer.phone_route.as_str(), "lan" | "relay" | "online") => {
+            ("Online via phone", true)
+        }
         "connecting" => ("Connecting", false),
-        "paused" => ("Paused", false),
         _ => ("Offline", false),
     }
 }
@@ -3025,7 +2927,7 @@ fn other_computers(ui: &Ui, paint: Paint) -> El {
         .collect();
     let online = desktops
         .iter()
-        .filter(|peer| peer.state == "connected")
+        .filter(|peer| peer_route_label(peer).1)
         .count();
     let mut rows = col().key("other-computer-rows").w_full().gap(10.0);
     for peer in desktops {
@@ -3044,7 +2946,9 @@ fn other_computers(ui: &Ui, paint: Paint) -> El {
             .gap(8.0)
             .center_y()
             .child(tag(state, paint, reachable));
-        if !peer.phone_route.is_empty() {
+        if state != "Online via phone"
+            && matches!(peer.phone_route.as_str(), "lan" | "relay" | "online")
+        {
             detail = detail.child(muted("Online via phone", paint));
         }
         let identity = col()
@@ -3119,7 +3023,7 @@ fn other_computers(ui: &Ui, paint: Paint) -> El {
                     .child(section_heading(
                         &icons::MONITOR,
                         "Other computers",
-                        "Send files and links to a paired PC",
+                        "Synced from your phone · direct encrypted transfer",
                         paint,
                     ))
                     .child(tag(format!("{online} online"), paint, online > 0)),
@@ -3863,6 +3767,14 @@ fn main() {
 mod tests {
     use super::*;
 
+    /// Every text the last frame drew, for assertions about what a user can read.
+    fn texts(rt: &Runtime<Ui>) -> Vec<String> {
+        rt.elements()
+            .iter()
+            .filter_map(|el| el.text.clone())
+            .collect()
+    }
+
     #[test]
     fn operation_success_expires_and_navigation_cannot_revive_a_stale_banner() {
         let mut ui = Ui::init();
@@ -4218,7 +4130,7 @@ mod tests {
     }
 
     #[test]
-    fn pairing_lists_every_paired_device_with_join_and_share_inputs() {
+    fn pairing_page_shows_only_phone_controls_and_no_join_field() {
         for size in [(760.0, 510.0), (1020.0, 605.0)] {
             let mut ui = Ui::init();
             qa_multipeer(&mut ui);
@@ -4229,41 +4141,45 @@ mod tests {
             rt.frame(1.0 / 60.0);
             for key in [
                 "paired-qa-phone",
-                "paired-qa-studio",
                 "pair-toggle-qa-phone",
-                "pair-toggle-qa-studio",
                 "forget-pair",
-                "forget-peer-qa-studio",
-                "join-pair-input",
-                "join-pair-submit",
                 "start-pair",
             ] {
                 assert!(rt.find(key).is_some(), "missing {key} at {size:?}");
             }
+            // Computers pair with the phone, never with this PC.
+            for key in [
+                "paired-qa-studio",
+                "pair-toggle-qa-studio",
+                "forget-peer-qa-studio",
+                "join-pair-input",
+                "join-pair-submit",
+            ] {
+                assert!(rt.find(key).is_none(), "unexpected {key} at {size:?}");
+            }
+            let shown = texts(&rt);
+            assert!(shown.iter().any(|t| t == "Trusted phone"));
+            for absent in [
+                "Paired computer",
+                "Connect to another computer",
+                "Pair computer",
+            ] {
+                assert!(!shown.iter().any(|t| t == absent), "unexpected {absent}");
+            }
         }
+        // Unpairing the phone still takes two deliberate presses.
         let mut ui = Ui::init();
         qa_multipeer(&mut ui);
         ui.page = Page::Pairing;
         ui.snap.pairing.active = false;
-        // Tall enough that the join field is not below the scroll fold.
         let mut rt = Runtime::new(ui, view, (1020.0, 1000.0), Env::new(true, 1.0));
         rt.frame(0.0);
-        let (x, y) = rt.find("join-pair-input").expect("join field");
-        rt.pointer_down(x, y);
-        rt.pointer_up(x, y);
-        rt.key(KeyEvent {
-            key: Key::Text("123456".into()),
-            mods: rune::Mods::default(),
-        });
-        rt.frame(1.0 / 30.0);
-        assert_eq!(rt.state.join_code.text, "123456");
-        // Unpairing a computer takes two deliberate presses.
-        let (x, y) = rt.find("forget-peer-qa-studio").expect("forget button");
+        let (x, y) = rt.find("forget-pair").expect("forget button");
         rt.pointer_down(x, y);
         rt.pointer_up(x, y);
         rt.frame(0.1);
-        assert_eq!(rt.state.confirm.as_deref(), Some("forget-peer-qa-studio"));
-        assert!(rt.find("paired-qa-studio").is_some());
+        assert_eq!(rt.state.confirm.as_deref(), Some("forget-pair"));
+        assert!(rt.find("paired-qa-phone").is_some());
     }
 
     #[test]
@@ -4276,6 +4192,7 @@ mod tests {
         rt.frame(0.0);
         assert!(rt.find("pairing-qr").is_some());
         assert!(rt.find("join-pair-input").is_none());
+        assert!(rt.find("paired-qa-phone").is_none());
     }
 
     #[test]
@@ -4301,25 +4218,89 @@ mod tests {
 
     #[test]
     fn peer_route_labels_cover_every_reported_state() {
-        let peer = |state: &str, route: &str| bridge::PeerDevice {
+        let peer = |state: &str, route: &str, phone_route: &str| bridge::PeerDevice {
             state: state.into(),
             route: route.into(),
+            phone_route: phone_route.into(),
+            enabled: true,
             ..Default::default()
         };
         assert_eq!(
-            peer_route_label(&peer("connected", "lan")),
+            peer_route_label(&peer("connected", "lan", "")),
             ("Direct LAN", true)
         );
         assert_eq!(
-            peer_route_label(&peer("connected", "relay")),
-            ("Relay", true)
+            peer_route_label(&peer("connected", "relay", "")),
+            ("Direct Relay", true)
         );
         assert_eq!(
-            peer_route_label(&peer("connecting", "")),
+            peer_route_label(&peer("connected", "", "")),
+            ("Connected", true)
+        );
+        assert_eq!(
+            peer_route_label(&peer("connecting", "", "")),
             ("Connecting", false)
         );
-        assert_eq!(peer_route_label(&peer("paused", "")), ("Paused", false));
-        assert_eq!(peer_route_label(&peer("offline", "")), ("Offline", false));
+        assert_eq!(peer_route_label(&peer("paused", "", "")), ("Paused", false));
+        assert_eq!(
+            peer_route_label(&peer("offline", "", "")),
+            ("Offline", false)
+        );
+        // The phone's roster is the only reachability signal for a synced computer.
+        for route in ["lan", "relay", "online"] {
+            assert_eq!(
+                peer_route_label(&peer("offline", "", route)),
+                ("Online via phone", true)
+            );
+        }
+        assert_eq!(
+            peer_route_label(&bridge::PeerDevice {
+                state: "connected".into(),
+                route: "lan".into(),
+                ..Default::default()
+            }),
+            ("Paused", false)
+        );
+    }
+
+    #[test]
+    fn other_computers_sync_from_the_phone_and_never_ask_for_pc_pairing() {
+        let mut ui = Ui::init();
+        qa_multipeer(&mut ui);
+        // A computer the phone reaches over Relay, not over a session with this PC.
+        ui.snap.peers.push(bridge::PeerDevice {
+            id: "qa-remote".into(),
+            name: "Remote desktop".into(),
+            kind: "desktop".into(),
+            state: "offline".into(),
+            enabled: true,
+            phone_route: "relay".into(),
+            ..Default::default()
+        });
+        let mut rt = Runtime::new(ui, view, (1020.0, 605.0), Env::new(true, 1.0));
+        rt.frame(0.0);
+        rt.frame(1.0 / 60.0);
+        assert!(rt.find("peer-row-qa-remote").is_some());
+        let shown = texts(&rt);
+        assert!(
+            shown
+                .iter()
+                .any(|t| t == "Synced from your phone · direct encrypted transfer"),
+            "missing sync subtitle: {shown:?}"
+        );
+        assert!(shown.iter().any(|t| t == "Direct LAN"));
+        // Each synced computer says it once: as its state tag when the phone is the only
+        // route, or as muted detail next to a direct route.
+        assert_eq!(
+            shown
+                .iter()
+                .filter(|t| t.as_str() == "Online via phone")
+                .count(),
+            2,
+            "Online via phone found more than once per computer: {shown:?}"
+        );
+        assert!(!shown.iter().any(|t| t == "Offline"));
+        assert!(rt.find("send-peer-qa-remote").is_some());
     }
 
     #[test]
