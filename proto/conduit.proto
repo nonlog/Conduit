@@ -21,6 +21,7 @@ enum Kind {
   PONG               = 2;
   PAIR_REQUEST       = 3;
   PAIR_RESPONSE      = 4;
+  PEER_ROSTER        = 5;
   CLIP_TEXT          = 10;
   CLIP_IMAGE_HEADER  = 11;
   CLIP_IMAGE_CHUNK   = 12;
@@ -50,19 +51,43 @@ message Envelope {
 // peer is who it claims — so nothing answers it. The phone has no way to learn the
 // desktop's name otherwise: mDNS carries it, but a relay session never sees an mDNS
 // record, and that is exactly the case where the name matters most.
+enum DeviceKind {
+  DEVICE_KIND_UNSPECIFIED = 0; // treated as PHONE on Windows, DESKTOP on Android for v0.1.21 compatibility
+  DEVICE_KIND_PHONE       = 1;
+  DEVICE_KIND_DESKTOP     = 2;
+}
+
 message PairRequest {
-  string device_id   = 1;  // BASE64URL(SHA256(static_pub)), lowercase
-  string device_name = 2;
-  bytes  static_pub  = 3;  // empty over an established session: the handshake carried it
-  string version     = 4;
-  bytes  wallpaper_hash = 5;  // SHA-256 of the cached desktop preview; empty means missing
-  bool   pairing       = 6;  // true only during a user-opened two-minute LAN pairing window
-  uint32 transfer_protocol = 7; // 1: FileResult in both directions and targeted FileCancel; 0: legacy
+  string     device_id         = 1;  // BASE64URL(SHA256(static_pub)), lowercase
+  string     device_name       = 2;
+  bytes      static_pub        = 3;  // empty over an established session: the handshake carried it
+  string     version           = 4;
+  bytes      wallpaper_hash    = 5;  // SHA-256 of the cached desktop preview; empty means missing
+  bool       pairing           = 6;  // true only during a user-opened two-minute LAN pairing window
+  uint32     transfer_protocol = 7;  // 1: FileResult in both directions and targeted FileCancel; 0: legacy
+  DeviceKind device_kind       = 8;  // endpoint form factor; never trusted to escalate Phone privileges
+  bytes      pairing_proof     = 9;  // SHA-256("conduit-pair-proof-v1:" + code + ":" + initiator_id + ":" + responder_id)
 }
 
 message PairResponse {
   bool  accept     = 1;  // false on an authenticated live session means "forget this pairing"
   bytes static_pub = 2;  // reserved for compatibility with the original pairing sketch
+}
+
+// Sent by the trusted phone whenever its paired-desktop roster or connection state changes.
+// Desktops accept this only from their pinned phone identity; live PC-to-PC sessions still
+// authenticate each desktop's Noise static key directly.
+message PeerInfo {
+  string     device_id   = 1;
+  string     device_name = 2;
+  DeviceKind device_kind = 3;
+  bool       online      = 4;
+  string     route       = 5;  // "LAN", "Relay", or ""
+  bool       paused      = 6;
+}
+
+message PeerRoster {
+  repeated PeerInfo peers = 1;
 }
 
 // --- clipboard ---

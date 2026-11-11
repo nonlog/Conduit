@@ -858,6 +858,8 @@ async fn run() -> Result<()> {
                     wallpaper_hash: wallpaper::cached_hash(&dir),
                     pairing: pairing::state(&dir).pairing,
                     transfer_protocol: 1,
+                    device_kind: pb::DeviceKind::Desktop as i32,
+                    pairing_proof: Vec::new(),
                 };
                 candidates.spawn(async move {
                     stream.set_nodelay(true)?;
