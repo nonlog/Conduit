@@ -197,6 +197,8 @@ impl TransferFilter {
 
 struct Ui {
     page: Page,
+    /// `None` follows the window width; `Some` is the sidebar state the user chose.
+    sidebar_collapsed: Option<bool>,
     snap: bridge::Snapshot,
     image_cache: Option<ImageCache>,
     wallpaper: Option<Image>,
@@ -239,6 +241,7 @@ impl Ui {
             } else {
                 Page::Overview
             },
+            sidebar_collapsed: None,
             search: TextEdit::new(""),
             transfer_filter: TransferFilter::All,
             appearance: bridge::theme_preference(),
@@ -1028,15 +1031,13 @@ fn section_heading(glyph: &'static Icon, label: &str, subtitle: &str, paint: Pai
         )
 }
 
-fn nav(page: Page, selected: bool, paint: Paint) -> El {
-    row()
+fn nav(page: Page, selected: bool, collapsed: bool, paint: Paint) -> El {
+    let item = row()
         .key(format!("nav-{}", page.name()))
         .role("button")
         .label(page.name())
         .w_full()
         .h(36.0)
-        .px(11.0)
-        .gap(10.0)
         .center_y()
         .radius(10.0)
         .continuous_corners()
@@ -1051,8 +1052,12 @@ fn nav(page: Page, selected: bool, paint: Paint) -> El {
             icon(page.glyph(), 17.0)
                 .key(format!("nav-icon-{}", page.name()))
                 .color(if selected { paint.accent } else { paint.faint }),
-        )
-        .child(
+        );
+    if collapsed {
+        // The rail keeps the icon, its key and its accessible name.
+        item.justify_center()
+    } else {
+        item.px(11.0).gap(10.0).child(
             text(page.name())
                 .font(rune::TextStyle::new(
                     13.0,
@@ -1064,25 +1069,140 @@ fn nav(page: Page, selected: bool, paint: Paint) -> El {
                     paint.subdued
                 }),
         )
+    }
 }
 
-fn sidebar(ui: &Ui, paint: Paint, compact: bool) -> El {
+fn sidebar_toggle(collapsed: bool, paint: Paint) -> El {
+    row()
+        .key("sidebar-toggle")
+        .role("button")
+        .label(if collapsed {
+            "Expand sidebar"
+        } else {
+            "Collapse sidebar"
+        })
+        .size(28.0, 28.0)
+        .center()
+        .radius(8.0)
+        .continuous_corners()
+        .hover(paint.hover_wash)
+        .press(paint.press_wash)
+        .on_press(move |ui: &mut Ui| ui.sidebar_collapsed = Some(!collapsed))
+        .child(icon(&icons::PANEL_LEFT, 17.0).color(paint.faint))
+}
+
+fn sidebar_brand(collapsed: bool, paint: Paint) -> El {
+    let logo = icon(&icons::CONDUIT, 24.0)
+        .key("conduit-brand-icon")
+        .color(paint.t.text);
+    let bar = if collapsed {
+        // A 40pt rail has no room for logo and toggle side by side.
+        col().key("brand").w_full().gap(8.0).items_center()
+    } else {
+        row()
+            .key("brand")
+            .h(44.0)
+            .gap(9.0)
+            .px(7.0)
+            .center_y()
+            .child(
+                text("Conduit")
+                    .font(rune::TextStyle::new(16.0, 680.0))
+                    .color(paint.t.text),
+            )
+            .child(el().grow(1.0))
+    };
+    bar.child(logo).child(sidebar_toggle(collapsed, paint))
+}
+
+fn sidebar_device(ui: &Ui, paint: Paint, collapsed: bool) -> El {
     let devices = ui.snap.peers.len();
-    let desktops = ui
-        .snap
-        .peers
-        .iter()
-        .filter(|peer| peer.kind == "desktop")
-        .count();
     let online = ui
         .snap
         .peers
         .iter()
         .filter(|peer| peer.state == "connected")
         .count();
-    let logo = icon(&icons::CONDUIT, 24.0)
-        .key("conduit-brand-icon")
-        .color(paint.t.text);
+    let status = el()
+        .size(6.0, 6.0)
+        .radius(3.0)
+        .fill(if ui.snap.connection.linked || online > 0 {
+            paint.green
+        } else {
+            paint.faint
+        });
+    let mut device = row()
+        .key("sidebar-device")
+        .role("button")
+        .label("Manage device pairing")
+        .w_full()
+        .h(46.0)
+        .center_y()
+        .radius(11.0)
+        .continuous_corners()
+        .fill(paint.inset)
+        .hover(paint.hover_wash)
+        .on_press(|ui: &mut Ui| ui.navigate(Page::Pairing));
+    if collapsed {
+        return device.justify_center().child(status);
+    }
+    let desktops = ui
+        .snap
+        .peers
+        .iter()
+        .filter(|peer| peer.kind == "desktop")
+        .count();
+    device = device
+        .px(10.0)
+        .gap(9.0)
+        .child(
+            icon(
+                if desktops > 0 {
+                    &icons::MONITOR
+                } else {
+                    &icons::SMARTPHONE
+                },
+                17.0,
+            )
+            .color(paint.subdued),
+        )
+        .child(
+            col()
+                .grow(1.0)
+                .min_w(0.0)
+                .gap(3.0)
+                .child(
+                    text(if devices > 1 {
+                        format!("{devices} paired devices")
+                    } else if ui.snap.connection.linked {
+                        "Phone connected".into()
+                    } else if ui.snap.connection.paused {
+                        "Connection paused".into()
+                    } else {
+                        "Connect a phone".into()
+                    })
+                    .font(rune::TextStyle::new(11.0, 580.0))
+                    .color(paint.t.text)
+                    .truncate(),
+                )
+                .child(
+                    text(if online > 1 {
+                        format!("{online} online")
+                    } else if ui.snap.connection.linked {
+                        "Encrypted connection".into()
+                    } else {
+                        "Ready when you are".into()
+                    })
+                    .font(rune::TextStyle::new(10.0, 450.0))
+                    .color(paint.faint),
+                ),
+        );
+    device.child(status)
+}
+
+fn sidebar(ui: &Ui, paint: Paint, compact: bool) -> El {
+    // A narrow window folds to the rail; a manual toggle overrides that guess.
+    let collapsed = ui.sidebar_collapsed.unwrap_or(compact);
     let mut menu = col().key("side-navigation").w_full().gap(4.0);
     for page in [
         Page::Overview,
@@ -1090,100 +1210,29 @@ fn sidebar(ui: &Ui, paint: Paint, compact: bool) -> El {
         Page::Notifications,
         Page::Links,
     ] {
-        menu = menu.child(nav(page, ui.page == page, paint));
+        menu = menu.child(nav(page, ui.page == page, collapsed, paint));
     }
     menu = menu.child(el().h(14.0));
     for page in [Page::Pairing, Page::Settings, Page::About] {
-        menu = menu.child(nav(page, ui.page == page, paint));
+        menu = menu.child(nav(page, ui.page == page, collapsed, paint));
     }
     col()
         .key("sidebar")
-        .w(if compact { 176.0 } else { 192.0 })
+        .w(if collapsed {
+            64.0
+        } else if compact {
+            176.0
+        } else {
+            192.0
+        })
         .h_full()
         .padding(12.0)
         .gap(18.0)
         .fill(Color::TRANSPARENT)
-        .child(
-            row()
-                .key("brand")
-                .h(44.0)
-                .gap(9.0)
-                .px(7.0)
-                .center_y()
-                .child(logo)
-                .child(
-                    text("Conduit")
-                        .font(rune::TextStyle::new(16.0, 680.0))
-                        .color(paint.t.text),
-                ),
-        )
+        .child(sidebar_brand(collapsed, paint))
         .child(menu)
         .child(el().grow(1.0))
-        .child(
-            row()
-                .key("sidebar-device")
-                .role("button")
-                .label("Manage device pairing")
-                .w_full()
-                .h(46.0)
-                .px(10.0)
-                .gap(9.0)
-                .center_y()
-                .radius(11.0)
-                .continuous_corners()
-                .fill(paint.inset)
-                .hover(paint.hover_wash)
-                .on_press(|ui: &mut Ui| ui.navigate(Page::Pairing))
-                .child(
-                    icon(
-                        if desktops > 0 {
-                            &icons::MONITOR
-                        } else {
-                            &icons::SMARTPHONE
-                        },
-                        17.0,
-                    )
-                    .color(paint.subdued),
-                )
-                .child(
-                    col()
-                        .grow(1.0)
-                        .min_w(0.0)
-                        .gap(3.0)
-                        .child(
-                            text(if devices > 1 {
-                                format!("{devices} paired devices")
-                            } else if ui.snap.connection.linked {
-                                "Phone connected".into()
-                            } else if ui.snap.connection.paused {
-                                "Connection paused".into()
-                            } else {
-                                "Connect a phone".into()
-                            })
-                            .font(rune::TextStyle::new(11.0, 580.0))
-                            .color(paint.t.text)
-                            .truncate(),
-                        )
-                        .child(
-                            text(if online > 1 {
-                                format!("{online} online")
-                            } else if ui.snap.connection.linked {
-                                "Encrypted connection".into()
-                            } else {
-                                "Ready when you are".into()
-                            })
-                            .font(rune::TextStyle::new(10.0, 450.0))
-                            .color(paint.faint),
-                        ),
-                )
-                .child(el().size(6.0, 6.0).radius(3.0).fill(
-                    if ui.snap.connection.linked || online > 0 {
-                        paint.green
-                    } else {
-                        paint.faint
-                    },
-                )),
-        )
+        .child(sidebar_device(ui, paint, collapsed))
 }
 
 fn summary_connection(ui: &Ui, paint: Paint, compact: bool) -> El {
@@ -4301,6 +4350,85 @@ mod tests {
         );
         assert!(!shown.iter().any(|t| t == "Offline"));
         assert!(rt.find("send-peer-qa-remote").is_some());
+    }
+
+    #[test]
+    fn sidebar_toggle_swaps_between_labels_and_an_icon_rail() {
+        // Exiting elements still draw their text for one frame after a collapse.
+        fn visible_texts(rt: &Runtime<Ui>) -> Vec<String> {
+            rt.elements()
+                .iter()
+                .filter(|el| !el.exiting)
+                .filter_map(|el| el.text.clone())
+                .collect()
+        }
+
+        let mut ui = Ui::init();
+        qa_overview(&mut ui);
+        let mut rt = Runtime::new(ui, view, (1020.0, 605.0), Env::new(true, 1.0));
+        rt.frame(0.0);
+        // Expanded: the nav reads as text and the rail is 192pt wide.
+        assert!(visible_texts(&rt).iter().any(|t| t == "Shared links"));
+        let wide = rt.presented("sidebar").expect("sidebar").0[2];
+        let content = rt.presented("main").expect("main").0[2];
+        let (x, y) = rt.find("sidebar-toggle").expect("collapse toggle");
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        // A frame one second on settles the width transition in a single step.
+        rt.frame(1.0);
+        // Collapsed: labels gone, keys and accessible names kept, content wider.
+        assert!(!visible_texts(&rt).iter().any(|t| t == "Shared links"));
+        for page in Page::ALL {
+            assert!(
+                rt.find(&format!("nav-{}", page.name())).is_some(),
+                "missing nav-{}",
+                page.name()
+            );
+        }
+        let rail = rt.presented("sidebar").expect("sidebar").0[2];
+        assert!(rail < wide / 2.0, "rail {rail} is not narrow");
+        assert!(
+            rt.presented("main").expect("main").0[2] > content,
+            "content did not take the reclaimed width"
+        );
+        assert_eq!(
+            rt.elements()
+                .iter()
+                .find(|el| el.key.as_deref() == Some("nav-Overview"))
+                .and_then(|el| el.label.clone())
+                .as_deref(),
+            Some("Overview")
+        );
+        let (x, y) = rt.find("sidebar-toggle").expect("expand toggle");
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(3.0);
+        assert!(visible_texts(&rt).iter().any(|t| t == "Shared links"));
+        assert_eq!(rt.presented("sidebar").expect("sidebar").0[2], wide);
+    }
+
+    #[test]
+    fn narrow_window_folds_the_sidebar_to_the_rail_and_a_manual_toggle_still_works() {
+        let mut ui = Ui::init();
+        qa_overview(&mut ui);
+        let mut rt = Runtime::new(ui, view, (760.0, 510.0), Env::new(true, 1.0));
+        rt.frame(0.0);
+        assert!(!texts(&rt).iter().any(|t| t == "Shared links"));
+        assert!(rt.find("nav-Shared links").is_some());
+        assert_eq!(
+            rt.elements()
+                .iter()
+                .find(|el| el.key.as_deref() == Some("sidebar-toggle"))
+                .and_then(|el| el.label.clone())
+                .as_deref(),
+            Some("Expand sidebar")
+        );
+        // Unfolding a narrow window is a deliberate choice, not a lost state.
+        let (x, y) = rt.find("sidebar-toggle").expect("expand toggle");
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(1.0 / 60.0);
+        assert!(texts(&rt).iter().any(|t| t == "Shared links"));
     }
 
     #[test]

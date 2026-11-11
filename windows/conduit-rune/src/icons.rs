@@ -117,6 +117,11 @@ lucide!(
     "close",
     r#"<path d="m6 6 12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>"#
 );
+lucide!(
+    PANEL_LEFT,
+    "lucide-panel-left",
+    r#"<rect x="3" y="3" width="18" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="1.75"/><path d="M9 3v18" fill="none" stroke="currentColor" stroke-width="1.75"/>"#
+);
 
 #[cfg(test)]
 mod tests {
@@ -152,6 +157,7 @@ mod tests {
             &FILE_TEXT,
             &MONITOR,
             &CLOSE,
+            &PANEL_LEFT,
         ] {
             assert!(
                 rune::text::icon_coverage(icon, 24)

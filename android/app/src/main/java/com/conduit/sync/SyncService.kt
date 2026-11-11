@@ -315,6 +315,9 @@ class SyncService : Service() {
     /** Guards duplicate callbacks while one bounded Relay-to-LAN discovery window is active/done. */
     @Volatile private var relayLanRecheckDone = false
 
+    /** The paired desktop's own LAN "ip:port", announced on the authenticated session. */
+    @Volatile private var relayLanHint: String? = null
+
     /** The desktop we are paired with, so the relay rendezvous survives a restart. */
     @Volatile private var knownPeer: String? = null
 
@@ -1081,6 +1084,12 @@ class SyncService : Service() {
                         link.sendWallpaperPreview(hash) { Wallpapers.preview(this@SyncService) }
                     }
 
+                    override fun onPeerLanHint(hint: String) {
+                        // Authenticated by the Noise handshake, so an unusable hint is only a
+                        // failed dial; every callback replaces the previous address.
+                        relayLanHint = hint.takeIf { it.isNotBlank() }
+                    }
+
                     override fun onSessionLost() {
                         // Recovery policy lives in the preceding Idle state transition. Keeping this
                         // callback observational prevents a second dial from racing that one.
@@ -1573,6 +1582,13 @@ class SyncService : Service() {
 
     private fun networkHasLan(net: Network? = null): Boolean = physicalLanNetwork(net) != null
 
+    private fun lanSubnets(net: Network): List<LanDiscoveryPolicy.Subnet> =
+        connectivity
+            .getLinkProperties(net)
+            ?.linkAddresses
+            .orEmpty()
+            .map { LanDiscoveryPolicy.Subnet(it.address, it.prefixLength) }
+
     /**
      * A Relay connection proves the desktop is online. If a physical LAN is present, open one
      * bounded NSD window on that exact Network. Thirty seconds is long enough to survive a missed
@@ -1585,6 +1601,13 @@ class SyncService : Service() {
         relayLanRecheckDone = true
         Log.i(TAG, "relay linked with physical LAN available; opening bounded direct-handoff discovery on $lan")
         discovery.burst(lan, RELAY_LAN_HANDOFF_DISCOVERY_MS)
+        // The desktop's own address beats waiting for multicast. The burst above stays armed as the
+        // one-shot fallback: a stale hint fails one dial and the same window can still answer.
+        val hinted = LanDiscoveryPolicy.hintTarget(relayLanHint, lanSubnets(lan))
+        if (hinted != null) {
+            Log.i(TAG, "dialling the desktop's LAN hint at $hinted")
+            beginLanHandoff(LanTarget(hinted, lan))
+        }
     }
 
     private fun beginLanHandoff(target: LanTarget) {

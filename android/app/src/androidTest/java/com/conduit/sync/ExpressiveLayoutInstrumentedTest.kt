@@ -134,6 +134,8 @@ class ExpressiveLayoutInstrumentedTest {
         compose.runOnIdle { assertTrue(showSettings) }
         compose.onNodeWithContentDescription("Home").assertIsDisplayed().performClick()
         compose.runOnIdle { assertTrue(!showSettings) }
+        // Icon-only dock: the destination names exist for accessibility, not as visible text.
+        compose.onNodeWithText("Settings").assertDoesNotExist()
         saveScreenshot("floating-dock.png")
     }
 

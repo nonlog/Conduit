@@ -66,4 +66,45 @@ class LanDiscoveryPolicyTest {
         assertEquals(ip("192.0.2.10"), LanDiscoveryPolicy.selectAddress(candidates, networks))
         assertEquals(ip("192.0.2.10"), LanDiscoveryPolicy.selectAddress(candidates.reversed(), networks))
     }
+
+    @Test fun onLinkDesktopHintBecomesOneDirectDial() {
+        val target = LanDiscoveryPolicy.hintTarget("192.0.2.5:45999", listOf(subnet("192.0.2.30")))
+        assertEquals(ip("192.0.2.5"), target?.address)
+        assertEquals(45999, target?.port)
+    }
+
+    @Test fun hintOffThePhysicalSubnetIsRefused() {
+        // Tailscale/CGNAT and a routed foreign subnet are not the Wi-Fi the hint came in on.
+        assertNull(LanDiscoveryPolicy.hintTarget("100.101.102.103:45999", listOf(subnet("192.0.2.30"))))
+        assertNull(LanDiscoveryPolicy.hintTarget("198.51.100.5:45999", listOf(subnet("192.0.2.30"))))
+    }
+
+    @Test fun hintWithoutAProvableSubnetIsRefused() {
+        assertNull(LanDiscoveryPolicy.hintTarget("192.0.2.5:45999", emptyList()))
+        assertNull(LanDiscoveryPolicy.hintTarget("192.0.2.5:45999", listOf(subnet("2001:db8::1"))))
+    }
+
+    @Test fun malformedHintsAreRefused() {
+        val networks = listOf(subnet("192.0.2.30"))
+        assertNull(LanDiscoveryPolicy.hintTarget(null, networks))
+        assertNull(LanDiscoveryPolicy.hintTarget("", networks))
+        assertNull(LanDiscoveryPolicy.hintTarget("192.0.2.5", networks))
+        assertNull(LanDiscoveryPolicy.hintTarget("192.0.2.5:", networks))
+        assertNull(LanDiscoveryPolicy.hintTarget("192.0.2.5:45999:1", networks))
+        assertNull(LanDiscoveryPolicy.hintTarget("192.0.2.300:45999", networks))
+        assertNull(LanDiscoveryPolicy.hintTarget("desktop.local:45999", networks))
+    }
+
+    @Test fun hintPortMustBeDialable() {
+        val networks = listOf(subnet("192.0.2.30"))
+        assertNull(LanDiscoveryPolicy.hintTarget("192.0.2.5:0", networks))
+        assertNull(LanDiscoveryPolicy.hintTarget("192.0.2.5:65536", networks))
+        assertEquals(65535, LanDiscoveryPolicy.hintTarget("192.0.2.5:65535", networks)?.port)
+    }
+
+    @Test fun ipv6AndSyntheticHintsAreRefused() {
+        assertNull(LanDiscoveryPolicy.hintTarget("[fd00::1]:45999", listOf(subnet("192.0.2.30"))))
+        assertNull(LanDiscoveryPolicy.hintTarget("fd00::1:45999", listOf(subnet("192.0.2.30"))))
+        assertNull(LanDiscoveryPolicy.hintTarget("198.18.0.1:45999", listOf(subnet("198.18.0.30"))))
+    }
 }

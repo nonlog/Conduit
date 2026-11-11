@@ -33,7 +33,7 @@ use anyhow::{bail, Context, Result};
 use prost::Message as _;
 use std::collections::HashMap;
 use std::io::Write as _;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -1139,8 +1139,9 @@ async fn run() -> Result<()> {
                 candidates.spawn(async move {
                     stream.set_nodelay(true)?;
                     set_keepalive(&stream)?;
+                    let lan_hint = lan_hint_for(stream.local_addr()?, PORT);
                     let hello_for =
-                        |remote_id: &str| inbound_hello(&hello_dir, &hello_id, remote_id);
+                        |remote_id: &str| inbound_hello(&hello_dir, &hello_id, remote_id, lan_hint);
                     let negotiated = tokio::time::timeout(
                         admission::TIMEOUT,
                         admission::negotiate_with(&mut stream, &private_key, false, hello_for),
@@ -2501,10 +2502,37 @@ fn replaces_session(
     true
 }
 
+/// Where a phone can dial this computer directly: the address this session's own socket left from,
+/// with the port the listener owns, so the phone can leave the Relay without multicast discovery
+/// (mDNS replies egress the Tailscale interface on this network).
+///
+/// Only a private IPv4 is offered. Tailscale's 100.64/10, link-local, loopback and IPv6 all name a
+/// path the phone cannot take, so they get no hint at all rather than a wrong one.
+fn lan_hint_for(local: SocketAddr, listen_port: u16) -> Option<String> {
+    match local.ip() {
+        IpAddr::V4(ip) if ip.is_private() => Some(format!("{ip}:{listen_port}")),
+        _ => None,
+    }
+}
+
 /// This side's identity hello. The pairing proof binds the dialling peer as initiator and this
 /// device as responder, which is the same digest such a peer computes for itself.
-fn inbound_hello(dir: &Path, device_id: &str, remote_id: &str) -> pb::PairRequest {
+fn inbound_hello(
+    dir: &Path,
+    device_id: &str,
+    remote_id: &str,
+    lan_hint: Option<String>,
+) -> pb::PairRequest {
     let state = pairing::state(dir);
+    // Only a phone is told: a desktop reaches this computer through the roster, and during pairing
+    // the peer is not in the registry yet.
+    let lan_hint = lan_hint
+        .filter(|_| {
+            pairing::peers(dir)
+                .iter()
+                .any(|peer| peer.id == remote_id && peer.kind == pairing::PeerKind::Phone)
+        })
+        .unwrap_or_default();
     pb::PairRequest {
         device_id: device_id.to_owned(),
         device_name: advert::hostname(),
@@ -2519,6 +2547,7 @@ fn inbound_hello(dir: &Path, device_id: &str, remote_id: &str) -> pb::PairReques
             .as_deref()
             .map(|code| pairing::pairing_proof(code, remote_id, device_id))
             .unwrap_or_default(),
+        lan_hint,
     }
 }
 
@@ -2886,6 +2915,66 @@ mod peer_tests {
         assert!(replaces_session("lan", "lan", true, true, "a", "b", false));
     }
 
+    #[test]
+    fn only_a_private_ipv4_tells_the_phone_where_this_computer_lives() {
+        let hint = |ip: &str| {
+            let ip: IpAddr = ip.parse().unwrap();
+            lan_hint_for(SocketAddr::new(ip, 54321), PORT)
+        };
+        assert_eq!(hint("192.168.1.7"), Some("192.168.1.7:41112".into()));
+        assert_eq!(hint("10.4.0.9"), Some("10.4.0.9:41112".into()));
+        assert_eq!(hint("172.16.0.1"), Some("172.16.0.1:41112".into()));
+        assert_eq!(hint("172.31.255.254"), Some("172.31.255.254:41112".into()));
+        for rejected in [
+            "172.32.0.1",
+            "172.15.255.255",
+            "100.82.22.39",
+            "169.254.10.1",
+            "127.0.0.1",
+            "fd7a:115c:a1e0::1",
+            "::1",
+        ] {
+            assert_eq!(hint(rejected), None, "{rejected} must not be offered");
+        }
+    }
+
+    #[test]
+    fn only_a_paired_phone_is_told_the_direct_lan_route() {
+        let dir = temp_dir("lan-hint");
+        let local = "L".repeat(43);
+        let phone = "P".repeat(43);
+        let sibling = "S".repeat(43);
+        pairing::confirm(
+            &dir,
+            &phone,
+            pairing::PeerKind::Phone,
+            pairing::Authorization::Paired,
+            "Phone",
+        )
+        .unwrap();
+        pairing::apply_phone_roster(
+            &dir,
+            &local,
+            &phone,
+            &pb::PeerRoster {
+                peers: vec![pb::PeerInfo {
+                    device_id: sibling.clone(),
+                    device_name: "Work PC".into(),
+                    device_kind: pb::DeviceKind::Desktop as i32,
+                    online: true,
+                    ..Default::default()
+                }],
+            },
+        )
+        .unwrap();
+        let hint = Some("192.168.1.7:41112".to_string());
+        let hello = |peer: &str| inbound_hello(&dir, &local, peer, hint.clone()).lan_hint;
+        assert_eq!(hello(&phone), "192.168.1.7:41112");
+        assert_eq!(hello(&sibling), "", "a sibling desktop is never told");
+        assert_eq!(hello(&"U".repeat(43)), "", "an unknown peer is never told");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn a_queued_file_reaches_only_the_session_that_owns_its_peer() {
         let dir = temp_dir("routing");
@@ -3012,7 +3101,8 @@ mod peer_tests {
         let responder = tokio::spawn(async move {
             for _ in 0..2 {
                 let (mut stream, _) = listener.accept().await.unwrap();
-                let hello_for = |remote: &str| inbound_hello(&listening_dir, &listening_id, remote);
+                let hello_for =
+                    |remote: &str| inbound_hello(&listening_dir, &listening_id, remote, None);
                 let negotiated =
                     admission::negotiate_with(&mut stream, &identity_a.private, false, hello_for)
                         .await

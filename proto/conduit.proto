@@ -67,6 +67,7 @@ message PairRequest {
   uint32     transfer_protocol = 7;  // 1: FileResult in both directions and targeted FileCancel; 0: legacy
   DeviceKind device_kind       = 8;  // endpoint form factor; never trusted to escalate Phone privileges
   bytes      pairing_proof     = 9;  // SHA-256("conduit-pair-proof-v1:" + code + ":" + initiator_id + ":" + responder_id)
+  string     lan_hint          = 10; // desktop only: "ip:port" of its listener on the interface used for this session; the phone dials it once instead of relying on multicast discovery
 }
 
 message PairResponse {

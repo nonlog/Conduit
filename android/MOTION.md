@@ -8,8 +8,8 @@ it does not embed Flutter, copy FlClash artwork, or use image-generated mockups.
 
 - Tabs slide/fade directly to the selected destination in 280 ms; nonadjacent
   navigation never renders an intervening destination. Saveable tab state survives.
-- Navigation uses a moving spring indicator, animated icon/label ink and finite
-  press/selection scaling. Touch targets are unchanged.
+- Navigation uses a moving spring indicator and animated icon ink; destinations are
+  icon-only, with their names carried by content descriptions. Touch targets are unchanged.
 - Connection status crossfades, newly available send controls expand/collapse,
   and measured transfer progress interpolates between reported values only.
 - Settings sections have reversible disclosure motion. Pair/theme/forget dialogs

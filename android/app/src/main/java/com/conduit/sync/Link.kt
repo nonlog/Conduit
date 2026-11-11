@@ -202,6 +202,9 @@ class Link(
         /** The desktop's cached phone-wallpaper hash. Empty means it has no preview yet. */
         fun onWallpaperHash(hash: ByteArray) {}
 
+        /** The desktop's own LAN listener as "ip:port"; dialled once instead of waiting for mDNS. */
+        fun onPeerLanHint(hint: String) {}
+
         /**
          * A session that was actually up has gone. A dial that never completed its
          * handshake deliberately does not call this: re-dialling on a refusal is how a
@@ -897,6 +900,7 @@ class Link(
                     established = true
                     events.onState(LinkState.Connected, Identity.fingerprint(live.peerStatic))
                     events.onWallpaperHash(desktopHello.wallpaperHash.toByteArray())
+                    events.onPeerLanHint(desktopHello.lanHint)
                 }
                 while (usable(owner)) {
                     val envelope = live.recv()
@@ -950,6 +954,7 @@ class Link(
                     .takeIf { it.isNotBlank() }
                     ?.let(events::onPeerName)
                 events.onWallpaperHash(hello.wallpaperHash.toByteArray())
+                events.onPeerLanHint(hello.lanHint)
             }
 
             Kind.PAIR_RESPONSE -> {

@@ -2,10 +2,46 @@ package com.conduit.sync
 
 import java.net.Inet4Address
 import java.net.InetAddress
+import java.net.InetSocketAddress
 
 /** Pure address selection: the desktop LAN listener currently accepts IPv4 only. */
 internal object LanDiscoveryPolicy {
     data class Subnet(val address: InetAddress, val prefixLength: Int)
+
+    /**
+     * The desktop's own "ip:port" for its LAN listener. It arrived over the Noise-authenticated
+     * session, so the pairing is trusted; the address is still checked, because a stale interface
+     * must cost one failed dial rather than a wrong subnet or a synthetic VPN address.
+     */
+    fun hintTarget(
+        hint: String?,
+        subnets: List<Subnet>,
+    ): InetSocketAddress? {
+        val text = hint?.trim().orEmpty()
+        val colon = text.lastIndexOf(':')
+        if (colon <= 0) return null
+        val port = text.substring(colon + 1).toIntOrNull() ?: return null
+        if (port !in 1..65535) return null
+        val address = parseIpv4(text.substring(0, colon)) ?: return null
+        if (address.isAnyLocalAddress || address.isLoopbackAddress || address.isMulticastAddress) return null
+        if (isSynthetic(address)) return null
+        val local = subnets.filter { it.address is Inet4Address && it.prefixLength in 1..32 }
+        if (local.isEmpty() || local.none { onLinkHost(address, it) }) return null
+        return InetSocketAddress(address, port)
+    }
+
+    /** Numeric only: a hinted hostname would be a DNS lookup on the main thread, so it is refused. */
+    private fun parseIpv4(text: String): Inet4Address? {
+        val parts = text.split('.')
+        if (parts.size != 4) return null
+        val bytes = ByteArray(4)
+        parts.forEachIndexed { index, part ->
+            val value = part.toIntOrNull() ?: return null
+            if (value !in 0..255) return null
+            bytes[index] = value.toByte()
+        }
+        return InetAddress.getByAddress(bytes) as Inet4Address
+    }
 
     fun acceptsPeer(expected: String?, advertised: String?): Boolean =
         expected == null || expected == advertised
