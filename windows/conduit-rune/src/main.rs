@@ -1072,8 +1072,9 @@ fn nav(page: Page, selected: bool, collapsed: bool, paint: Paint) -> El {
     }
 }
 
-fn sidebar_toggle(collapsed: bool, paint: Paint) -> El {
-    row()
+fn sidebar_brand(collapsed: bool, paint: Paint) -> El {
+    // The link mark is the sidebar's toggle, so the rail needs no second control.
+    let toggle = row()
         .key("sidebar-toggle")
         .role("button")
         .label(if collapsed {
@@ -1081,38 +1082,30 @@ fn sidebar_toggle(collapsed: bool, paint: Paint) -> El {
         } else {
             "Collapse sidebar"
         })
-        .size(28.0, 28.0)
+        .size(32.0, 32.0)
         .center()
         .radius(8.0)
         .continuous_corners()
         .hover(paint.hover_wash)
         .press(paint.press_wash)
         .on_press(move |ui: &mut Ui| ui.sidebar_collapsed = Some(!collapsed))
-        .child(icon(&icons::PANEL_LEFT, 17.0).color(paint.faint))
-}
-
-fn sidebar_brand(collapsed: bool, paint: Paint) -> El {
-    let logo = icon(&icons::CONDUIT, 24.0)
-        .key("conduit-brand-icon")
-        .color(paint.t.text);
-    let bar = if collapsed {
-        // A 40pt rail has no room for logo and toggle side by side.
-        col().key("brand").w_full().gap(8.0).items_center()
-    } else {
-        row()
-            .key("brand")
-            .h(44.0)
-            .gap(9.0)
-            .px(7.0)
-            .center_y()
-            .child(
-                text("Conduit")
-                    .font(rune::TextStyle::new(16.0, 680.0))
-                    .color(paint.t.text),
-            )
-            .child(el().grow(1.0))
-    };
-    bar.child(logo).child(sidebar_toggle(collapsed, paint))
+        .child(icon(&icons::CONDUIT, 24.0).color(paint.t.text));
+    if collapsed {
+        return col().key("brand").w_full().items_center().child(toggle);
+    }
+    row()
+        .key("brand")
+        .h(44.0)
+        .gap(9.0)
+        .px(7.0)
+        .center_y()
+        .child(toggle)
+        .child(
+            text("Conduit")
+                .font(rune::TextStyle::new(16.0, 680.0))
+                .color(paint.t.text),
+        )
+        .child(el().grow(1.0))
 }
 
 fn sidebar_device(ui: &Ui, paint: Paint, collapsed: bool) -> El {
@@ -3824,6 +3817,28 @@ mod tests {
             .collect()
     }
 
+    /// The brand's link mark is the sidebar's one toggle: no second rail button exists.
+    fn sidebar_toggle(rt: &Runtime<Ui>) -> (String, String) {
+        let found: Vec<_> = rt
+            .elements()
+            .into_iter()
+            .filter(|el| el.key.as_deref() == Some("sidebar-toggle") && !el.exiting)
+            .collect();
+        assert_eq!(found.len(), 1, "one sidebar toggle: {found:?}");
+        let toggle = &found[0];
+        assert!(toggle.path.contains("brand"), "{toggle:?}");
+        assert!(
+            toggle.rect[2] >= 32.0 && toggle.rect[3] >= 32.0,
+            "toggle hit area {}x{}",
+            toggle.rect[2],
+            toggle.rect[3]
+        );
+        (
+            toggle.path.clone(),
+            toggle.label.clone().expect("toggle label"),
+        )
+    }
+
     #[test]
     fn operation_success_expires_and_navigation_cannot_revive_a_stale_banner() {
         let mut ui = Ui::init();
@@ -3953,6 +3968,7 @@ mod tests {
                 rt.frame(0.0);
                 for key in [
                     "sidebar",
+                    "sidebar-toggle",
                     "sidebar-device",
                     "connection",
                     "connection-route",
@@ -3963,6 +3979,14 @@ mod tests {
                 ] {
                     assert!(rt.find(key).is_some(), "missing {key} in {dark:?} {size:?}");
                 }
+                // The brand title shows only beside the logo in the expanded sidebar; the
+                // window caption always names the app.
+                let titled = texts(&rt).iter().filter(|t| *t == "Conduit").count();
+                assert_eq!(
+                    titled,
+                    if size.0 > 930.0 { 2 } else { 1 },
+                    "brand text at {dark:?} {size:?}"
+                );
             }
             let mut ui = Ui::init();
             ui.navigate(Page::Settings);
@@ -4369,6 +4393,16 @@ mod tests {
         rt.frame(0.0);
         // Expanded: the nav reads as text and the rail is 192pt wide.
         assert!(visible_texts(&rt).iter().any(|t| t == "Shared links"));
+        let (logo_path, label) = sidebar_toggle(&rt);
+        assert_eq!(label, "Collapse sidebar");
+        assert_eq!(
+            rt.elements()
+                .iter()
+                .filter(|el| el.path.starts_with(&logo_path) && el.role == "icon")
+                .count(),
+            1,
+            "the toggle carries the brand logo itself"
+        );
         let wide = rt.presented("sidebar").expect("sidebar").0[2];
         let content = rt.presented("main").expect("main").0[2];
         let (x, y) = rt.find("sidebar-toggle").expect("collapse toggle");
@@ -4385,6 +4419,8 @@ mod tests {
                 page.name()
             );
         }
+        // The same logo, now the only thing in the rail: it stays and relabels itself.
+        assert_eq!(sidebar_toggle(&rt).1, "Expand sidebar");
         let rail = rt.presented("sidebar").expect("sidebar").0[2];
         assert!(rail < wide / 2.0, "rail {rail} is not narrow");
         assert!(
@@ -4404,6 +4440,7 @@ mod tests {
         rt.pointer_up(x, y);
         rt.frame(3.0);
         assert!(visible_texts(&rt).iter().any(|t| t == "Shared links"));
+        assert_eq!(sidebar_toggle(&rt).1, "Collapse sidebar");
         assert_eq!(rt.presented("sidebar").expect("sidebar").0[2], wide);
     }
 
@@ -4415,20 +4452,14 @@ mod tests {
         rt.frame(0.0);
         assert!(!texts(&rt).iter().any(|t| t == "Shared links"));
         assert!(rt.find("nav-Shared links").is_some());
-        assert_eq!(
-            rt.elements()
-                .iter()
-                .find(|el| el.key.as_deref() == Some("sidebar-toggle"))
-                .and_then(|el| el.label.clone())
-                .as_deref(),
-            Some("Expand sidebar")
-        );
+        assert_eq!(sidebar_toggle(&rt).1, "Expand sidebar");
         // Unfolding a narrow window is a deliberate choice, not a lost state.
         let (x, y) = rt.find("sidebar-toggle").expect("expand toggle");
         rt.pointer_down(x, y);
         rt.pointer_up(x, y);
         rt.frame(1.0 / 60.0);
         assert!(texts(&rt).iter().any(|t| t == "Shared links"));
+        assert_eq!(sidebar_toggle(&rt).1, "Collapse sidebar");
     }
 
     #[test]
