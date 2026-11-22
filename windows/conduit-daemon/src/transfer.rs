@@ -349,6 +349,29 @@ impl Transfers {
         s.rows.push_back(row);
         Ok(())
     }
+    /// Returns the addressed peer and its current authenticated session owner atomically.
+    pub fn route_for(
+        &self,
+        requested: Option<&str>,
+        selected: Option<&str>,
+        phone: Option<&str>,
+    ) -> Result<(String, String)> {
+        let state = self.state.lock().unwrap();
+        let route = |id: &str| {
+            state
+                .live
+                .get(id)
+                .map(|(owner, _)| (id.to_owned(), owner.clone()))
+        };
+        match requested {
+            Some(id) => route(id).context("Selected device is offline"),
+            None => selected
+                .and_then(route)
+                .or_else(|| phone.and_then(route))
+                .context("no authenticated peer session"),
+        }
+    }
+
     /// The live session owner a new local send must use.
     ///
     /// An explicitly requested peer never falls back: silently sending a file to a different
@@ -360,15 +383,8 @@ impl Transfers {
         selected: Option<&str>,
         phone: Option<&str>,
     ) -> Result<String> {
-        let state = self.state.lock().unwrap();
-        let owner = |id: &str| state.live.get(id).map(|(owner, _)| owner.clone());
-        match requested {
-            Some(id) => owner(id).context("Selected device is offline"),
-            None => selected
-                .and_then(owner)
-                .or_else(|| phone.and_then(owner))
-                .context("no authenticated peer session"),
-        }
+        self.route_for(requested, selected, phone)
+            .map(|(_, owner)| owner)
     }
     /// Includes queued and receiver-confirmation work, not only byte streaming.
     pub fn has_active(&self) -> bool {
@@ -1178,6 +1194,7 @@ mod tests {
         });
         let request = control::SendRequest {
             id: vec![9; 16],
+            peer_id: "peer".into(),
             owner: "session".into(),
             path: path.clone(),
             completion: Some(completion),
