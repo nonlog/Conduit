@@ -12,8 +12,8 @@ android {
         applicationId = "com.conduit.sync"
         minSdk = 29
         targetSdk = 36
-        versionCode = 28
-        versionName = "0.1.26"
+        versionCode = 29
+        versionName = "0.1.27"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

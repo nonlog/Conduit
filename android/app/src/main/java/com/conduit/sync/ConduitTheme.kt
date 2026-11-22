@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialExpressiveTheme
 import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.Typography
@@ -22,6 +23,25 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
+
+private fun ColorScheme.withDarkSurfaces(): ColorScheme =
+    copy(
+        background = Color(0xFF101413),
+        onBackground = Color(0xFFE0E4E3),
+        surface = Color(0xFF101413),
+        onSurface = Color(0xFFE0E4E3),
+        surfaceVariant = Color(0xFF434A49),
+        onSurfaceVariant = Color(0xFFC6D0CF),
+        outline = Color(0xFFACB7B6),
+        outlineVariant = Color(0xFF5C6665),
+        surfaceDim = Color(0xFF101413),
+        surfaceBright = Color(0xFF505857),
+        surfaceContainerLowest = Color(0xFF0B0F0F),
+        surfaceContainerLow = Color(0xFF343A39),
+        surfaceContainer = Color(0xFF434A49),
+        surfaceContainerHigh = Color(0xFF4A5150),
+        surfaceContainerHighest = Color(0xFF505857),
+    )
 
 /** Public Material 3 Expressive API, not a local imitation of MaterialTheme. */
 @Composable
@@ -49,7 +69,7 @@ internal fun ConduitTheme(
             bars.isAppearanceLightNavigationBars = !dark
         }
     }
-    val colors =
+    val palette =
         when {
             Settings.wallpaperAccent && Build.VERSION.SDK_INT >= 31 -> {
                 if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
@@ -74,22 +94,9 @@ internal fun ConduitTheme(
                     onError = Color(0xFF690005),
                     errorContainer = Color(0xFF93000A),
                     onErrorContainer = Color(0xFFFFDAD6),
-                    background = Color(0xFF101413),
-                    onBackground = Color(0xFFE0E4E3),
-                    surface = Color(0xFF101413),
-                    onSurface = Color(0xFFE0E4E3),
-                    surfaceVariant = Color(0xFF3F4948),
-                    onSurfaceVariant = Color(0xFFBFC9C8),
-                    outline = Color(0xFF899392),
-                    outlineVariant = Color(0xFF3F4948),
                     scrim = Color.Black,
                     inverseSurface = Color(0xFFE0E4E3),
                     inverseOnSurface = Color(0xFF2C3131),
-                    surfaceContainerLowest = Color(0xFF0B0F0F),
-                    surfaceContainerLow = Color(0xFF191E1D),
-                    surfaceContainer = Color(0xFF1D2323),
-                    surfaceContainerHigh = Color(0xFF272D2D),
-                    surfaceContainerHighest = Color(0xFF323838),
                 )
             }
 
@@ -133,6 +140,8 @@ internal fun ConduitTheme(
                 )
             }
         }
+    // Wallpaper colors can change the accents, but should not flatten dark card elevation.
+    val colors = if (dark) palette.withDarkSurfaces() else palette
     val motionEnabled = motionOverride ?: rememberSystemMotionEnabled()
     CompositionLocalProvider(LocalConduitMotion provides motionEnabled) {
         MaterialExpressiveTheme(

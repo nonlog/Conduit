@@ -12,7 +12,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asAndroidBitmap
-import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsOff
@@ -206,14 +206,30 @@ class ExpressiveLayoutInstrumentedTest {
     }
 
     @Test
-    fun publicExpressiveThemeUsesNeutralReferenceSurfaceAndOfficialMotion() {
-        compose.setContent {
-            ConduitTheme(darkOverride = true) {
-                assertSame(MotionScheme.expressive(), MaterialTheme.motionScheme)
-                assertEquals(0xFF101413.toInt(), MaterialTheme.colorScheme.background.toArgb())
-                assertEquals(0xFF191E1D.toInt(), MaterialTheme.colorScheme.surfaceContainerLow.toArgb())
-                assertEquals(24f, MaterialTheme.typography.headlineLarge.fontSize.value, 0.01f)
+    fun darkCardsStayDistinctWithOrWithoutWallpaperAccent() {
+        val original = Settings.wallpaperAccent
+        try {
+            compose.runOnUiThread { Settings.wallpaperAccent = false }
+            compose.setContent {
+                ConduitTheme(darkOverride = true) {
+                    val colors = MaterialTheme.colorScheme
+                    val palette = if (Settings.wallpaperAccent) "wallpaper" else "fixed"
+                    val page = colors.background.luminance() + 0.05f
+                    val card = colors.surfaceContainerLow.luminance() + 0.05f
+                    val control = colors.surfaceContainer.luminance() + 0.05f
+                    val top = colors.surfaceContainerHighest.luminance() + 0.05f
+                    assertTrue("$palette: card must stand out from the page", card / page >= 1.5f)
+                    assertTrue("$palette: control must stand out from the card", control / card >= 1.2f)
+                    assertTrue("$palette: secondary text must remain readable", (colors.onSurfaceVariant.luminance() + 0.05f) / top >= 4.5f)
+                    assertSame(MotionScheme.expressive(), MaterialTheme.motionScheme)
+                    assertEquals(24f, MaterialTheme.typography.headlineLarge.fontSize.value, 0.01f)
+                }
             }
+            compose.waitForIdle()
+            compose.runOnIdle { Settings.wallpaperAccent = true }
+            compose.waitForIdle()
+        } finally {
+            compose.runOnUiThread { Settings.wallpaperAccent = original }
         }
     }
 

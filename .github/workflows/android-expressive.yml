@@ -8,6 +8,11 @@ on:
     branches: [master]
     paths: ['android/**', '.github/workflows/android-expressive.yml', 'tools/ci-expressive-ui.sh', 'scripts/sync-android-brand.py', 'windows/conduit-daemon/assets/conduit-mark.fragment.svg']
   workflow_dispatch:
+    inputs:
+      signed_apk_only:
+        description: Build and sign the release APK without running tests
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -31,6 +36,7 @@ jobs:
       - name: Install SDK 37
         run: '"$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37.0" "build-tools;37.0.0"'
       - name: Verify upgraded toolchain and official Material dependency
+        if: '!inputs.signed_apk_only'
         working-directory: android
         run: |
           ./gradlew --version
@@ -40,20 +46,34 @@ jobs:
         env:
           CONDUIT_ANDROID_KEYSTORE_BASE64: ${{ secrets.CONDUIT_ANDROID_KEYSTORE_BASE64 }}
         run: bash scripts/prepare-android-signing.sh
-      - name: Test and assemble debug and optimized release
+      - name: Assemble Android APKs
         working-directory: android
         env:
           CONDUIT_ANDROID_KEYSTORE_PASSWORD: ${{ github.event_name == 'workflow_dispatch' && secrets.CONDUIT_ANDROID_KEYSTORE_PASSWORD || '' }}
+          SIGNED_APK_ONLY: ${{ inputs.signed_apk_only }}
         run: |
-          python3 ../scripts/sync-android-brand.py --check
-          ./gradlew --no-daemon --stacktrace testDebugUnitTest assembleDebug assembleRelease
+          if [ "$SIGNED_APK_ONLY" = true ]; then
+            ./gradlew --no-daemon --stacktrace assembleRelease
+          else
+            python3 ../scripts/sync-android-brand.py --check
+            ./gradlew --no-daemon --stacktrace testDebugUnitTest assembleDebug assembleRelease
+          fi
       - name: Verify scanner and LSPosed entry points survive release shrinking
+        if: '!inputs.signed_apk_only'
         run: |
           release_apk="$(find android/app/build/outputs/apk/release -maxdepth 1 -name '*.apk' -type f -print -quit)"
           bash scripts/verify-android-entrypoints.sh "$release_apk"
       - name: Verify persistent signing identity
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && !inputs.signed_apk_only
         run: bash scripts/verify-android-signer.sh android/app/build/outputs/apk/release/app-release.apk
+      - name: Verify signed APK certificate
+        if: inputs.signed_apk_only
+        shell: bash
+        run: |
+          apk=android/app/build/outputs/apk/release/app-release.apk
+          report="$("$ANDROID_SDK_ROOT/build-tools/37.0.0/apksigner" verify --verbose --print-certs-pem "$apk")"
+          actual="$(printf '%s\n' "$report" | python3 scripts/apk-certificate-digests.py)"
+          test "$actual" = "$(tr -d '\r\n ' < android/signing-cert.sha256)"
       - name: Remove private runner signing material
         if: always()
         run: |
@@ -68,10 +88,11 @@ jobs:
           if-no-files-found: error
           path: android/app/build/outputs/apk/release/app-release.apk
       - name: Android lint
+        if: '!inputs.signed_apk_only'
         working-directory: android
         run: ./gradlew --no-daemon --stacktrace lintDebug
       - uses: actions/upload-artifact@v7
-        if: always()
+        if: always() && !inputs.signed_apk_only
         with:
           name: conduit-official-expressive-android
           retention-days: 3
@@ -82,6 +103,7 @@ jobs:
             android/app/build/test-results/
 
   ui:
+    if: '!inputs.signed_apk_only'
     name: Android 16 visual and interaction tests
     runs-on: ubuntu-latest
     timeout-minutes: 35
