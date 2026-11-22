@@ -49,6 +49,9 @@ pub struct TransferProgress {
 
 pub struct SendRequest {
     pub id: Vec<u8>,
+    /// Paired peer id used by the process-wide route table.
+    pub peer_id: String,
+    /// Ephemeral authenticated-session owner used by transfer state.
     pub owner: String,
     pub path: PathBuf,
     pub completion: Option<oneshot::Sender<std::result::Result<(), String>>>,
@@ -336,7 +339,7 @@ async fn send_file(
     transfers: std::sync::Arc<crate::transfer::Transfers>,
 ) -> Result<PathBuf> {
     let mut sessions = transfers.session_changes();
-    let expected_owner = transfers.owner_for(requested, selected, phone)?;
+    let (peer_id, expected_owner) = transfers.route_for(requested, selected, phone)?;
     let path = tokio::task::spawn_blocking({
         let path = path.to_path_buf();
         move || file::validate_outbound(&path)
@@ -351,6 +354,7 @@ async fn send_file(
     });
     if let Err(e) = send_tx.try_send(SendRequest {
         id: id.clone(),
+        peer_id,
         owner: owner.clone(),
         path: path.clone(),
         completion: Some(completion),

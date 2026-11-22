@@ -2765,7 +2765,7 @@ async fn dispatch_send_requests(
     routes: Arc<SendRoutes>,
 ) {
     while let Some(request) = requests.recv().await {
-        let Some(tx) = routes.sender(&request.owner) else {
+        let Some(tx) = routes.sender(&request.peer_id) else {
             fail_send_request(&transfers, request, queued_request_terminal(false));
             continue;
         };
@@ -2878,7 +2878,8 @@ mod peer_tests {
         (
             control::SendRequest {
                 id: vec![7],
-                owner: owner.to_owned(),
+                peer_id: owner.to_owned(),
+                owner: "session-owner".to_owned(),
                 path: PathBuf::from("notes.txt"),
                 completion: Some(completion),
                 progress,
@@ -2993,7 +2994,8 @@ mod peer_tests {
             .recv()
             .await
             .expect("the owning session receives its own file");
-        assert_eq!(delivered.owner, "peer-a");
+        assert_eq!(delivered.peer_id, "peer-a");
+        assert_eq!(delivered.owner, "session-owner");
         assert!(
             b_rx.try_recv().is_err(),
             "another peer's session must never take this file"
