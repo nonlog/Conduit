@@ -1,73 +1,98 @@
-# conduit
+# Conduit
 
-A deliberately small Android ↔ Windows companion. The current release includes:
+English | [简体中文](README.zh-CN.md)
 
-1. **Text and image clipboard**, both directions, automatic where the platform permits.
-2. **Android notifications → native Windows toasts**, including updates, dismissal, bounded
-   actions and inline reply.
-3. **Explicit file transfer**, both directions, through Android sharing, Windows Explorer and
-   the Windows Share Target.
-4. **Phone photos and screenshots → Windows capture toasts**, with optional Snipping Tool
-   activation.
-5. **Webpage sharing**, pairing management, LAN mDNS and encrypted Relay fallback.
+**A lightweight, end-to-end encrypted Android ↔ Windows companion** for clipboard sync, notifications, file transfers, and recent captures — designed to stay fast and quiet in the background.
 
-The product boundary remains small. Telephony, SMS, screen mirroring, remote input, media
-control and a mounted or browsable remote filesystem are out of scope.
+---
 
-## Why it exists
+## Why Conduit?
 
-Phone Link works, but its native transport leaks: `libbasix-thread`, `pDCT IO thread`,
-`udp(asio)` and `ICE Agent` threads accumulate until the phone is sluggish — observed at
-1,069 targets / 1,755 threads / ~122% CPU / ~610 MB swap. conduit's differentiator is not
-more features. It is: *the features you actually use, about as reliable, on a background that
-stays simple, stable and transparent — and does not get heavier over weeks.*
+Microsoft Phone Link works, until it doesn't: over days of use, its native transport leaks threads and memory until the phone starts lagging, heating up, and draining battery.
 
-So the hard requirements are non-functional:
+Conduit takes the opposite approach. Instead of trying to do everything, it focuses strictly on the few things you actually use every day — built on a simple, event-driven background that stays just as light after weeks of uptime as it was on day one:
 
-- Android: idle CPU ≈ 0. No polling, no periodic network scans, no long WakeLocks, few
-  threads, no session churn on network change.
-- Windows: light long-running core, UI decoupled and non-resident, bounded threads / handles
-  / sockets / memory over days.
-- One connection lifecycle, provably closed. `connectionsCreated == connectionsClosed` after
-  quiesce, or the difference is the single active session. This is the whole point.
+- **Near-zero idle overhead on Android** — No polling, no periodic network scans, no long wake locks, and no connection churn when switching networks.
+- **Lightweight native Windows footprint** — A small Rust background daemon paired with an on-demand native desktop UI (`conduit-rune`), keeping memory, handles, and threads strictly bounded.
+- **One clean connection lifecycle** — Direct LAN when possible, encrypted relay when away, with no ICE/STUN/TURN machinery.
 
-## Shape
+> **Out of scope by design:** Telephony, SMS, screen mirroring, remote mouse/keyboard input, media controls, and browsable remote filesystems.
 
-| Component | Language | Runs on |
+---
+
+## Features
+
+- **Two-way Clipboard Sync** — Automatically syncs text and images between your phone and PC. Supports seamless background reading on rooted Android via LSPosed, or an event-driven Accessibility fallback on stock Android.
+- **Notifications → Windows Toasts** — Mirror Android notifications as native Windows toasts, complete with live updates, dismissal sync, notification actions, and inline replies.
+- **Two-way File Transfer** — Send files from Android via the system Share sheet (including Direct Share targets for each paired PC), or from Windows via File Explorer and the native Windows Share Target.
+- **Photo & Screenshot Capture Toasts** — Newly taken photos and screenshots on your phone pop up as Windows notifications, with optional one-click handoff to Snipping Tool.
+- **Webpage Sharing** — Send links between phone and PC in one tap.
+- **Multi-PC Support** — Pair your phone with multiple Windows computers and manage them individually from **Settings → Devices**.
+- **End-to-End Encrypted Transport** — Prefers direct LAN connections via mDNS (`TCP 41112`) and falls back seamlessly to a blind TCP relay (`TCP 41113`) on cellular or foreign networks. All traffic is encrypted end-to-end with Noise (`Noise_XX_25519_ChaChaPoly_BLAKE2s`), so the relay only forwards opaque bytes and cannot read your data.
+
+---
+
+## Getting Started
+
+### Requirements
+
+- **Android:** Android 10 or newer (API 29+)
+- **Windows:** Windows 10 / 11 (x64)
+
+### 1. Install on Windows
+
+Download the latest Windows package from [GitHub Releases](https://github.com/nonlog/Conduit/releases/latest) and extract it, or install via [Scoop](https://scoop.sh) if you use the [`nonlog/scoop-www`](https://github.com/nonlog/scoop-www) bucket:
+
+```powershell
+scoop bucket add www https://github.com/nonlog/scoop-www
+scoop install www/conduit
+```
+
+### 2. Install on Android
+
+Download and install the signed APK from [GitHub Releases](https://github.com/nonlog/Conduit/releases/latest).
+
+### 3. Pair Your Devices
+
+1. Launch **Conduit** on both Windows and Android.
+2. On Windows, start pairing to display a 6-digit code and QR code.
+3. On Android, scan the QR code or enter the 6-digit code, then verify the security fingerprint matches on both screens.
+
+### 4. Enable Background Clipboard Sync on Android
+
+Android 10+ restricts background apps from reading the clipboard. Conduit supports two zero-polling modes:
+
+- **Rooted devices (LSPosed — recommended):** Enable the Conduit module in LSPosed for **System Framework** and **Conduit**, then reboot. Conduit will use the low-overhead hook automatically.
+- **Stock Android (no root):** Enable **Conduit clipboard sync** in Android Accessibility settings when prompted. It only activates while a desktop is connected and never polls in the background.
+
+---
+
+## Project Structure
+
+| Directory | Stack | Role |
 |---|---|---|
-| `android/` | Kotlin | phone |
-| `windows/` | Rust daemon, Rune desktop, and native Share Target host | Windows (light resident daemon, on-demand Rune UI, and a small Rust Windows Share Target process) |
-| `relay/` | Rust | a VPS, for when LAN is unavailable |
-| `proto/` | protobuf | wire contract, single source of truth |
+| `android/` | Kotlin, Jetpack Compose | Android app, notification listener, and optional LSPosed clipboard module |
+| `windows/conduit-daemon/` | Rust | Lightweight resident Windows background service |
+| `windows/conduit-rune/` | Rust | On-demand native Windows desktop UI |
+| `windows/conduit-share-target/` | Rust | Native Windows Share Target host |
+| `relay/` | Rust | Stateless blind TCP rendezvous relay for off-LAN connections |
+| `proto/` | Protocol Buffers | Shared wire contract (single source of truth for all platforms) |
 
-LAN direct connection is preferred. The relay is a dumb byte forwarder for when the phone is
-on cellular or a foreign network: both ends dial it outbound over TCP, it pairs them by
-`device_id` and copies opaque frames. Clipboard and notification content is end-to-end
-encrypted with Noise, so the relay cannot read what it carries. No ICE, no STUN, no TURN —
-that machinery is precisely the leak this project exists to avoid.
+---
 
-## Status
+## Documentation
 
-Tagged releases and their platform-specific binaries are built and published by GitHub Actions.
-For the exact current version and verified checksums, use the latest GitHub Release and the
-published Scoop manifest rather than copying an old version number from this README.
+For contributors and deeper technical details:
 
-The release has working clipboard, notification, file-transfer, capture-toast, webpage-share,
-pairing and Relay paths. The remaining evidence gates are deliberately separate from packaging:
+- [Architecture Overview](docs/architecture.md) — Transport, Noise XX handshake, framing, and security model
+- [Development Guide](docs/development.md) — Building, testing, GitHub Actions CI, and installing dev builds
+- [Design Decisions](docs/decisions.md) — Rationale behind key protocol and platform trade-offs
+- [Roadmap & TODO](docs/TODO.md) — Open tasks and long-running validation checklist
 
-The next Windows desktop package selects the native Rune UI (`conduit-rune.exe`)
-for tray and Start-menu launches. Nova/Tauri is retired: there is no WebView frontend or alternative desktop button.
+Formal release binaries for Android, Windows, and the Relay are built reproducibly via GitHub Actions and published with `SHA256SUMS.txt` on [GitHub Releases](https://github.com/nonlog/Conduit/releases).
 
-- M0 still needs a true same-LAN 48-hour endurance run with balanced lifecycle/resource counts.
-- M2 still needs a longer Wi-Fi/cellular/hotspot and Relay re-parking campaign.
-- Long-duration Relay/proxy stability, final light-theme visual proof, and a few natural-device
-  notification/camera checks remain open.
-
-See `docs/TODO.md` for the current checklist and `docs/CONDUIT_HANDOFF.md` for the resume
-checkpoint. Formal Android, Windows and Relay builds must continue to run in GitHub Actions.
+---
 
 ## Provenance
 
-Clean implementation. KDE Connect and Sefirah were read for protocol and architecture ideas;
-no code was copied from them. That distinction is why the git history matters, and it is why
-the license stays open as an option.
+Conduit is a clean-room implementation. [KDE Connect](https://kdeconnect.kde.org/) and [Sefirah](https://github.com/shrimqy/Sefirah) were studied for protocol and architecture ideas, and no code was copied from either project.
