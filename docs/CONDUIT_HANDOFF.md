@@ -1,5 +1,19 @@
 # Conduit handoff
 
+## Android 0.1.27 dark card update — 2026-11-22
+- [Android-only release](https://github.com/nonlog/Conduit/releases/tag/android-v0.1.27) is tagged at `b2160a0`. Run `45016018930` built and verified the signed APK in `signed_apk_only` mode; unit tests, Android lint, emulator tests and local Rust builds were not run, per the user's instructions.
+- The signed release was installed in place on OnePlus 12 (`versionCode=29`, `versionName=0.1.27`) and launched via ADB. It raises dark cards and control surfaces in both fixed and wallpaper modes. Windows and Scoop remain on the full `v0.1.26` release, which remains the GitHub Latest release.
+
+## v0.1.26 release and dark card follow-up — 2026-11-22
+- [PR #28](https://github.com/nonlog/Conduit/pull/28) merged as `efe751c`. [v0.1.26](https://github.com/nonlog/Conduit/releases/tag/v0.1.26) is tagged at `664a10e` and was published by GitHub Actions run `45013809928`; all published binary checksums matched. No local Rust compilation for the release.
+- `nonlog/scoop-www` commit `48ab026` points to the 0.1.26 ZIP. Windows host `Log` upgraded through Scoop; the current junction points to `0.1.26`, Share Target is `0.1.26.0`, and the installer reported the LAN firewall rules ready. OnePlus 12 upgraded in place to the signed APK (version code 28). Pairing remained intact: after both upgrades, a 7,604,214-byte Windows → phone LAN transfer completed and the phone file matched SHA-256.
+
+## Windows send routing and Android palette candidate — 2026-11-22
+- [PR #28](https://github.com/nonlog/Conduit/pull/28), branch `codex/fix-transfer-and-mobile-theme`, candidate commit `6ef6a397`. `Session changed` at zero bytes was a route-key mismatch: the dispatcher used the ephemeral session owner to look up a queue registered by paired peer ID. The fix separates the two identifiers and keeps the session guard for queued work.
+- GitHub Actions `45002323903` (Build) and `45002323926` (Android Expressive) passed. Rust build and test verification must use GitHub Actions; do not compile Rust on the user's PC. The Android light/dark palette now assigns semantic colors together, and the optional wallpaper colors use Android's complete dynamic scheme.
+- On host `Log`, only the installed daemon executable was replaced with the artifact from `45002323903`; Scoop data and pairing were preserved. Windows → OnePlus 12 LAN sends of the previously failing 3,953-byte `README.md`, a 7,604,310-byte CI zip, and the original 56,217,884-byte Bettbox APK all completed and matched SHA-256 on the phone.
+- The signed `conduit-android-signed` candidate from `45011630221` passed signer verification and was installed using `adb install -r` without uninstalling. The phone stayed paired, and another `README.md` send after the update completed with matching SHA-256. Light/dark default palette screenshots were inspected from the passing PR's emulator run; the real device displayed a consistent purple dynamic palette. Its wallpaper color preference was left alone.
+
 ## v0.1.22-v0.1.24: multi-computer support via the phone, icon-only dock, collapsible sidebar, LAN hint — 2026-11-11
 - Branch is `master`, pushed. Release commits (all `Codex <codex@openai.com>`): `4d3238aa5ec02fd2b8b72a2889598d288bb7e164` (`v0.1.22`), `752a411d1f5c8c3d09c3709be3de57f18f2011fc` (`v0.1.23`), `af04d9093b4454f5cf58bbd3e43e46031c6cd68b` (`v0.1.24`).
 - **Trust model (decided with the user): computers never pair with each other.** Only phone<->PC pairing exists. The phone sends an authenticated `PeerRoster` (`Kind::PEER_ROSTER = 5`) to each paired PC; sibling PCs are added/removed in `paired-peers.tsv` only from that roster (phone-only, pinned on persisted `PeerKind::Phone`) and then reconnect PC<->PC directly (LAN, or Relay with no relay change: PCs listen as `RELAY_RESPONDER` on their own id and dial as `RELAY_INITIATOR`). `pair join`, the PC pairing UI and `dismissed-peers.txt` were removed in v0.1.23.
