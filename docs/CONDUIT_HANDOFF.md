@@ -1,5 +1,19 @@
 # Conduit handoff
 
+## v0.1.31 release: self-hosted relay priority + iroh HTTP proxy fallback, clearable transfer history, and open file/folder actions — 2026-11-27
+- [v0.1.31](https://github.com/nonlog/Conduit/releases/tag/v0.1.31) is tagged at `5833162` (`Codex <codex@openai.com>`). GitHub Actions `Build` run `45999584752` passed across `Relay Linux x64`, `Windows x64`, `Android` (signed APK + `cargo-ndk`), and `GitHub Release`.
+  - `Conduit-0.1.31-windows-x64.zip` (SHA-256 `d2b8e1f2dd1d47a76a985af91f1c29a01267c2e4e9fff41489607bdf5c552d8d`)
+  - `Conduit-0.1.31-android.apk` (SHA-256 `93aa412567da2b14b0b9d958c5c6c1e3590c1ecd40f7f99397a084783045b729`)
+  - `Conduit-0.1.31-relay-linux-x64` (SHA-256 `122060c78f575f6964de0300c4dd872e805c28319d691c14e81141bea649b84b`)
+- **Transport & proxy**:
+  - Reordered Android `SyncService.dialNextRelay()` to try self-hosted TCP relays first (`conduit-jp/tyo/wa/us`) and fall back to `iroh` WAN only when configured relays fail.
+  - Added `resolved_http_proxy()` in `windows/conduit-daemon/src/config.rs` so `iroh` uses the Windows HTTP system proxy (`http://127.0.0.1:7890`) while TCP relays keep using SOCKS5.
+  - Upgraded `crates/conduit-iroh` loopback stream bridge to 256 KiB bidirectional buffers (`copy_bidirectional_with_sizes`).
+- **Transfer history & file actions (Windows + Android)**:
+  - Windows (`conduit-daemon` + `conduit-rune`): added `conduit-daemon transfers clear` (`TRANSFERS_CLEAR_COMMAND` / `Transfers::clear_history`), `"Clear history"` (with confirmation) and `"Open folder"` on the Transfers toolbar, and per-row `"Open"` (default app) and `"Folder"` (`explorer.exe /select,`) buttons on completed inbound files.
+  - Android (`ActivityTabs.kt`, `ExpressiveTransferCard.kt`, `TransferStatus.kt`, `Files.kt`, `Link.kt`, `MainActivity.kt`): stored MediaStore `contentUri` + `mimeType` on completed inbound `FileTransfer` items, added `"Open"` (default app via `Intent.ACTION_VIEW`) and `"Folder"` (Downloads) buttons on completed received cards, and added `"Clear history"` (with confirmation dialog) + `"Folder"` on the Transfers tab.
+- **Dual-device upgrade**: Updated `nonlog/scoop-www` to `0.1.31` and upgraded Windows (`scoop update conduit`) and OnePlus 12 (`adb -s 4a851996 install -r`).
+
 ## v0.1.30 release: iroh WAN proxy/timeout fix, M3E dark theme polish, auto-enable pairing, and clean settings — 2026-11-27
 - [v0.1.30](https://github.com/nonlog/Conduit/releases/tag/v0.1.30) is tagged at `e8649bc` (`Codex <codex@openai.com>`). GitHub Actions `Build` run `45986342617` passed across `Relay Linux x64`, `Windows x64`, `Android` (signed APK + `cargo-ndk`), and `GitHub Release`.
   - `Conduit-0.1.30-windows-x64.zip` (SHA-256 `1e2446c0a4c32a47353162cef048d8c1f28fae6b699cab4b44bdf1e6370dcea5`)
