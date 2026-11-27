@@ -1,5 +1,17 @@
 # Conduit handoff
 
+## v0.1.30 release: iroh WAN proxy/timeout fix, M3E dark theme polish, auto-enable pairing, and clean settings — 2026-11-27
+- [v0.1.30](https://github.com/nonlog/Conduit/releases/tag/v0.1.30) is tagged at `e8649bc` (`Codex <codex@openai.com>`). GitHub Actions `Build` run `45986342617` passed across `Relay Linux x64`, `Windows x64`, `Android` (signed APK + `cargo-ndk`), and `GitHub Release`.
+  - `Conduit-0.1.30-windows-x64.zip` (SHA-256 `1e2446c0a4c32a47353162cef048d8c1f28fae6b699cab4b44bdf1e6370dcea5`)
+  - `Conduit-0.1.30-android.apk` (SHA-256 `ed20959a51d3e9837bbd8798d267a127fec4eaa27232ed2533f56a2806f41fde`)
+  - `Conduit-0.1.30-relay-linux-x64` (SHA-256 `60d33dbcafece600563f010a4c1a1ff90069de99f7e76e42a9a2d93afb7da57d`)
+- **Fixes shipped**:
+  1. **iroh WAN connectivity**: Skipped passing `socks5://` system proxy URLs to `iroh` (which only accepts HTTP/HTTPS proxies and was broken by Windows `system_socks5_proxy()`), waited briefly for `endpoint.online()` on start/dial, and increased Android `Link.kt` iroh dial timeout from `5_000` ms to `20_000` ms.
+  2. **Android Material 3 Expressive theme (`ConduitTheme.kt`)**: Removed `withDarkSurfaces()` (which clobbered `dynamicDarkColorScheme` and forced washed-out grey-green `#343A39`/`#434A49` cards) and replaced the fallback dark/light palettes with authentic M3E Indigo/Blue-Violet tonal surfaces (`#101218` -> `#171A23` -> `#1D212C` -> `#262B38`).
+  3. **Settings cleanup (`windows/conduit-rune/src/main.rs`)**: Removed legacy `Relay nodes` (`conduit-*.414222.xyz:41113`) editor/list from Windows Settings while keeping `PROXY ROUTE`.
+  4. **Direct pairing (`windows/conduit-daemon/src/main.rs`)**: `pair start` now auto-enables/resumes the link when paused instead of failing with `"Connection is paused. Connect before starting pairing."`.
+- **Installation**: `nonlog/scoop-www` updated to `0.1.30` (`10086f5`) and `Log` upgraded via `scoop update conduit`. Phone was on 5G (Wi-Fi ADB unreachable), so Android `0.1.30` APK is ready on GitHub Releases or via ADB once back on Wi-Fi.
+
 ## Android 0.1.29 hotfix: initialize ndk_context in iroh JNI bridge — 2026-11-27
 - [Android-only release `android-v0.1.29`](https://github.com/nonlog/Conduit/releases/tag/android-v0.1.29) is tagged at `490dd8e` (`master` commits `6125060` + `490dd8e`, `Codex <codex@openai.com>`). GitHub Actions `Android Expressive` run `45983145625` (`signed_apk_only=true`) built `crates/conduit-iroh-android` via `cargo-ndk` and verified the signed APK (`19,611,795` bytes, SHA-256 `1917f742977cb627b991686332b18be0c41a3eacb2fe15e351132bb20e3333e9`).
 - **Root cause**: `v0.1.28` aborted on Android startup (`SIGABRT`, `'android context was not initialized'`) inside `Java_com_conduit_sync_IrohBridge_nativeStart` and `tokio-rt-worker` because `iroh` (`n0-dns-resolver` / `netdev`) reads `ndk_context::android_context()`, while `crates/conduit-iroh-android` had not called `ndk_context::initialize_android_context(...)` and also compiled with `panic = "abort"`.
