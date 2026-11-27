@@ -23,6 +23,7 @@ pub const MAX_PEERS: usize = 8;
 const PEER_FILE: &str = "peer.txt";
 const PEER_NAME_FILE: &str = "peer-name.txt";
 const PEERS_FILE: &str = "paired-peers.tsv";
+const IROH_PEERS_FILE: &str = "iroh-peers.tsv";
 const SELECTED_FILE: &str = "selected-peer.txt";
 const PAIRING_FILE: &str = "pairing.txt";
 /// Marks data directories that have already entered the explicit-pairing model. Without this, an
@@ -526,6 +527,50 @@ fn write_peers_locked(dir: &Path, peers: &[PairedPeer]) -> Result<()> {
 
 pub fn selected_peer(dir: &Path) -> Option<String> {
     read_one_line(&dir.join(SELECTED_FILE)).filter(|value| valid_id(value))
+}
+
+fn valid_iroh_id(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+pub fn iroh_id(dir: &Path, peer_id: &str) -> Option<String> {
+    let _guard = lock_registry();
+    let text = std::fs::read_to_string(dir.join(IROH_PEERS_FILE)).ok()?;
+    text.lines().find_map(|line| {
+        let (id, iroh) = line.split_once('\t')?;
+        (id == peer_id && valid_iroh_id(iroh)).then(|| iroh.to_ascii_lowercase())
+    })
+}
+
+pub fn remember_iroh_id(dir: &Path, peer_id: &str, raw_iroh_id: &str) -> Result<()> {
+    let normalized = raw_iroh_id.trim().to_ascii_lowercase();
+    if !valid_id(peer_id) || !valid_iroh_id(&normalized) {
+        return Ok(());
+    }
+    let _guard = lock_registry();
+    let mut entries: Vec<(String, String)> = std::fs::read_to_string(dir.join(IROH_PEERS_FILE))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| {
+            let (id, iroh) = line.split_once('\t')?;
+            (valid_id(id) && valid_iroh_id(iroh))
+                .then(|| (id.to_owned(), iroh.to_ascii_lowercase()))
+        })
+        .collect();
+    if let Some(slot) = entries.iter_mut().find(|(id, _)| id == peer_id) {
+        if slot.1 == normalized {
+            return Ok(());
+        }
+        slot.1 = normalized;
+    } else {
+        entries.push((peer_id.to_owned(), normalized));
+    }
+    let body: String = entries
+        .into_iter()
+        .take(MAX_PEERS * 2)
+        .map(|(id, iroh)| format!("{id}\t{iroh}\n"))
+        .collect();
+    atomic_write(&dir.join(IROH_PEERS_FILE), &body)
 }
 
 pub fn choose_peer(dir: &Path, id: &str) -> Result<()> {

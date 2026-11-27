@@ -1,9 +1,10 @@
 [workspace]
 resolver = "2"
-members = ["windows/conduit-daemon", "windows/conduit-share-target", "relay"]
+members = ["crates/conduit-iroh", "windows/conduit-daemon", "windows/conduit-share-target", "relay"]
+exclude = ["crates/conduit-iroh-android"]
 
 [workspace.package]
-version = "0.1.26"
+version = "0.1.28"
 edition = "2021"
 rust-version = "1.98"
 publish = false

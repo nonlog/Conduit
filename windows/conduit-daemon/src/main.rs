@@ -662,7 +662,12 @@ async fn run() -> Result<()> {
     let control_share_tx = share_tx.clone();
     // Likewise one toast thread. A failure here is not fatal: clipboard sync is still
     // worth having on a machine where the notification platform will not cooperate.
-    let toasts = match toast::Notifier::start(&dir, toast_action_tx.clone(), bridge.clone()) {
+    let toasts = match toast::Notifier::start(
+        &dir,
+        toast_action_tx.clone(),
+        bridge.clone(),
+        user_config.auto_copy_otp(),
+    ) {
         Ok(notifier) => Some(Arc::new(notifier)),
         Err(e) => {
             warn!(error = %e, "toasts unavailable, mirroring notifications is disabled");
@@ -714,13 +719,27 @@ async fn run() -> Result<()> {
     // ordinary socket carrying an ordinary Noise session.
     let mut relay_endpoints = user_config.resolved_relays(DEFAULT_RELAYS);
     let mut relay_proxy = user_config.resolved_proxy();
+    let mut iroh_enabled = user_config.iroh_enabled();
+    let mut iroh_relays = user_config.resolved_iroh_relays();
+    let local_iroh_id = conduit_iroh::derive_secret_key(&identity.private)
+        .map(|k| conduit_iroh::endpoint_id_hex(&k.public()))
+        .unwrap_or_default();
     info!(
         relays = ?relay_endpoints,
         proxy = relay_proxy.as_deref().unwrap_or("direct"),
+        iroh_enabled,
+        iroh_id = %local_iroh_id.get(..12).unwrap_or(""),
         "relay configuration"
     );
     let (mut relay_tasks, mut relay_rx) = if link_enabled {
-        start_relay_workers(&relay_endpoints, &device_id, relay_proxy.clone())
+        start_relay_workers(
+            &relay_endpoints,
+            &device_id,
+            relay_proxy.clone(),
+            &identity.private,
+            iroh_enabled,
+            &iroh_relays,
+        )
     } else {
         empty_relay_workers()
     };
@@ -791,7 +810,12 @@ async fn run() -> Result<()> {
                         let wanted_tray = new_config.show_tray_icon();
                         let new_relays = new_config.resolved_relays(DEFAULT_RELAYS);
                         let new_proxy = new_config.resolved_proxy();
-                        let relay_changed = new_relays != relay_endpoints || new_proxy != relay_proxy;
+                        let new_iroh_enabled = new_config.iroh_enabled();
+                        let new_iroh_relays = new_config.resolved_iroh_relays();
+                        let relay_changed = new_relays != relay_endpoints
+                            || new_proxy != relay_proxy
+                            || new_iroh_enabled != iroh_enabled
+                            || new_iroh_relays != iroh_relays;
                         let mut apply_error = None;
                         if let Err(error) = history.configure(new_config.retention_days()) {
                             apply_error = Some(format!("updating notification retention: {error:#}"));
@@ -823,12 +847,21 @@ async fn run() -> Result<()> {
                                 let _ = task.await;
                             }
                             let (tasks, rx) = if link_enabled {
-                                start_relay_workers(&new_relays, &device_id, new_proxy.clone())
+                                start_relay_workers(
+                                    &new_relays,
+                                    &device_id,
+                                    new_proxy.clone(),
+                                    &identity.private,
+                                    new_iroh_enabled,
+                                    &new_iroh_relays,
+                                )
                             } else { empty_relay_workers() };
                             relay_tasks = tasks;
                             relay_rx = rx;
                             relay_endpoints = new_relays;
                             relay_proxy = new_proxy;
+                            iroh_enabled = new_iroh_enabled;
+                            iroh_relays = new_iroh_relays;
                             for task in pairing_relay_tasks.drain(..) {
                                 task.abort();
                                 let _ = task.await;
@@ -914,7 +947,7 @@ async fn run() -> Result<()> {
                                 Ok(()) => {
                                     link_enabled = true;
                                     desktop_status.set_link_enabled(true);
-                                    (relay_tasks, relay_rx) = start_relay_workers(&relay_endpoints, &device_id, relay_proxy.clone());
+                                    (relay_tasks, relay_rx) = start_relay_workers(&relay_endpoints, &device_id, relay_proxy.clone(), &identity.private, iroh_enabled, &iroh_relays);
                                     // Every peer disabled means nothing could ever connect, so
                                     // resuming the link is also an explicit "connect again".
                                     if !pairing::peers(&dir).iter().any(|peer| peer.enabled) {
@@ -1001,6 +1034,9 @@ async fn run() -> Result<()> {
                                         &relay_endpoints,
                                         &device_id,
                                         relay_proxy.clone(),
+                                        &identity.private,
+                                        iroh_enabled,
+                                        &iroh_relays,
                                     );
                                 }
                             }
@@ -1136,12 +1172,14 @@ async fn run() -> Result<()> {
                 let private_key = identity.private.clone();
                 let hello_dir = dir.clone();
                 let hello_id = device_id.clone();
+                let hello_iroh_id = local_iroh_id.clone();
                 candidates.spawn(async move {
                     stream.set_nodelay(true)?;
                     set_keepalive(&stream)?;
                     let lan_hint = lan_hint_for(stream.local_addr()?, PORT);
-                    let hello_for =
-                        |remote_id: &str| inbound_hello(&hello_dir, &hello_id, remote_id, lan_hint);
+                    let hello_for = |remote_id: &str| {
+                        inbound_hello(&hello_dir, &hello_id, remote_id, lan_hint, &hello_iroh_id)
+                    };
                     let negotiated = tokio::time::timeout(
                         admission::TIMEOUT,
                         admission::negotiate_with(&mut stream, &private_key, false, hello_for),
@@ -1214,6 +1252,15 @@ async fn run() -> Result<()> {
         ) {
             warn!(%error, "could not commit candidate trust; active sessions unchanged");
             continue;
+        }
+        if !candidate.negotiated.hello.iroh_endpoint_id.is_empty() {
+            if let Err(error) = pairing::remember_iroh_id(
+                &dir,
+                &remote_id,
+                &candidate.negotiated.hello.iroh_endpoint_id,
+            ) {
+                warn!(%error, "could not save peer iroh endpoint id");
+            }
         }
         admission_generation.invalidate();
         candidates.abort_all();
@@ -1335,13 +1382,24 @@ fn start_relay_workers(
     relays: &[String],
     rendezvous: &str,
     relay_proxy: Option<String>,
+    private_key: &[u8],
+    iroh_enabled: bool,
+    iroh_relays: &[String],
 ) -> (
     Vec<tokio::task::JoinHandle<()>>,
     tokio::sync::mpsc::Receiver<RelayArrival>,
 ) {
     let (relay_tx, relay_rx) =
-        tokio::sync::mpsc::channel::<RelayArrival>((relays.len().max(1) * 2).max(2));
-    let mut tasks = Vec::with_capacity(relays.len());
+        tokio::sync::mpsc::channel::<RelayArrival>((relays.len().max(1) * 2 + 2).max(4));
+    let mut tasks = Vec::with_capacity(relays.len() + usize::from(iroh_enabled));
+    if iroh_enabled {
+        tasks.push(tokio::spawn(accept_iroh_forever(
+            private_key.to_vec(),
+            iroh_relays.to_vec(),
+            relay_proxy.clone(),
+            relay_tx.clone(),
+        )));
+    }
     for endpoint in relays {
         info!(%endpoint, "parking at relay");
         tasks.push(tokio::spawn(park_forever(
@@ -1356,6 +1414,57 @@ fn start_relay_workers(
     // `Some(arrival)` select branch dormant without any poll or special timer.
     drop(relay_tx);
     (tasks, relay_rx)
+}
+
+async fn accept_iroh_forever(
+    private_key: Vec<u8>,
+    custom_relays: Vec<String>,
+    relay_proxy: Option<String>,
+    tx: tokio::sync::mpsc::Sender<RelayArrival>,
+) {
+    let mut backoff = Duration::from_secs(2);
+    loop {
+        match conduit_iroh::IrohNode::start(
+            &private_key,
+            &custom_relays,
+            true,
+            relay_proxy.as_deref(),
+        )
+        .await
+        {
+            Ok(node) => {
+                backoff = Duration::from_secs(2);
+                loop {
+                    match node.accept_bridged().await {
+                        Ok((stream, route)) => {
+                            if tx
+                                .send(RelayArrival {
+                                    stream,
+                                    endpoint: route,
+                                    pairing: false,
+                                })
+                                .await
+                                .is_err()
+                            {
+                                node.close().await;
+                                return;
+                            }
+                        }
+                        Err(err) => {
+                            warn!(%err, "iroh accept loop ended; restarting");
+                            break;
+                        }
+                    }
+                }
+                node.close().await;
+            }
+            Err(err) => {
+                warn!(%err, ?backoff, "iroh endpoint start failed");
+            }
+        }
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(Duration::from_secs(60));
+    }
 }
 
 fn empty_relay_workers() -> (
@@ -2522,6 +2631,7 @@ fn inbound_hello(
     device_id: &str,
     remote_id: &str,
     lan_hint: Option<String>,
+    iroh_endpoint_id: &str,
 ) -> pb::PairRequest {
     let state = pairing::state(dir);
     // Only a phone is told: a desktop reaches this computer through the roster, and during pairing
@@ -2548,6 +2658,7 @@ fn inbound_hello(
             .map(|code| pairing::pairing_proof(code, remote_id, device_id))
             .unwrap_or_default(),
         lan_hint,
+        iroh_endpoint_id: iroh_endpoint_id.to_owned(),
     }
 }
 
@@ -2565,6 +2676,9 @@ async fn dial_stream(
     set_keepalive(&stream)?;
     let peer = stream.peer_addr()?;
     let mut stream = stream;
+    let local_iroh = conduit_iroh::derive_secret_key(private_key)
+        .map(|k| conduit_iroh::endpoint_id_hex(&k.public()))
+        .unwrap_or_default();
     let hello_for = |remote_id: &str| pb::PairRequest {
         device_id: local_id.to_owned(),
         device_name: advert::hostname(),
@@ -2574,6 +2688,7 @@ async fn dial_stream(
         pairing_proof: code
             .map(|code| pairing::pairing_proof(code, local_id, remote_id))
             .unwrap_or_default(),
+        iroh_endpoint_id: local_iroh.clone(),
         ..Default::default()
     };
     let negotiated = tokio::time::timeout(
@@ -2969,7 +3084,7 @@ mod peer_tests {
         )
         .unwrap();
         let hint = Some("192.168.1.7:41112".to_string());
-        let hello = |peer: &str| inbound_hello(&dir, &local, peer, hint.clone()).lan_hint;
+        let hello = |peer: &str| inbound_hello(&dir, &local, peer, hint.clone(), "").lan_hint;
         assert_eq!(hello(&phone), "192.168.1.7:41112");
         assert_eq!(hello(&sibling), "", "a sibling desktop is never told");
         assert_eq!(hello(&"U".repeat(43)), "", "an unknown peer is never told");
@@ -3104,7 +3219,7 @@ mod peer_tests {
             for _ in 0..2 {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let hello_for =
-                    |remote: &str| inbound_hello(&listening_dir, &listening_id, remote, None);
+                    |remote: &str| inbound_hello(&listening_dir, &listening_id, remote, None, "");
                 let negotiated =
                     admission::negotiate_with(&mut stream, &identity_a.private, false, hello_for)
                         .await

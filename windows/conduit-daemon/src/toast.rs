@@ -373,6 +373,7 @@ impl Notifier {
         cache: &Path,
         action_tx: broadcast::Sender<pb::NotifAction>,
         clipboard: Arc<clip::Bridge>,
+        auto_copy_otp: bool,
     ) -> Result<Self> {
         let identity_icon = ensure_app_identity_icon(cache)?;
         register_aumid(&identity_icon).context("registering the toast AppUserModelID")?;
@@ -395,7 +396,7 @@ impl Notifier {
                 match ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(AUMID)) {
                     Ok(notifier) => {
                         if ready_tx.send(Ok(())).is_ok() {
-                            pump(&notifier, &cache, rx, action_tx, clipboard);
+                            pump(&notifier, &cache, rx, action_tx, clipboard, auto_copy_otp);
                         }
                     }
                     Err(e) => {
@@ -454,6 +455,7 @@ fn pump(
     rx: mpsc::Receiver<Cmd>,
     action_tx: broadcast::Sender<pb::NotifAction>,
     clipboard: Arc<clip::Bridge>,
+    auto_copy_otp: bool,
 ) {
     // The broker token for the phone capture currently on screen. At most one is ever
     // outstanding, because a new capture replaces the toast that named the old one — so
@@ -494,6 +496,13 @@ fn pump(
                         None
                     });
                 let code = verification_code::extract(&title, &body, &messages);
+                if auto_copy_otp && !suppress_popup {
+                    if let Some(ref value) = code {
+                        if let Err(e) = clipboard.apply(value) {
+                            warn!(error = %e, "could not auto-copy verification code");
+                        }
+                    }
+                }
                 match show(
                     notifier,
                     &toast_key,
@@ -565,6 +574,13 @@ fn pump(
                 let shape = shapes.get(&toast_key).cloned();
                 if let Some(shape) = shape {
                     if shape.code != code {
+                        if auto_copy_otp {
+                            if let Some(ref value) = code {
+                                if let Err(e) = clipboard.apply(value) {
+                                    warn!(error = %e, "could not auto-copy updated verification code");
+                                }
+                            }
+                        }
                         match show(
                             notifier,
                             &toast_key,

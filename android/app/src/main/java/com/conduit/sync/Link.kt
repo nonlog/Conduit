@@ -205,6 +205,9 @@ class Link(
         /** The desktop's own LAN listener as "ip:port"; dialled once instead of waiting for mDNS. */
         fun onPeerLanHint(hint: String) {}
 
+        /** The desktop's 64-char hex Ed25519 iroh EndpointId for WAN QUIC connections. */
+        fun onPeerIrohId(irohId: String) {}
+
         /**
          * A session that was actually up has gone. A dial that never completed its
          * handshake deliberately does not call this: re-dialling on a refusal is how a
@@ -669,26 +672,30 @@ class Link(
     fun connect(
         address: InetSocketAddress,
         network: Network? = null,
-    ) = dial(address, null, null, network)
+    ) = dial(address, null, null, network, null)
 
     fun connectVia(
         relay: InetSocketAddress,
         rendezvous: String,
         fallbackIp: String? = null,
-    ) = dial(relay, rendezvous, fallbackIp, null)
+    ) = dial(relay, rendezvous, fallbackIp, null, null)
+
+    fun connectViaIroh(peerIrohId: String) =
+        dial(InetSocketAddress.createUnresolved("127.0.0.1", 1), null, null, null, peerIrohId)
 
     private fun dial(
         address: InetSocketAddress,
         rendezvous: String?,
         fallbackIp: String?,
         network: Network?,
+        irohPeerId: String?,
     ) {
         synchronized(connectionLock) {
             if (spent || current?.socket?.isClosed == false) return
             val owner = Connection(opened.incrementAndGet(), network)
             current = owner
             events.onState(LinkState.Discovering, null)
-            Thread({ pump(owner, address, rendezvous, fallbackIp, network) }, "conduit-recv").start()
+            Thread({ pump(owner, address, rendezvous, fallbackIp, network, irohPeerId) }, "conduit-recv").start()
         }
     }
 
@@ -824,18 +831,23 @@ class Link(
         rendezvous: String?,
         fallbackIp: String?,
         network: Network?,
+        irohPeerId: String?,
     ) {
         var established = false
         try {
             owner.socket.use { sock ->
                 val target =
-                    if (address.isUnresolved) {
+                    if (irohPeerId != null) {
+                        val port = IrohBridge.dialLocalPort(irohPeerId, CONNECT_TIMEOUT_MS)
+                        if (port <= 0) throw java.io.IOException("iroh dial failed")
+                        InetSocketAddress("127.0.0.1", port)
+                    } else if (address.isUnresolved) {
                         val resolved = InetAddress.getByName(address.hostString)
                         InetSocketAddress(if (rendezvous != null) relayTargetAddress(resolved, fallbackIp) else resolved, address.port)
                     } else {
                         address
                     }
-                if (rendezvous == null && network != null) {
+                if (rendezvous == null && irohPeerId == null && network != null) {
                     try {
                         network.bindSocket(sock)
                         owner.physicallyBound = true
@@ -861,7 +873,7 @@ class Link(
                 val live = WireSession.handshake(sock.getInputStream(), sock.getOutputStream(), privateKey, initiator = true)
                 owner.live = live
                 val remoteId = Identity.deviceId(live.peerStatic)
-                val viaRelay = rendezvous != null
+                val viaRelay = rendezvous != null || irohPeerId != null
                 if (viaRelay) sock.soTimeout = RELAY_READ_DEADLINE_MS
                 val hello =
                     PairRequest
@@ -871,6 +883,7 @@ class Link(
                         .setPairing(events.pairingRequested())
                         .setTransferProtocol(1)
                         .setDeviceKind(DeviceKind.DEVICE_KIND_PHONE)
+                        .setIrohEndpointId(IrohBridge.endpointId)
                         .apply {
                             pairingCodeProvider()?.let { code ->
                                 setPairingProof(
@@ -901,6 +914,9 @@ class Link(
                     events.onState(LinkState.Connected, Identity.fingerprint(live.peerStatic))
                     events.onWallpaperHash(desktopHello.wallpaperHash.toByteArray())
                     events.onPeerLanHint(desktopHello.lanHint)
+                    if (desktopHello.irohEndpointId.isNotBlank()) {
+                        events.onPeerIrohId(desktopHello.irohEndpointId)
+                    }
                 }
                 while (usable(owner)) {
                     val envelope = live.recv()

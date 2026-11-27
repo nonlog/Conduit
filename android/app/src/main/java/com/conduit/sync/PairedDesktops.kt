@@ -21,6 +21,7 @@ data class PairedDesktop(val id: String, val name: String = "", val enabled: Boo
 object PairedDesktops {
     const val MAX_PEERS = 8
     private const val REGISTRY = "paired-desktops.tsv"
+    private const val IROH_REGISTRY = "iroh-peers.tsv"
     private const val LEGACY_ID = "peer.txt"
     private const val LEGACY_NAME = "peer-name.txt"
     private const val SELECTED = "selected-peer.txt"
@@ -155,6 +156,57 @@ object PairedDesktops {
             val next = remaining.firstOrNull()
             if (next == null) File(dir, SELECTED).delete()
             else choose(dir, next.id)
+        }
+        forgetIrohId(dir, id)
+    }
+
+    private fun validIrohId(value: String): Boolean =
+        value.length == 64 && value.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }
+
+    @Synchronized
+    fun irohId(dir: File, id: String): String? {
+        val file = File(dir, IROH_REGISTRY)
+        return runCatching { file.readLines() }.getOrDefault(emptyList())
+            .firstNotNullOfOrNull { line ->
+                val parts = line.split('\t')
+                if (parts.size == 2 && parts[0] == id && validIrohId(parts[1])) parts[1].lowercase() else null
+            }
+    }
+
+    @Synchronized
+    fun rememberIrohId(dir: File, id: String, rawIrohId: String) {
+        val normalized = rawIrohId.trim().lowercase()
+        if (!validId(id) || !validIrohId(normalized)) return
+        val file = File(dir, IROH_REGISTRY)
+        val entries = LinkedHashMap<String, String>()
+        runCatching { file.readLines() }.getOrDefault(emptyList()).forEach { line ->
+            val parts = line.split('\t')
+            if (parts.size == 2 && validId(parts[0]) && validIrohId(parts[1])) {
+                entries[parts[0]] = parts[1].lowercase()
+            }
+        }
+        if (entries[id] == normalized) return
+        entries[id] = normalized
+        val text = entries.entries.joinToString("\n", postfix = "\n") { "${it.key}\t${it.value}" }
+        writeAtomic(file, text)
+    }
+
+    @Synchronized
+    private fun forgetIrohId(dir: File, id: String) {
+        val file = File(dir, IROH_REGISTRY)
+        if (!file.exists()) return
+        val remaining = LinkedHashMap<String, String>()
+        runCatching { file.readLines() }.getOrDefault(emptyList()).forEach { line ->
+            val parts = line.split('\t')
+            if (parts.size == 2 && parts[0] != id && validId(parts[0]) && validIrohId(parts[1])) {
+                remaining[parts[0]] = parts[1].lowercase()
+            }
+        }
+        if (remaining.isEmpty()) {
+            file.delete()
+        } else {
+            val text = remaining.entries.joinToString("\n", postfix = "\n") { "${it.key}\t${it.value}" }
+            writeAtomic(file, text)
         }
     }
 

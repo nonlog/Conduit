@@ -317,6 +317,7 @@ class SyncService : Service() {
 
     /** The paired desktop's own LAN "ip:port", announced on the authenticated session. */
     @Volatile private var relayLanHint: String? = null
+    @Volatile private var irohAttempted: Boolean = false
 
     /** The desktop we are paired with, so the relay rendezvous survives a restart. */
     @Volatile private var knownPeer: String? = null
@@ -735,6 +736,9 @@ class SyncService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        if (IrohBridge.isAvailable) {
+            Thread({ IrohBridge.ensureStarted(filesDir) }, "conduit-iroh-init").start()
+        }
         val identity = Identity.loadOrCreate(filesDir)
         phonePrivateKey = identity.private
         localDeviceId = Identity.deviceId(identity.public)
@@ -1090,6 +1094,11 @@ class SyncService : Service() {
                         relayLanHint = hint.takeIf { it.isNotBlank() }
                     }
 
+                    override fun onPeerIrohId(irohId: String) {
+                        val peerId = knownPeer ?: return
+                        PairedDesktops.rememberIrohId(filesDir, peerId, irohId)
+                    }
+
                     override fun onSessionLost() {
                         // Recovery policy lives in the preceding Idle state transition. Keeping this
                         // callback observational prevents a second dial from racing that one.
@@ -1363,6 +1372,7 @@ class SyncService : Service() {
         runCatching { connectivity.unregisterNetworkCallback(physicalLanNetworks) }
         discovery.stop()
         link.close()
+        IrohBridge.stop()
         hideAllTransferNotifications()
         FileTransfers.failActive("Link stopped")
         deferredLanHandoff = null
@@ -1703,6 +1713,7 @@ class SyncService : Service() {
         }
         val context = currentNetworkClass()
         relayNetworkClass = context
+        irohAttempted = false
         relayCandidates.clear()
         relayQuality
             .candidates(context, relayEndpoints, System.currentTimeMillis())
@@ -1716,6 +1727,23 @@ class SyncService : Service() {
         // A paused primary must not restart its rendezvous, not even from a queued failover.
         if (pairingRendezvous == null && primaryPaused()) return
         val rendezvous = pairingRendezvous ?: knownPeer ?: return
+        if (pairingRendezvous == null && !irohAttempted && IrohBridge.isAvailable) {
+            val peerIrohId = PairedDesktops.irohId(filesDir, rendezvous)
+            if (peerIrohId != null) {
+                irohAttempted = true
+                relayAttempt = null
+                relayAttemptConnected = false
+                relayConnectedAtMs = 0L
+                relayAttemptStartedAtMs = SystemClock.elapsedRealtime()
+                LinkStatus.path = "Iroh · WAN"
+                Log.i(TAG, "trying iroh WAN transport to ${peerIrohId.take(12)}")
+                Thread({
+                    IrohBridge.ensureStarted(filesDir)
+                    link.connectViaIroh(peerIrohId)
+                }, "conduit-iroh-start").start()
+                return
+            }
+        }
         val endpoint = relayCandidates.pollFirst()
         if (endpoint == null) {
             clearRelayPlan()

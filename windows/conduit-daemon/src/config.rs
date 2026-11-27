@@ -20,6 +20,12 @@ pub struct Config {
     pub receive_dir: Option<String>,
     /// Zero disables age cleanup; the bounded record count still applies.
     pub notification_retention_days: Option<u32>,
+    /// `None` defaults to `true`: automatically copy detected OTP codes to the PC clipboard.
+    pub auto_copy_otp: Option<bool>,
+    /// `None` defaults to `true`: enable iroh QUIC WAN transport (hole-punching + iroh relays).
+    pub iroh_enabled: Option<bool>,
+    /// Optional custom HTTP/HTTPS iroh relay URLs (semicolon/comma separated).
+    pub iroh_relays: Option<String>,
 }
 
 impl Config {
@@ -59,6 +65,21 @@ impl Config {
         }
         if let Some(days) = self.notification_retention_days {
             body.push_str(&format!("notification_retention_days={days}\n"));
+        }
+        if let Some(value) = self.auto_copy_otp {
+            body.push_str("auto_copy_otp=");
+            body.push_str(if value { "true" } else { "false" });
+            body.push('\n');
+        }
+        if let Some(value) = self.iroh_enabled {
+            body.push_str("iroh_enabled=");
+            body.push_str(if value { "true" } else { "false" });
+            body.push('\n');
+        }
+        if let Some(value) = &self.iroh_relays {
+            body.push_str("iroh_relays=");
+            body.push_str(value);
+            body.push('\n');
         }
         std::fs::write(&path, body).with_context(|| format!("writing {}", path.display()))?;
         Ok(path)
@@ -103,6 +124,22 @@ impl Config {
             .unwrap_or(crate::notification_history::DEFAULT_RETENTION_DAYS)
     }
 
+    pub fn auto_copy_otp(&self) -> bool {
+        self.auto_copy_otp.unwrap_or(true)
+    }
+
+    pub fn iroh_enabled(&self) -> bool {
+        self.iroh_enabled.unwrap_or(true)
+    }
+
+    pub fn resolved_iroh_relays(&self) -> Vec<String> {
+        let source = std::env::var("CONDUIT_IROH_RELAYS")
+            .ok()
+            .or_else(|| self.iroh_relays.clone())
+            .unwrap_or_default();
+        split_relays(&source)
+    }
+
     pub fn publish_effective(&self, dir: &Path, default_relays: &str) -> Result<()> {
         let source = if std::env::var("CONDUIT_RELAYS").is_ok()
             || self.relays.is_none() && std::env::var("CONDUIT_RELAY").is_ok()
@@ -122,8 +159,10 @@ impl Config {
         std::fs::write(
             &temporary,
             format!(
-                "relays={relays}\nrelays_source={source}\nnotification_retention_days={}\n",
-                self.retention_days()
+                "relays={relays}\nrelays_source={source}\nnotification_retention_days={}\nauto_copy_otp={}\niroh_enabled={}\n",
+                self.retention_days(),
+                self.auto_copy_otp(),
+                self.iroh_enabled()
             ),
         )?;
         std::fs::rename(temporary, dir.join("effective-settings.txt"))?;
@@ -214,6 +253,24 @@ fn parse(text: &str) -> Result<Config> {
                 }
                 config.notification_retention_days = Some(days);
             }
+            "auto_copy_otp" => {
+                config.auto_copy_otp = Some(match value.to_ascii_lowercase().as_str() {
+                    "true" | "1" | "yes" | "on" => true,
+                    "false" | "0" | "no" | "off" => false,
+                    _ => bail!(
+                        "invalid auto_copy_otp value {value:?} on line {}",
+                        index + 1
+                    ),
+                })
+            }
+            "iroh_enabled" => {
+                config.iroh_enabled = Some(match value.to_ascii_lowercase().as_str() {
+                    "true" | "1" | "yes" | "on" => true,
+                    "false" | "0" | "no" | "off" => false,
+                    _ => bail!("invalid iroh_enabled value {value:?} on line {}", index + 1),
+                })
+            }
+            "iroh_relays" => config.iroh_relays = Some(value),
             other => bail!("unknown configuration key {other:?} on line {}", index + 1),
         }
     }

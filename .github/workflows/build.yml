@@ -104,6 +104,21 @@ jobs:
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v6
 
+      - name: Set up Rust 1.98 for Android iroh native bridge
+        shell: bash
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal --target aarch64-linux-android --target x86_64-linux-android
+          rustup default 1.98.0
+
+      - name: Install cargo-ndk
+        uses: taiki-e/install-action@cargo-ndk
+
+      - name: Build Android iroh JNI native library
+        shell: bash
+        run: |
+          export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$ANDROID_NDK_LATEST_HOME}"
+          cargo ndk -t arm64-v8a -t x86_64 -o android/app/src/main/jniLibs build --manifest-path crates/conduit-iroh-android/Cargo.toml --release
+
       - name: Test and build Android debug APK
         working-directory: android
         shell: bash

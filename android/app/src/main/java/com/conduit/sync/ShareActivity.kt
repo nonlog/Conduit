@@ -137,7 +137,7 @@ class ShareActivity : Activity() {
                     TAG,
                     "sharing web page instead of ${uris.size} auxiliary URI(s); type=${intent.type}",
                 )
-                toast("Queued for $peer")
+                toast("Sending link to $peer")
             }
             uris.isNotEmpty() -> {
                 val sending = boundedShare(uris)
@@ -148,8 +148,9 @@ class ShareActivity : Activity() {
                     when {
                         !send(sending, target) -> "Can't read what was shared"
                         uris.size > sending.size ->
-                            "Queuing ${sending.size} of ${uris.size} files for $peer"
-                        else -> "Queuing ${sending.size} for $peer"
+                            "Sending ${sending.size} of ${uris.size} files to $peer"
+                        sending.size == 1 -> "Sending file to $peer"
+                        else -> "Sending ${sending.size} files to $peer"
                     },
                 )
             }
@@ -164,7 +165,7 @@ class ShareActivity : Activity() {
                         .putExtra(Intent.EXTRA_TEXT, text)
                         .putExtra(Intent.EXTRA_TITLE, title),
                 )
-                toast("Queued for $peer")
+                toast("Sending to $peer")
             }
             else -> {
                 Log.w(TAG, "share intent ${intent.action} carried nothing we can send")
