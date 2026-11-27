@@ -1,5 +1,11 @@
 # Conduit handoff
 
+## Android 0.1.29 hotfix: initialize ndk_context in iroh JNI bridge — 2026-11-27
+- [Android-only release `android-v0.1.29`](https://github.com/nonlog/Conduit/releases/tag/android-v0.1.29) is tagged at `490dd8e` (`master` commits `6125060` + `490dd8e`, `Codex <codex@openai.com>`). GitHub Actions `Android Expressive` run `45983145625` (`signed_apk_only=true`) built `crates/conduit-iroh-android` via `cargo-ndk` and verified the signed APK (`19,611,795` bytes, SHA-256 `1917f742977cb627b991686332b18be0c41a3eacb2fe15e351132bb20e3333e9`).
+- **Root cause**: `v0.1.28` aborted on Android startup (`SIGABRT`, `'android context was not initialized'`) inside `Java_com_conduit_sync_IrohBridge_nativeStart` and `tokio-rt-worker` because `iroh` (`n0-dns-resolver` / `netdev`) reads `ndk_context::android_context()`, while `crates/conduit-iroh-android` had not called `ndk_context::initialize_android_context(...)` and also compiled with `panic = "abort"`.
+- **Fix**: Passed `context.applicationContext` into `IrohBridge.nativeStart`, initialized `ndk_context` once with the JVM pointer and leaked `GlobalRef`, removed `panic = "abort"`, and wrapped all JNI entrypoints in `catch_unwind`.
+- **Verification**: Installed in place on OnePlus 12 (`192.168.31.129:5555`) via `adb install -r` (`versionCode=31`, `versionName=0.1.29`), launched `com.conduit.sync/.MainActivity`, and verified process remained alive with an empty crash buffer (`logcat -b crash`).
+
 ## v0.1.28 release: iroh WAN transport, OTP auto-copy upgrade, and Android ShareActivity toast fix — 2026-11-27
 - [v0.1.28](https://github.com/nonlog/Conduit/releases/tag/v0.1.28) is tagged at `f4bb483` (`master` commits `af7cd6b`..`f4bb483`, all `Codex <codex@openai.com>`). GitHub Actions `Build` run `45975482862` (`master`) and tagged release run `45977436527` (`v0.1.28`) both succeeded across `Relay Linux x64`, `Windows x64`, `Android` (including `cargo-ndk` JNI `.so` for `arm64-v8a`/`x86_64` and signed APK verification), and `GitHub Release`. No local Rust compilation was run on the user's PC.
   - `Conduit-0.1.28-windows-x64.zip` (`9,997,515` bytes, SHA-256 `92efd36ba30af3d4de740720bb05689624938ed3575409fb5c8e856a031d0371`)
