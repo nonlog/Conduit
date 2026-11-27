@@ -2301,129 +2301,6 @@ fn field(label: &str, edit: &TextEdit, paint: Paint, editable: fn(&mut Ui) -> &m
         )
 }
 
-fn relays_field(ui: &Ui, paint: Paint) -> El {
-    let mut modes = row()
-        .gap(3.0)
-        .padding(3.0)
-        .radius(11.0)
-        .continuous_corners()
-        .fill(paint.inset);
-    for (mode, label) in [
-        ("default", "Default nodes"),
-        ("custom", "Custom"),
-        ("off", "Disabled"),
-    ] {
-        modes = modes.child(segment(
-            format!("relay-mode-{mode}"),
-            label,
-            ui.relay_mode == mode,
-            paint,
-            move |ui| {
-                ui.relay_mode = mode.into();
-                if mode == "default" {
-                    ui.relays
-                        .replace_text(bridge::split_relays(bridge::DEFAULT_RELAYS).join("\n"));
-                }
-                ui.settings_dirty = true;
-            },
-        ));
-    }
-    let mut content = col().w_full().gap(10.0).child(
-        row()
-            .w_full()
-            .center_y()
-            .justify_between()
-            .child(text("Relay nodes").font(type_::LABEL).color(paint.subdued))
-            .child(modes),
-    );
-    if ui.relay_mode == "custom" {
-        content = content
-            .child(
-                col()
-                    .role("textbox")
-                    .w_full()
-                    .min_h(98.0)
-                    .padding(12.0)
-                    .fill(paint.inset)
-                    .radius(10.0)
-                    .continuous_corners()
-                    .child(
-                        text_input(&ui.relays, type_::BODY)
-                            .key("relay-nodes-editor")
-                            .w_full()
-                            .min_h(74.0)
-                            .color(paint.t.text)
-                            .caret(paint.accent, paint.accent.alpha(0.22))
-                            .on_edit(|s: &mut Ui| {
-                                s.settings_dirty = true;
-                                &mut s.relays
-                            })
-                            .on_submit(|s: &mut Ui, _| {
-                                s.relays.insert("\n");
-                                s.settings_dirty = true;
-                            }),
-                    ),
-            )
-            .child(
-                text("One host:port per line. Changes apply when you save.")
-                    .font(rune::TextStyle::new(10.0, 450.0))
-                    .color(paint.faint),
-            );
-    } else if ui.relay_mode == "off" {
-        content = content.child(
-            muted(
-                "Relay is disabled. Use a direct LAN connection to reach your phone.",
-                paint,
-            )
-            .max_lines(2),
-        );
-    } else {
-        let mut nodes = col()
-            .key("default-relay-nodes")
-            .w_full()
-            .gap(9.0)
-            .padding(12.0)
-            .radius(10.0)
-            .continuous_corners()
-            .fill(paint.inset);
-        for (index, endpoint) in bridge::split_relays(bridge::DEFAULT_RELAYS)
-            .iter()
-            .enumerate()
-        {
-            nodes = nodes.child(
-                row()
-                    .key(format!("default-relay-{index}"))
-                    .gap(9.0)
-                    .center_y()
-                    .child(icon(&icons::LINK, 13.0).color(paint.faint))
-                    .child(
-                        text(endpoint.clone())
-                            .font(rune::TextStyle::new(12.0, 450.0))
-                            .color(paint.t.text),
-                    ),
-            );
-        }
-        content = content.child(nodes).child(
-            text("Built-in fallback nodes; an empty configuration does not disable them.")
-                .font(rune::TextStyle::new(10.0, 450.0))
-                .color(paint.faint)
-                .max_lines(2),
-        );
-    }
-    if ui.snap.settings.relays_source == "environment" {
-        content = content.child(
-            text(format!(
-                "Environment override is active: {}",
-                ui.snap.settings.effective_relays.join(", ")
-            ))
-            .font(rune::TextStyle::new(11.0, 500.0))
-            .color(paint.subdued)
-            .max_lines(3),
-        );
-    }
-    content
-}
-
 fn transparency_at(x: f32, width: f32) -> u8 {
     if !x.is_finite() || !width.is_finite() || width <= 16.0 {
         return 0;
@@ -2659,10 +2536,9 @@ fn settings(ui: &Ui, paint: Paint) -> El {
         .gap(12.0)
         .child(heading("Connection & network", paint))
         .child(muted(
-            "Relays are used when a direct LAN path is unavailable.",
+            "Direct LAN is used on the same network; off-LAN uses automatic peer-to-peer NAT traversal with encrypted relay fallback.",
             paint,
         ))
-        .child(tonal_block(paint, relays_field(ui, paint)))
         .child(tonal_block(
             paint,
             col()

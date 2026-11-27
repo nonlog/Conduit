@@ -189,7 +189,14 @@ impl IrohNode {
 
         if let Some(raw_proxy) = proxy.map(str::trim).filter(|s| !s.is_empty()) {
             if let Ok(url) = Url::parse(raw_proxy) {
-                builder = builder.proxy_url(url);
+                if matches!(url.scheme(), "http" | "https") {
+                    builder = builder.proxy_url(url);
+                } else {
+                    debug!(
+                        proxy = %raw_proxy,
+                        "skipping non-HTTP proxy URL for iroh (iroh uses direct UDP/HTTPS)"
+                    );
+                }
             } else {
                 warn!(proxy = %raw_proxy, "ignoring unparseable proxy URL for iroh");
             }
@@ -218,6 +225,9 @@ impl IrohNode {
                 .into_address_lookup(&endpoint)
                 .map_err(|e| anyhow::anyhow!("adding DnsAddressLookup: {e}"))?,
         );
+
+        // Give the endpoint a short window to register with a home relay and publish to Pkarr.
+        let _ = tokio::time::timeout(Duration::from_secs(4), endpoint.online()).await;
 
         info!(
             endpoint_id = %&endpoint_id[..12],
@@ -284,6 +294,7 @@ impl IrohNode {
         timeout: Duration,
     ) -> Result<(TcpStream, String)> {
         let peer_key = parse_endpoint_id(peer_hex)?;
+        let _ = tokio::time::timeout(Duration::from_secs(4), self.endpoint.online()).await;
         let addr = EndpointAddr::new(peer_key);
         let conn = tokio::time::timeout(timeout, self.endpoint.connect(addr, ALPN))
             .await
@@ -322,6 +333,7 @@ impl IrohNode {
         timeout: Duration,
     ) -> Result<(u16, String)> {
         let peer_key = parse_endpoint_id(peer_hex)?;
+        let _ = tokio::time::timeout(Duration::from_secs(4), self.endpoint.online()).await;
         let addr = EndpointAddr::new(peer_key);
         let conn = tokio::time::timeout(timeout, self.endpoint.connect(addr, ALPN))
             .await

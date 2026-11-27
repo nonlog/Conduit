@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialExpressiveTheme
 import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.Typography
@@ -24,26 +23,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 
-private fun ColorScheme.withDarkSurfaces(): ColorScheme =
-    copy(
-        background = Color(0xFF101413),
-        onBackground = Color(0xFFE0E4E3),
-        surface = Color(0xFF101413),
-        onSurface = Color(0xFFE0E4E3),
-        surfaceVariant = Color(0xFF434A49),
-        onSurfaceVariant = Color(0xFFC6D0CF),
-        outline = Color(0xFFACB7B6),
-        outlineVariant = Color(0xFF5C6665),
-        surfaceDim = Color(0xFF101413),
-        surfaceBright = Color(0xFF505857),
-        surfaceContainerLowest = Color(0xFF0B0F0F),
-        surfaceContainerLow = Color(0xFF343A39),
-        surfaceContainer = Color(0xFF434A49),
-        surfaceContainerHigh = Color(0xFF4A5150),
-        surfaceContainerHighest = Color(0xFF505857),
-    )
-
-/** Public Material 3 Expressive API, not a local imitation of MaterialTheme. */
+/** Public Material 3 Expressive API with authentic tonal surfaces and native dynamic color. */
 @Composable
 internal fun ConduitTheme(
     darkOverride: Boolean? = null,
@@ -69,7 +49,7 @@ internal fun ConduitTheme(
             bars.isAppearanceLightNavigationBars = !dark
         }
     }
-    val palette =
+    val colors =
         when {
             Settings.wallpaperAccent && Build.VERSION.SDK_INT >= 31 -> {
                 if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
@@ -77,71 +57,84 @@ internal fun ConduitTheme(
 
             dark -> {
                 darkColorScheme(
-                    primary = Color(0xFF4DDADB),
-                    onPrimary = Color(0xFF003738),
-                    primaryContainer = Color(0xFF005052),
-                    onPrimaryContainer = Color(0xFF9CF0EF),
-                    inversePrimary = Color(0xFF006A6C),
-                    secondary = Color(0xFFB1CCCB),
-                    onSecondary = Color(0xFF1C3535),
-                    secondaryContainer = Color(0xFF334B4B),
-                    onSecondaryContainer = Color(0xFFCDE8E7),
-                    tertiary = Color(0xFFB6C8E8),
-                    onTertiary = Color(0xFF1E314C),
-                    tertiaryContainer = Color(0xFF354762),
-                    onTertiaryContainer = Color(0xFFD5E3FF),
+                    primary = Color(0xFFA8C7FA),
+                    onPrimary = Color(0xFF062E6F),
+                    primaryContainer = Color(0xFF0842A0),
+                    onPrimaryContainer = Color(0xFFD3E3FD),
+                    inversePrimary = Color(0xFF0B57D0),
+                    secondary = Color(0xFFBEC6DC),
+                    onSecondary = Color(0xFF283041),
+                    secondaryContainer = Color(0xFF2B3447),
+                    onSecondaryContainer = Color(0xFFDAE2F9),
+                    tertiary = Color(0xFFD8BAFF),
+                    onTertiary = Color(0xFF391F5A),
+                    tertiaryContainer = Color(0xFF4F3473),
+                    onTertiaryContainer = Color(0xFFEEDBFF),
                     error = Color(0xFFFFB4AB),
                     onError = Color(0xFF690005),
                     errorContainer = Color(0xFF93000A),
                     onErrorContainer = Color(0xFFFFDAD6),
+                    background = Color(0xFF101218),
+                    onBackground = Color(0xFFE3E6F0),
+                    surface = Color(0xFF101218),
+                    onSurface = Color(0xFFE3E6F0),
+                    surfaceVariant = Color(0xFF252A36),
+                    onSurfaceVariant = Color(0xFFBDC3D4),
+                    outline = Color(0xFF8C92A4),
+                    outlineVariant = Color(0xFF3D4354),
                     scrim = Color.Black,
-                    inverseSurface = Color(0xFFE0E4E3),
-                    inverseOnSurface = Color(0xFF2C3131),
+                    inverseSurface = Color(0xFFE3E6F0),
+                    inverseOnSurface = Color(0xFF2B2F3A),
+                    surfaceDim = Color(0xFF0D0F14),
+                    surfaceBright = Color(0xFF353A47),
+                    surfaceContainerLowest = Color(0xFF0B0D12),
+                    surfaceContainerLow = Color(0xFF171A23),
+                    surfaceContainer = Color(0xFF1D212C),
+                    surfaceContainerHigh = Color(0xFF262B38),
+                    surfaceContainerHighest = Color(0xFF303646),
                 )
             }
 
             else -> {
                 lightColorScheme(
-                    primary = Color(0xFF006A6C),
+                    primary = Color(0xFF0B57D0),
                     onPrimary = Color.White,
-                    primaryContainer = Color(0xFF9CF0EF),
-                    onPrimaryContainer = Color(0xFF002021),
-                    inversePrimary = Color(0xFF4DDADB),
-                    secondary = Color(0xFF4A6363),
+                    primaryContainer = Color(0xFFD3E3FD),
+                    onPrimaryContainer = Color(0xFF041E49),
+                    inversePrimary = Color(0xFFA8C7FA),
+                    secondary = Color(0xFF565E71),
                     onSecondary = Color.White,
-                    secondaryContainer = Color(0xFFCDE8E7),
-                    onSecondaryContainer = Color(0xFF051F1F),
-                    tertiary = Color(0xFF4D5F7A),
+                    secondaryContainer = Color(0xFFDAE2F9),
+                    onSecondaryContainer = Color(0xFF131C2B),
+                    tertiary = Color(0xFF684D8C),
                     onTertiary = Color.White,
-                    tertiaryContainer = Color(0xFFD5E3FF),
-                    onTertiaryContainer = Color(0xFF081C35),
+                    tertiaryContainer = Color(0xFFEEDBFF),
+                    onTertiaryContainer = Color(0xFF230844),
                     error = Color(0xFFBA1A1A),
                     onError = Color.White,
                     errorContainer = Color(0xFFFFDAD6),
                     onErrorContainer = Color(0xFF410002),
-                    background = Color(0xFFF7FAF9),
-                    onBackground = Color(0xFF171D1D),
-                    surface = Color(0xFFF7FAF9),
-                    onSurface = Color(0xFF171D1D),
-                    surfaceVariant = Color(0xFFDAE5E3),
-                    onSurfaceVariant = Color(0xFF3F4948),
-                    outline = Color(0xFF6F7978),
-                    outlineVariant = Color(0xFFBFC9C8),
+                    background = Color(0xFFF8F9FD),
+                    onBackground = Color(0xFF191C22),
+                    surface = Color(0xFFF8F9FD),
+                    onSurface = Color(0xFF191C22),
+                    surfaceVariant = Color(0xFFE1E5F0),
+                    onSurfaceVariant = Color(0xFF44474F),
+                    outline = Color(0xFF747780),
+                    outlineVariant = Color(0xFFC4C6D0),
                     scrim = Color.Black,
-                    inverseSurface = Color(0xFF2C3131),
-                    inverseOnSurface = Color(0xFFEFF1F0),
-                    surfaceDim = Color(0xFFD8DAD9),
-                    surfaceBright = Color(0xFFF7FAF9),
+                    inverseSurface = Color(0xFF2E3138),
+                    inverseOnSurface = Color(0xFFF0F1F7),
+                    surfaceDim = Color(0xFFD9DCE5),
+                    surfaceBright = Color(0xFFF8F9FD),
                     surfaceContainerLowest = Color.White,
-                    surfaceContainerLow = Color(0xFFF1F4F3),
-                    surfaceContainer = Color(0xFFEBEFEE),
-                    surfaceContainerHigh = Color(0xFFE5E9E8),
-                    surfaceContainerHighest = Color(0xFFDFE3E2),
+                    surfaceContainerLow = Color(0xFFF2F4FA),
+                    surfaceContainer = Color(0xFFECEFF7),
+                    surfaceContainerHigh = Color(0xFFE6EAF3),
+                    surfaceContainerHighest = Color(0xFFE0E4EE),
                 )
             }
         }
-    // Wallpaper colors can change the accents, but should not flatten dark card elevation.
-    val colors = if (dark) palette.withDarkSurfaces() else palette
     val motionEnabled = motionOverride ?: rememberSystemMotionEnabled()
     CompositionLocalProvider(LocalConduitMotion provides motionEnabled) {
         MaterialExpressiveTheme(

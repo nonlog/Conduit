@@ -439,7 +439,7 @@ async fn run() -> Result<()> {
                 }
                 "start" => {
                     if !link_intent::load(&dir)? {
-                        bail!("Connection is paused. Connect before starting pairing.");
+                        link_intent::save(&dir, true)?;
                     }
                     let running = control::pair(control::PairAction::Start).await.is_ok();
                     let window = if running {
@@ -960,25 +960,50 @@ async fn run() -> Result<()> {
                             }
                         }
                     }
-                    control::PairAction::Start if !link_enabled => {
-                        Err("Connection is paused. Connect before starting pairing.".into())
-                    }
-                    control::PairAction::Start => match pairing::start(&dir) {
-                        Ok(window) => {
-                            stop_workers(&mut pairing_relay_tasks).await;
-                            let (tasks, rx) = start_pairing_relay_workers(
-                                &relay_endpoints,
-                                &window.rendezvous,
-                                relay_proxy.clone(),
-                                window.expires_ms,
-                            );
-                            pairing_relay_tasks = tasks;
-                            pairing_relay_rx = rx;
-                            info!(code = %pairing::format_code(&window.code), "pairing Relay aliases parked");
+                    control::PairAction::Start => {
+                        let enable_res = if link_enabled {
                             Ok(())
+                        } else {
+                            let outcome = desktop_status
+                                .transfers
+                                .set_link_enabled(true, || link_intent::save(&dir, true));
+                            match outcome {
+                                Err(error) => Err(format!("{error:#}")),
+                                Ok(()) => {
+                                    link_enabled = true;
+                                    desktop_status.set_link_enabled(true);
+                                    (relay_tasks, relay_rx) = start_relay_workers(
+                                        &relay_endpoints,
+                                        &device_id,
+                                        relay_proxy.clone(),
+                                        &identity.private,
+                                        iroh_enabled,
+                                        &iroh_relays,
+                                    );
+                                    Ok(())
+                                }
+                            }
+                        };
+                        match enable_res {
+                            Err(e) => Err(e),
+                            Ok(()) => match pairing::start(&dir) {
+                                Ok(window) => {
+                                    stop_workers(&mut pairing_relay_tasks).await;
+                                    let (tasks, rx) = start_pairing_relay_workers(
+                                        &relay_endpoints,
+                                        &window.rendezvous,
+                                        relay_proxy.clone(),
+                                        window.expires_ms,
+                                    );
+                                    pairing_relay_tasks = tasks;
+                                    pairing_relay_rx = rx;
+                                    info!(code = %pairing::format_code(&window.code), "pairing Relay aliases parked");
+                                    Ok(())
+                                }
+                                Err(e) => Err(format!("{e:#}")),
+                            },
                         }
-                        Err(e) => Err(format!("{e:#}")),
-                    },
+                    }
                     control::PairAction::Cancel => {
                         let result = pairing::cancel(&dir).map(|_| ()).map_err(|e| format!("{e:#}"));
                         if result.is_ok() {

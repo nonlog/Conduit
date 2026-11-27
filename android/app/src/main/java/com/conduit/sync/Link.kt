@@ -56,6 +56,7 @@ private const val RELAY_PARK_READ_DEADLINE_MS = 0
 internal fun initialReadDeadlineMs(rendezvous: String?): Int = if (rendezvous == null) READ_DEADLINE_MS else RELAY_PARK_READ_DEADLINE_MS
 
 private const val CONNECT_TIMEOUT_MS = 5_000
+private const val IROH_CONNECT_TIMEOUT_MS = 20_000
 
 /** A hostname, not an essay. Long enough for any real machine name. */
 private const val PEER_NAME_MAX = 64
@@ -838,7 +839,7 @@ class Link(
             owner.socket.use { sock ->
                 val target =
                     if (irohPeerId != null) {
-                        val port = IrohBridge.dialLocalPort(irohPeerId, CONNECT_TIMEOUT_MS)
+                        val port = IrohBridge.dialLocalPort(irohPeerId, IROH_CONNECT_TIMEOUT_MS)
                         if (port <= 0) throw java.io.IOException("iroh dial failed")
                         InetSocketAddress("127.0.0.1", port)
                     } else if (address.isUnresolved) {

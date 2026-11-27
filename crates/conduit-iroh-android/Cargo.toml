@@ -1,6 +1,6 @@
 [package]
 name = "conduit-iroh-android"
-version = "0.1.28"
+version = "0.1.30"
 edition = "2021"
 publish = false
 
