@@ -85,7 +85,12 @@ pub fn parse_relay_url(raw: &str) -> Result<RelayUrl> {
 
 pub fn build_relay_map(custom_relays: &[String], use_default_relays: bool) -> RelayMap {
     let mut configs: Vec<RelayConfig> = if use_default_relays {
-        prod::default_relay_map().relays::<Vec<_>>()
+        vec![
+            prod::default_na_east_relay(),
+            prod::default_na_west_relay(),
+            prod::default_eu_relay(),
+            prod::default_ap_relay(),
+        ]
     } else {
         Vec::new()
     };
