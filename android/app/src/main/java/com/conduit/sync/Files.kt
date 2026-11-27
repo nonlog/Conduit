@@ -183,9 +183,10 @@ object Files {
      */
     class Incoming private constructor(
         private val resolver: ContentResolver,
-        private val uri: Uri,
+        val uri: Uri,
         private var output: OutputStream?,
         val name: String,
+        val mimeType: String,
         val id: ByteArray,
         val total: Long,
         private val chunks: Long,
@@ -235,12 +236,10 @@ object Files {
                 val cursor = FileReceiveCursor(offer)
 
                 val name = safeName(offer.name)
+                val mime = offer.mime.takeIf { it.isNotBlank() } ?: "application/octet-stream"
                 val values = ContentValues().apply {
                     put(MediaStore.Downloads.DISPLAY_NAME, name)
-                    put(
-                        MediaStore.Downloads.MIME_TYPE,
-                        offer.mime.takeIf { it.isNotBlank() } ?: "application/octet-stream",
-                    )
+                    put(MediaStore.Downloads.MIME_TYPE, mime)
                     put(
                         MediaStore.Downloads.RELATIVE_PATH,
                         Environment.DIRECTORY_DOWNLOADS + "/",
@@ -263,6 +262,7 @@ object Files {
                     uri = uri,
                     output = stream,
                     name = name,
+                    mimeType = mime,
                     id = offer.transferId.toByteArray(),
                     total = offer.totalBytes,
                     chunks = offer.chunkCount,

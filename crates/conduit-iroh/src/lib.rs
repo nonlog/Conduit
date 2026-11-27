@@ -279,7 +279,13 @@ impl IrohNode {
 
             tokio::spawn(async move {
                 let mut bi = BiStream { send, recv };
-                let _ = tokio::io::copy_bidirectional(&mut server, &mut bi).await;
+                let _ = tokio::io::copy_bidirectional_with_sizes(
+                    &mut server,
+                    &mut bi,
+                    256 * 1024,
+                    256 * 1024,
+                )
+                .await;
                 conn.close(0u32.into(), b"done");
             });
 
@@ -317,7 +323,13 @@ impl IrohNode {
 
         tokio::spawn(async move {
             let mut bi = BiStream { send, recv };
-            let _ = tokio::io::copy_bidirectional(&mut server, &mut bi).await;
+            let _ = tokio::io::copy_bidirectional_with_sizes(
+                &mut server,
+                &mut bi,
+                256 * 1024,
+                256 * 1024,
+            )
+            .await;
             conn.close(0u32.into(), b"done");
         });
 
@@ -356,7 +368,13 @@ impl IrohNode {
             };
             let _ = local.set_nodelay(true);
             let mut bi = BiStream { send, recv };
-            let _ = tokio::io::copy_bidirectional(&mut local, &mut bi).await;
+            let _ = tokio::io::copy_bidirectional_with_sizes(
+                &mut local,
+                &mut bi,
+                256 * 1024,
+                256 * 1024,
+            )
+            .await;
             conn.close(0u32.into(), b"done");
         });
 

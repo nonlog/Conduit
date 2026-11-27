@@ -1509,6 +1509,33 @@ fn transfer_row(transfer: &bridge::Transfer, paint: Paint) -> El {
                 .color(status_color),
             );
         }
+        if tr.state == "completed" && tr.direction == "inbound" {
+            let open_name = tr.name.clone();
+            let reveal_name = tr.name.clone();
+            body = body
+                .child(button(
+                    format!("open-{}", tr.id),
+                    "Open",
+                    paint,
+                    false,
+                    move |ui| {
+                        let name = open_name.clone();
+                        ui.operation("Opening file", move || bridge::open_received_file(&name));
+                    },
+                ))
+                .child(button(
+                    format!("reveal-{}", tr.id),
+                    "Folder",
+                    paint,
+                    false,
+                    move |ui| {
+                        let name = reveal_name.clone();
+                        ui.operation("Showing in folder", move || {
+                            bridge::reveal_received_file(&name)
+                        });
+                    },
+                ));
+        }
         body = body.child(
             status.child(
                 text(match tr.state.as_str() {
@@ -1655,6 +1682,44 @@ fn transfer_filters(ui: &Ui, paint: Paint) -> El {
 }
 
 fn transfers(ui: &Ui, paint: Paint) -> El {
+    let has_terminal = ui.snap.transfers.iter().any(|t| t.terminal);
+    let mut actions = row().gap(8.0).center_y();
+    actions = actions.child(action_button(
+        "transfers-open-folder",
+        "Open folder",
+        Some(&icons::FOLDER),
+        paint,
+        false,
+        |ui| ui.operation("Opening downloads", || bridge::open_folder("received")),
+    ));
+    if has_terminal {
+        actions = actions.child(button(
+            "clear-transfers",
+            if ui.confirm.as_deref() == Some("transfers") {
+                "Confirm clear"
+            } else {
+                "Clear history"
+            },
+            paint,
+            false,
+            |ui| {
+                if ui.confirm.as_deref() != Some("transfers") {
+                    ui.confirm = Some("transfers".into());
+                } else {
+                    ui.confirm = None;
+                    ui.operation("Clearing transfers", || bridge::clear_history("transfers"));
+                }
+            },
+        ));
+    }
+    actions = actions.child(action_button(
+        "send-new-file",
+        "Send file",
+        Some(&icons::SEND),
+        paint,
+        true,
+        |ui| ui.open_picker(),
+    ));
     card(
         "transfers",
         paint,
@@ -1667,14 +1732,7 @@ fn transfers(ui: &Ui, paint: Paint) -> El {
                     .center_y()
                     .justify_between()
                     .child(transfer_filters(ui, paint))
-                    .child(action_button(
-                        "send-new-file",
-                        "Send file",
-                        Some(&icons::SEND),
-                        paint,
-                        true,
-                        |ui| ui.open_picker(),
-                    )),
+                    .child(actions),
             )
             .child(transfer_list(ui, paint, usize::MAX)),
     )

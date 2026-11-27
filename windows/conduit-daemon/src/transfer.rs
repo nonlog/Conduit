@@ -280,6 +280,12 @@ impl Transfers {
     fn changed(&self) {
         self.changed.send_modify(|n| *n = n.wrapping_add(1));
     }
+    pub fn clear_history(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.rows.retain(|row| !terminal(row.state));
+        drop(state);
+        self.changed();
+    }
     fn snapshot(&self) -> String {
         fn clean(s: &str) -> String {
             s.replace(['\t', '\r', '\n'], " ")

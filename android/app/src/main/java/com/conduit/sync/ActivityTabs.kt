@@ -118,9 +118,28 @@ internal fun TransfersTab(
     transfers: List<FileTransfer>,
     peerName: String?,
     onCancel: (String) -> Unit,
+    onClearHistory: () -> Unit = {},
+    onOpenTransfer: (FileTransfer) -> Unit = {},
+    onOpenFolder: () -> Unit = {},
 ) {
     val active = transfers.filter { !it.phase.terminal }
     val finished = transfers.filter { it.phase.terminal }
+    var confirmClear by rememberSaveable { mutableStateOf(false) }
+    MotionAlertDialog(
+        visible = confirmClear,
+        onDismissRequest = { confirmClear = false },
+        title = { Text("Clear transfer history?") },
+        text = { Text("This clears finished transfer records from this screen. Downloaded files are kept.") },
+        confirmButton = {
+            Button(onClick = {
+                confirmClear = false
+                onClearHistory()
+            }) { Text("Clear") }
+        },
+        dismissButton = {
+            TextButton(onClick = { confirmClear = false }) { Text("Cancel") }
+        },
+    )
     LazyColumn(
         modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
@@ -129,36 +148,57 @@ internal fun TransfersTab(
         if (transfers.isEmpty()) {
             item {
                 ExpressiveCard(Modifier.fillMaxWidth()) {
-                    Row(
+                    Column(
                         Modifier.padding(22.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        FlClashShapeBadge(
-                            icon = R.drawable.ic_transfer,
-                            active = false,
-                            size = 48.dp,
-                            iconSize = 24.dp,
-                        )
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("No transfers yet", style = MaterialTheme.typography.titleMedium)
-                            Text(
-                                "Files and photos you send or receive appear here.",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        ) {
+                            FlClashShapeBadge(
+                                icon = R.drawable.ic_transfer,
+                                active = false,
+                                size = 48.dp,
+                                iconSize = 24.dp,
                             )
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text("No transfers yet", style = MaterialTheme.typography.titleMedium)
+                                Text(
+                                    "Files and photos you send or receive appear here.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
+                        TextButton(onClick = onOpenFolder) { Text("Open Downloads folder") }
                     }
                 }
             }
         }
         if (active.isNotEmpty()) {
             item { ExpressiveSectionTitle("In progress", active.size.toString()) }
-            items(active, key = { "${it.direction}:${it.id}" }) { ExpressiveTransferCard(it, peerName, onCancel) }
+            items(active, key = { "${it.direction}:${it.id}" }) {
+                ExpressiveTransferCard(it, peerName, onCancel, onOpenTransfer, onOpenFolder)
+            }
         }
         if (finished.isNotEmpty()) {
-            item { ExpressiveSectionTitle("Recent transfers") }
-            items(finished, key = { "${it.direction}:${it.id}" }) { ExpressiveTransferCard(it, peerName, onCancel) }
+            item {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    ExpressiveSectionTitle("Recent transfers")
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton(onClick = onOpenFolder) { Text("Folder") }
+                        TextButton(onClick = { confirmClear = true }) { Text("Clear history") }
+                    }
+                }
+            }
+            items(finished, key = { "${it.direction}:${it.id}" }) {
+                ExpressiveTransferCard(it, peerName, onCancel, onOpenTransfer, onOpenFolder)
+            }
         }
     }
 }

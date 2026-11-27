@@ -508,6 +508,17 @@ async fn run() -> Result<()> {
             control::notifications(action == "clear").await?;
             return Ok(());
         }
+        if command == "transfers" {
+            let action = args
+                .next()
+                .context("usage: conduit-daemon transfers <clear>")?;
+            let action = action.to_string_lossy();
+            if args.next().is_some() || action.as_ref() != "clear" {
+                bail!("usage: conduit-daemon transfers <clear>");
+            }
+            control::clear_transfers().await?;
+            return Ok(());
+        }
         if command == "reload" && args.next().is_none() {
             control::reload().await?;
             return Ok(());
@@ -719,6 +730,7 @@ async fn run() -> Result<()> {
     // ordinary socket carrying an ordinary Noise session.
     let mut relay_endpoints = user_config.resolved_relays(DEFAULT_RELAYS);
     let mut relay_proxy = user_config.resolved_proxy();
+    let mut iroh_proxy = user_config.resolved_http_proxy();
     let mut iroh_enabled = user_config.iroh_enabled();
     let mut iroh_relays = user_config.resolved_iroh_relays();
     let local_iroh_id = conduit_iroh::derive_secret_key(&identity.private)
@@ -736,6 +748,7 @@ async fn run() -> Result<()> {
             &relay_endpoints,
             &device_id,
             relay_proxy.clone(),
+            iroh_proxy.clone(),
             &identity.private,
             iroh_enabled,
             &iroh_relays,
@@ -810,10 +823,12 @@ async fn run() -> Result<()> {
                         let wanted_tray = new_config.show_tray_icon();
                         let new_relays = new_config.resolved_relays(DEFAULT_RELAYS);
                         let new_proxy = new_config.resolved_proxy();
+                        let new_iroh_proxy = new_config.resolved_http_proxy();
                         let new_iroh_enabled = new_config.iroh_enabled();
                         let new_iroh_relays = new_config.resolved_iroh_relays();
                         let relay_changed = new_relays != relay_endpoints
                             || new_proxy != relay_proxy
+                            || new_iroh_proxy != iroh_proxy
                             || new_iroh_enabled != iroh_enabled
                             || new_iroh_relays != iroh_relays;
                         let mut apply_error = None;
@@ -851,6 +866,7 @@ async fn run() -> Result<()> {
                                     &new_relays,
                                     &device_id,
                                     new_proxy.clone(),
+                                    new_iroh_proxy.clone(),
                                     &identity.private,
                                     new_iroh_enabled,
                                     &new_iroh_relays,
@@ -860,6 +876,7 @@ async fn run() -> Result<()> {
                             relay_rx = rx;
                             relay_endpoints = new_relays;
                             relay_proxy = new_proxy;
+                            iroh_proxy = new_iroh_proxy;
                             iroh_enabled = new_iroh_enabled;
                             iroh_relays = new_iroh_relays;
                             for task in pairing_relay_tasks.drain(..) {
@@ -947,7 +964,7 @@ async fn run() -> Result<()> {
                                 Ok(()) => {
                                     link_enabled = true;
                                     desktop_status.set_link_enabled(true);
-                                    (relay_tasks, relay_rx) = start_relay_workers(&relay_endpoints, &device_id, relay_proxy.clone(), &identity.private, iroh_enabled, &iroh_relays);
+                                    (relay_tasks, relay_rx) = start_relay_workers(&relay_endpoints, &device_id, relay_proxy.clone(), iroh_proxy.clone(), &identity.private, iroh_enabled, &iroh_relays);
                                     // Every peer disabled means nothing could ever connect, so
                                     // resuming the link is also an explicit "connect again".
                                     if !pairing::peers(&dir).iter().any(|peer| peer.enabled) {
@@ -976,6 +993,7 @@ async fn run() -> Result<()> {
                                         &relay_endpoints,
                                         &device_id,
                                         relay_proxy.clone(),
+                                        iroh_proxy.clone(),
                                         &identity.private,
                                         iroh_enabled,
                                         &iroh_relays,
@@ -1059,6 +1077,7 @@ async fn run() -> Result<()> {
                                         &relay_endpoints,
                                         &device_id,
                                         relay_proxy.clone(),
+                                        iroh_proxy.clone(),
                                         &identity.private,
                                         iroh_enabled,
                                         &iroh_relays,
@@ -1407,6 +1426,7 @@ fn start_relay_workers(
     relays: &[String],
     rendezvous: &str,
     relay_proxy: Option<String>,
+    iroh_proxy: Option<String>,
     private_key: &[u8],
     iroh_enabled: bool,
     iroh_relays: &[String],
@@ -1421,7 +1441,7 @@ fn start_relay_workers(
         tasks.push(tokio::spawn(accept_iroh_forever(
             private_key.to_vec(),
             iroh_relays.to_vec(),
-            relay_proxy.clone(),
+            iroh_proxy,
             relay_tx.clone(),
         )));
     }

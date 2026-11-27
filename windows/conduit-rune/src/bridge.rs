@@ -840,6 +840,16 @@ pub fn clear_history(kind: &str) -> Result<(), String> {
         // resident process, rather than racing its read/modify/write on disk.
         return daemon_command(&["notifications", "clear"]).map(|_| ());
     }
+    if kind == "transfers" {
+        if daemon_running() {
+            return daemon_command(&["transfers", "clear"]).map(|_| ());
+        }
+        let path = data_dir().join("transfers.tsv");
+        if path.is_file() {
+            fs::remove_file(path).map_err(|e| e.to_string())?;
+        }
+        return Ok(());
+    }
     let filename = match kind {
         "links" => "shared-links.tsv",
         _ => return Err("Invalid history category".into()),
@@ -1009,15 +1019,7 @@ pub fn open_folder(kind: &str) -> Result<(), String> {
     let path = if kind == "data" {
         data_dir()
     } else if kind == "received" {
-        let from_config = snapshot().settings.receive_dir;
-        if from_config.is_empty() {
-            env::var_os("USERPROFILE")
-                .map(PathBuf::from)
-                .unwrap_or_default()
-                .join("Downloads")
-        } else {
-            PathBuf::from(from_config)
-        }
+        receive_dir_path()
     } else {
         return Err("Invalid folder".into());
     };
@@ -1032,6 +1034,64 @@ pub fn open_folder(kind: &str) -> Result<(), String> {
     }
     command
         .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+fn receive_dir_path() -> PathBuf {
+    let from_config = snapshot().settings.receive_dir;
+    if from_config.is_empty() {
+        env::var_os("USERPROFILE")
+            .map(PathBuf::from)
+            .unwrap_or_default()
+            .join("Downloads")
+    } else {
+        PathBuf::from(from_config)
+    }
+}
+
+fn safe_received_file(name: &str) -> Result<PathBuf, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty()
+        || trimmed.contains(['/', '\\', '\0'])
+        || trimmed == "."
+        || trimmed == ".."
+    {
+        return Err("Invalid file name".into());
+    }
+    let candidate = receive_dir_path().join(trimmed);
+    if !candidate.is_file() {
+        return Err("File no longer exists in the downloads folder".into());
+    }
+    Ok(candidate)
+}
+
+pub fn open_received_file(name: &str) -> Result<(), String> {
+    let path = safe_received_file(name)?;
+    let mut command = Command::new("explorer.exe");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    command
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+pub fn reveal_received_file(name: &str) -> Result<(), String> {
+    let path = safe_received_file(name)?;
+    let mut command = Command::new("explorer.exe");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    command
+        .arg(format!("/select,{}", path.display()))
         .spawn()
         .map(|_| ())
         .map_err(|e| e.to_string())

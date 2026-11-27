@@ -42,6 +42,8 @@ internal fun ExpressiveTransferCard(
     transfer: FileTransfer,
     peerName: String?,
     onCancel: (String) -> Unit,
+    onOpen: ((FileTransfer) -> Unit)? = null,
+    onOpenFolder: (() -> Unit)? = null,
 ) {
     val colors = MaterialTheme.colorScheme
     val motion = LocalConduitMotion.current
@@ -161,6 +163,35 @@ internal fun ExpressiveTransferCard(
                                 ),
                             ) {
                                 Text("Cancel")
+                            }
+                        } else if (transfer.phase == TransferPhase.Completed &&
+                            transfer.direction == FileTransferDirection.ToPhone
+                        ) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (onOpen != null) {
+                                    FilledTonalButton(
+                                        onClick = { onOpen(transfer) },
+                                        modifier = Modifier.heightIn(min = 40.dp).semantics {
+                                            contentDescription = "Open " + transfer.name
+                                        },
+                                        shape = RoundedCornerShape(14.dp),
+                                    ) {
+                                        Text("Open")
+                                    }
+                                }
+                                if (onOpenFolder != null) {
+                                    FilledTonalButton(
+                                        onClick = onOpenFolder,
+                                        modifier = Modifier.heightIn(min = 40.dp),
+                                        shape = RoundedCornerShape(14.dp),
+                                        colors = ButtonDefaults.filledTonalButtonColors(
+                                            containerColor = colors.surfaceContainerHighest,
+                                            contentColor = colors.onSurface,
+                                        ),
+                                    ) {
+                                        Text("Folder")
+                                    }
+                                }
                             }
                         }
                     }

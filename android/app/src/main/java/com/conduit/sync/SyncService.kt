@@ -1727,6 +1727,28 @@ class SyncService : Service() {
         // A paused primary must not restart its rendezvous, not even from a queued failover.
         if (pairingRendezvous == null && primaryPaused()) return
         val rendezvous = pairingRendezvous ?: knownPeer ?: return
+        val endpoint = relayCandidates.pollFirst()
+        if (endpoint != null) {
+            relayAttempt = endpoint
+            relayAttemptConnected = false
+            relayConnectedAtMs = 0L
+            relayAttemptStartedAtMs = SystemClock.elapsedRealtime()
+            LinkStatus.path =
+                if (pairingRendezvous != null) {
+                    "Pairing · ${endpoint.id.uppercase()} Relay"
+                } else {
+                    "Relay · ${endpoint.id.uppercase()}"
+                }
+            Log.i(TAG, "trying relay ${endpoint.id} at ${endpoint.host}:${endpoint.port}")
+            link.connectVia(
+                InetSocketAddress.createUnresolved(endpoint.host, endpoint.port),
+                rendezvous,
+                endpoint.fallbackIpv4,
+            )
+            return
+        }
+        // Self-hosted TCP relays are tried first for lowest latency and full bandwidth;
+        // fall back to iroh WAN (NAT traversal + n0 public relays) when all configured relays fail.
         if (pairingRendezvous == null && !irohAttempted && IrohBridge.isAvailable) {
             val peerIrohId = PairedDesktops.irohId(filesDir, rendezvous)
             if (peerIrohId != null) {
@@ -1736,7 +1758,7 @@ class SyncService : Service() {
                 relayConnectedAtMs = 0L
                 relayAttemptStartedAtMs = SystemClock.elapsedRealtime()
                 LinkStatus.path = "Iroh · WAN"
-                Log.i(TAG, "trying iroh WAN transport to ${peerIrohId.take(12)}")
+                Log.i(TAG, "self-hosted relays exhausted; falling back to iroh WAN for ${peerIrohId.take(12)}")
                 Thread({
                     IrohBridge.ensureStarted(applicationContext, filesDir)
                     link.connectViaIroh(peerIrohId)
@@ -1744,28 +1766,8 @@ class SyncService : Service() {
                 return
             }
         }
-        val endpoint = relayCandidates.pollFirst()
-        if (endpoint == null) {
-            clearRelayPlan()
-            scheduleRetry()
-            return
-        }
-        relayAttempt = endpoint
-        relayAttemptConnected = false
-        relayConnectedAtMs = 0L
-        relayAttemptStartedAtMs = SystemClock.elapsedRealtime()
-        LinkStatus.path =
-            if (pairingRendezvous != null) {
-                "Pairing · ${endpoint.id.uppercase()} Relay"
-            } else {
-                "Relay · ${endpoint.id.uppercase()}"
-            }
-        Log.i(TAG, "trying relay ${endpoint.id} at ${endpoint.host}:${endpoint.port}")
-        link.connectVia(
-            InetSocketAddress.createUnresolved(endpoint.host, endpoint.port),
-            rendezvous,
-            endpoint.fallbackIpv4,
-        )
+        clearRelayPlan()
+        scheduleRetry()
     }
 
     private fun clearRelayPlan() {

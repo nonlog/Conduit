@@ -21,6 +21,8 @@ data class FileTransfer(
     val phase: TransferPhase = if (direction == FileTransferDirection.ToPhone) TransferPhase.Receiving else TransferPhase.Sending,
     val error: String = "",
     val canCancel: Boolean = false,
+    val contentUri: String? = null,
+    val mimeType: String? = null,
 ) {
     val fraction: Float
         get() = if (total <= 0L) 0f else (transferred.toDouble() / total.toDouble())
@@ -54,6 +56,8 @@ object FileTransfers {
             if (it.phase.terminal) it else it.copy(phase = TransferPhase.Failed, error = reason, canCancel = false)
         }.takeLast(32)
     }
+
+    @Synchronized fun clearFinished() { entries = entries.filterNot { it.phase.terminal } }
 
     @Synchronized fun clearAll() { entries = emptyList() }
 }

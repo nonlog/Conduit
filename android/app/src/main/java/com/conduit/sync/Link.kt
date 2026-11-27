@@ -1123,6 +1123,8 @@ class Link(
                 phase,
                 error.take(300),
                 !phase.terminal && owner.transferProtocol,
+                contentUri = if (phase == TransferPhase.Completed) rx.uri.toString() else null,
+                mimeType = rx.mimeType,
             ),
         )
     }

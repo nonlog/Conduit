@@ -735,7 +735,16 @@ internal fun ConduitApp(
                 }
 
                 MainTab.Transfers -> {
-                    TransfersTab(Modifier, transfers, effectivePeer, onCancelTransfer)
+                    val ctx = LocalContext.current
+                    TransfersTab(
+                        modifier = Modifier,
+                        transfers = transfers,
+                        peerName = effectivePeer,
+                        onCancel = onCancelTransfer,
+                        onClearHistory = { FileTransfers.clearFinished() },
+                        onOpenTransfer = { transfer -> openReceivedTransfer(ctx, transfer) },
+                        onOpenFolder = { openDownloadsFolder(ctx) },
+                    )
                 }
 
                 MainTab.Clipboard -> {
@@ -1571,5 +1580,47 @@ private fun SettingsGroup(
                 )
             }
         }
+    }
+}
+private fun openReceivedTransfer(context: android.content.Context, transfer: FileTransfer) {
+    val rawUri = transfer.contentUri
+    if (rawUri.isNullOrBlank()) {
+        openDownloadsFolder(context)
+        return
+    }
+    val uri = runCatching { Uri.parse(rawUri) }.getOrNull()
+    if (uri == null) {
+        openDownloadsFolder(context)
+        return
+    }
+    val mime = transfer.mimeType?.takeIf { it.isNotBlank() } ?: "*/*"
+    val viewIntent =
+        Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, mime)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+    val started =
+        runCatching {
+            context.startActivity(Intent.createChooser(viewIntent, transfer.name).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            true
+        }.getOrDefault(false)
+    if (!started) {
+        openDownloadsFolder(context)
+    }
+}
+
+private fun openDownloadsFolder(context: android.content.Context) {
+    val downloadsIntent =
+        Intent(android.app.DownloadManager.ACTION_VIEW_DOWNLOADS)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    val opened =
+        runCatching {
+            context.startActivity(downloadsIntent)
+            true
+        }.getOrDefault(false)
+    if (!opened) {
+        android.widget.Toast
+            .makeText(context, "Files are saved in Downloads", android.widget.Toast.LENGTH_SHORT)
+            .show()
     }
 }

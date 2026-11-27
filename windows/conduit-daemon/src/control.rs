@@ -38,6 +38,7 @@ const PEER_FORGET_COMMAND: &str = "\0peer-forget\0";
 const SEND_TO_COMMAND: &str = "\0send-to\0";
 const SHARE_URL_COMMAND: &str = "\0share-url\0";
 const TRANSFER_CANCEL_COMMAND: &str = "\0transfer-cancel\0";
+const TRANSFERS_CLEAR_COMMAND: &str = "\0transfers-clear\0";
 const NOTIFICATIONS_CLEAR_COMMAND: &str = "\0notifications-clear\0";
 const NOTIFICATIONS_PRUNE_COMMAND: &str = "\0notifications-prune\0";
 
@@ -168,6 +169,12 @@ async fn handle(
             Err(error) => format!("ERR {error:#}\n"),
         };
         tokio::time::timeout(LOCAL_RESULT_TIMEOUT, pipe.write_all(response.as_bytes())).await??;
+        let _ = pipe.shutdown().await;
+        return Ok(());
+    }
+    if request == TRANSFERS_CLEAR_COMMAND {
+        transfers.clear_history();
+        tokio::time::timeout(LOCAL_RESULT_TIMEOUT, pipe.write_all(b"OK\n")).await??;
         let _ = pipe.shutdown().await;
         return Ok(());
     }
@@ -491,6 +498,10 @@ pub async fn notifications(clear: bool) -> Result<()> {
         "notification history update",
     )
     .await
+}
+
+pub async fn clear_transfers() -> Result<()> {
+    simple_command(TRANSFERS_CLEAR_COMMAND, "transfer history clear").await
 }
 
 pub async fn cancel(id: &str) -> Result<()> {

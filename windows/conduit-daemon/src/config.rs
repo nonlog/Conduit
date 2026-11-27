@@ -115,6 +115,25 @@ impl Config {
         }
     }
 
+    /// Resolves an HTTP/HTTPS proxy URL suitable for `iroh` (which uses HTTP CONNECT
+    /// rather than SOCKS5). Windows system proxy mixed ports (e.g. `127.0.0.1:7890`)
+    /// are mapped to `http://127.0.0.1:7890`.
+    pub fn resolved_http_proxy(&self) -> Option<String> {
+        let value = std::env::var("CONDUIT_RELAY_PROXY")
+            .ok()
+            .or_else(|| self.relay_proxy.clone())?;
+        let value = value.trim();
+        if value.is_empty() {
+            None
+        } else if value.eq_ignore_ascii_case("system") {
+            system_http_proxy()
+        } else if value.starts_with("http://") || value.starts_with("https://") {
+            Some(value.to_owned())
+        } else {
+            None
+        }
+    }
+
     pub fn show_tray_icon(&self) -> bool {
         self.tray_icon.unwrap_or(true)
     }
@@ -193,6 +212,46 @@ fn system_socks5_proxy() -> Option<String> {
     }
     let server = key.get_string("ProxyServer").ok()?;
     parse_system_proxy_server(&server)
+}
+
+fn system_http_proxy() -> Option<String> {
+    let key = windows_registry::CURRENT_USER
+        .open(r"Software\Microsoft\Windows\CurrentVersion\Internet Settings")
+        .ok()?;
+    if key.get_u32("ProxyEnable").ok().unwrap_or(0) == 0 {
+        return None;
+    }
+    let server = key.get_string("ProxyServer").ok()?;
+    parse_system_http_proxy_server(&server)
+}
+
+fn parse_system_http_proxy_server(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let endpoint = if value.contains('=') {
+        value.split(';').find_map(|part| {
+            let (scheme, endpoint) = part.trim().split_once('=')?;
+            matches!(
+                scheme.trim().to_ascii_lowercase().as_str(),
+                "https" | "http"
+            )
+            .then_some(endpoint.trim())
+        })?
+    } else {
+        value
+    };
+    if endpoint.is_empty() {
+        return None;
+    }
+    Some(
+        if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
+            endpoint.to_owned()
+        } else {
+            format!("http://{endpoint}")
+        },
+    )
 }
 
 fn parse_system_proxy_server(value: &str) -> Option<String> {
