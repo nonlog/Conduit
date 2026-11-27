@@ -737,7 +737,7 @@ class SyncService : Service() {
     override fun onCreate() {
         super.onCreate()
         if (IrohBridge.isAvailable) {
-            Thread({ IrohBridge.ensureStarted(filesDir) }, "conduit-iroh-init").start()
+            Thread({ IrohBridge.ensureStarted(applicationContext, filesDir) }, "conduit-iroh-init").start()
         }
         val identity = Identity.loadOrCreate(filesDir)
         phonePrivateKey = identity.private
@@ -1738,7 +1738,7 @@ class SyncService : Service() {
                 LinkStatus.path = "Iroh · WAN"
                 Log.i(TAG, "trying iroh WAN transport to ${peerIrohId.take(12)}")
                 Thread({
-                    IrohBridge.ensureStarted(filesDir)
+                    IrohBridge.ensureStarted(applicationContext, filesDir)
                     link.connectViaIroh(peerIrohId)
                 }, "conduit-iroh-start").start()
                 return

@@ -10,11 +10,11 @@ crate-type = ["cdylib"]
 [dependencies]
 conduit-iroh = { path = "../conduit-iroh" }
 jni = "0.21"
+ndk-context = "0.1"
 tokio = { version = "1.53.1", features = ["rt-multi-thread"] }
 
 [profile.release]
 opt-level = "z"
 lto = true
 codegen-units = 1
-panic = "abort"
 strip = true

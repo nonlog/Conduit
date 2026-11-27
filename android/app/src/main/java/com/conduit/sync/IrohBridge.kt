@@ -1,5 +1,6 @@
 package com.conduit.sync
 
+import android.content.Context
 import android.util.Log
 import java.io.File
 
@@ -41,6 +42,7 @@ object IrohBridge {
         get() = cachedEndpointId
 
     fun ensureStarted(
+        context: Context,
         filesDir: File,
         customRelays: List<String> = emptyList(),
         useDefaultRelays: Boolean = true,
@@ -51,7 +53,12 @@ object IrohBridge {
             val kp = runCatching { Identity.loadOrCreate(filesDir) }.getOrNull() ?: return ""
             val h =
                 runCatching {
-                    nativeStart(kp.private, customRelays.toTypedArray(), useDefaultRelays)
+                    nativeStart(
+                        context.applicationContext,
+                        kp.private,
+                        customRelays.toTypedArray(),
+                        useDefaultRelays,
+                    )
                 }.onFailure { err ->
                     Log.w(TAG, "nativeStart failed", err)
                 }.getOrDefault(0L)
@@ -99,6 +106,7 @@ object IrohBridge {
 
     @JvmStatic
     private external fun nativeStart(
+        context: Context,
         noisePrivateKey: ByteArray,
         customRelays: Array<String>,
         useDefaultRelays: Boolean,
