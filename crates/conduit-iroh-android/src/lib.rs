@@ -28,8 +28,12 @@ pub extern "system" fn Java_com_conduit_sync_IrohBridge_nativeStart(
         for idx in 0..len {
             if let Ok(obj) = env.get_object_array_element(&custom_relays, idx) {
                 let jstr = JString::from(obj);
-                if let Ok(s) = env.get_string(&jstr) {
-                    relays.push(s.to_string_lossy().into_owned());
+                let parsed = env
+                    .get_string(&jstr)
+                    .ok()
+                    .map(|s| s.to_string_lossy().into_owned());
+                if let Some(s) = parsed {
+                    relays.push(s);
                 }
             }
         }

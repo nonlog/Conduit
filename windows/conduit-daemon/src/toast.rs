@@ -1684,7 +1684,7 @@ mod tests {
 
         let (action_tx, _) = broadcast::channel(4);
         let clipboard = Arc::new(clip::Bridge::start()?);
-        let notifier = Notifier::start(&scratch("photo"), action_tx, clipboard)?;
+        let notifier = Notifier::start(&scratch("photo"), action_tx, clipboard, true)?;
         notifier.post(Cmd::Photo { path });
         std::thread::sleep(std::time::Duration::from_millis(2000));
         assert!(
@@ -1711,7 +1711,7 @@ mod tests {
         let tag = tag_for(key);
         let (action_tx, _) = broadcast::channel(4);
         let clipboard = Arc::new(clip::Bridge::start()?);
-        let notifier = Notifier::start(&scratch("live"), action_tx, clipboard)?;
+        let notifier = Notifier::start(&scratch("live"), action_tx, clipboard, true)?;
         // A real 96 px square, the size the phone sends, so the logo slot is exercised by
         // something the shell will actually decode rather than a path to nothing.
         crate::image::ensure_mta();
