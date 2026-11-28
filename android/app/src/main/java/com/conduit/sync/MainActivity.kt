@@ -1478,7 +1478,7 @@ internal fun ClipRow(entry: HistoryEntry) {
     val directionLabel = if (sent) "Sent" else "Received"
     val webUrl = if (!entry.image) extractClipWebUrl(entry.preview) else null
     val copyAction = {
-        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+        val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
         cm?.setPrimaryClip(android.content.ClipData.newPlainText("Conduit", entry.preview))
         Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
     }
