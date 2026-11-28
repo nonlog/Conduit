@@ -1172,11 +1172,12 @@ pub fn extract_otp_code(title: &str, body: &str) -> Option<String> {
 pub fn copy_to_clipboard(text: &str, private: bool) -> Result<(), String> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::GlobalFree;
     use windows_sys::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
     };
     use windows_sys::Win32::System::Memory::{
-        GMEM_MOVEABLE, GlobalAlloc, GlobalFree, GlobalLock, GlobalUnlock,
+        GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock,
     };
 
     const CF_UNICODETEXT: u32 = 13;
