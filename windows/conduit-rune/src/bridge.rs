@@ -1088,7 +1088,6 @@ pub fn open_received_file(name: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-
 /// Extracts a one-time verification code from notification title/body when accompanied
 /// by an OTP keyword (English or Chinese). Mirrors the daemon's context-gated detector.
 pub fn extract_otp_code(title: &str, body: &str) -> Option<String> {
@@ -1118,18 +1117,42 @@ pub fn extract_otp_code(title: &str, body: &str) -> Option<String> {
         return None;
     }
     for raw_token in combined.split(|c: char| {
-        c.is_whitespace() || matches!(c, ':' | '：' | ',' | '，' | '.' | '。' | '(' | ')' | '（' | '）' | '[' | ']' | '【' | '】' | '"' | '\'' | ';' | '；' | '!' | '！')
+        c.is_whitespace()
+            || matches!(
+                c,
+                ':' | '：'
+                    | ','
+                    | '，'
+                    | '.'
+                    | '。'
+                    | '('
+                    | ')'
+                    | '（'
+                    | '）'
+                    | '['
+                    | ']'
+                    | '【'
+                    | '】'
+                    | '"'
+                    | '\''
+                    | ';'
+                    | '；'
+                    | '!'
+                    | '！'
+            )
     }) {
         let token = raw_token.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-');
         if token.is_empty() || token.len() > 12 {
             continue;
         }
         // Reject dates/times like 2026-11 or 12:30
-        if token.len() == 4 && token.starts_with("20") && token.bytes().all(|b| b.is_ascii_digit()) {
+        if token.len() == 4 && token.starts_with("20") && token.bytes().all(|b| b.is_ascii_digit())
+        {
             continue;
         }
         let digits: String = token.chars().filter(|c| c.is_ascii_digit()).collect();
-        if (4..=8).contains(&digits.len()) && token.bytes().all(|b| b.is_ascii_digit() || b == b'-') {
+        if (4..=8).contains(&digits.len()) && token.bytes().all(|b| b.is_ascii_digit() || b == b'-')
+        {
             return Some(digits);
         }
         if let Some((prefix, rest)) = token.split_once('-') {

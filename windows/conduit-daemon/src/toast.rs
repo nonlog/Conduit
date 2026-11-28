@@ -400,7 +400,14 @@ impl Notifier {
                 match ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(AUMID)) {
                     Ok(notifier) => {
                         if ready_tx.send(Ok(())).is_ok() {
-                            pump(&notifier, &cache, rx, action_tx, clipboard, thread_auto_copy);
+                            pump(
+                                &notifier,
+                                &cache,
+                                rx,
+                                action_tx,
+                                clipboard,
+                                thread_auto_copy,
+                            );
                         }
                     }
                     Err(e) => {
@@ -1027,9 +1034,9 @@ fn show_file(notifier: &ToastNotifier, path: &Path) -> Result<()> {
 /// Safe non-executable document and media extensions allowed for a direct "Open file"
 /// button on the Windows File Received toast (never scripts, binaries, or shortcuts).
 const SAFE_HANDOFF_EXTENSIONS: &[&str] = &[
-    "pdf", "txt", "md", "rtf", "csv", "tsv", "json", "xml", "yaml", "yml", "doc", "docx",
-    "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp", "epub", "png", "jpg", "jpeg", "webp",
-    "gif", "bmp", "mp3", "m4a", "wav", "flac", "ogg", "mp4", "mkv", "mov", "webm",
+    "pdf", "txt", "md", "rtf", "csv", "tsv", "json", "xml", "yaml", "yml", "doc", "docx", "xls",
+    "xlsx", "ppt", "pptx", "odt", "ods", "odp", "epub", "png", "jpg", "jpeg", "webp", "gif", "bmp",
+    "mp3", "m4a", "wav", "flac", "ogg", "mp4", "mkv", "mov", "webm",
 ];
 
 fn is_safe_handoff_document(name: &str) -> bool {

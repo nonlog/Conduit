@@ -1960,7 +1960,9 @@ fn notifications(ui: &Ui, paint: Paint) -> El {
                     move |ui| {
                         let value = copy_code.clone();
                         match bridge::copy_to_clipboard(&value, true) {
-                            Ok(()) => ui.show_notice("Copied verification code", NoticeKind::Success),
+                            Ok(()) => {
+                                ui.show_notice("Copied verification code", NoticeKind::Success)
+                            }
                             Err(e) => ui.show_notice(e, NoticeKind::Error),
                         };
                     },
@@ -1979,7 +1981,9 @@ fn notifications(ui: &Ui, paint: Paint) -> El {
                     false,
                     move |ui| {
                         match bridge::copy_to_clipboard(&copy_text, false) {
-                            Ok(()) => ui.show_notice("Copied notification text", NoticeKind::Success),
+                            Ok(()) => {
+                                ui.show_notice("Copied notification text", NoticeKind::Success)
+                            }
                             Err(e) => ui.show_notice(e, NoticeKind::Error),
                         };
                     },

@@ -406,7 +406,9 @@ fn open_downloads_folder() {
             .map(|home| PathBuf::from(home).join("Downloads"))
             .unwrap_or_else(|| PathBuf::from("."))
     });
-    let _ = std::process::Command::new("explorer.exe").arg(folder).spawn();
+    let _ = std::process::Command::new("explorer.exe")
+        .arg(folder)
+        .spawn();
 }
 
 fn share_clipboard_link() {
