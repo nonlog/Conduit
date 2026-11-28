@@ -21,6 +21,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread::JoinHandle;
 use tokio::sync::broadcast;
@@ -364,6 +365,7 @@ pub struct Notifier {
     /// what makes the thread's `recv` return and the join finish.
     tx: Option<mpsc::Sender<Cmd>>,
     thread: Option<JoinHandle<()>>,
+    auto_copy_otp: Arc<AtomicBool>,
 }
 
 impl Notifier {
@@ -380,6 +382,8 @@ impl Notifier {
         let cache = Cache::prepare(cache).context("preparing the toast icon cache")?;
 
         let (tx, rx) = mpsc::channel();
+        let auto_copy_flag = Arc::new(AtomicBool::new(auto_copy_otp));
+        let thread_auto_copy = auto_copy_flag.clone();
         // The notifier is built on the thread that will use it, and only the outcome
         // comes back — a COM object cannot cross apartments.
         let (ready_tx, ready_rx) = mpsc::channel();
@@ -396,7 +400,7 @@ impl Notifier {
                 match ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(AUMID)) {
                     Ok(notifier) => {
                         if ready_tx.send(Ok(())).is_ok() {
-                            pump(&notifier, &cache, rx, action_tx, clipboard, auto_copy_otp);
+                            pump(&notifier, &cache, rx, action_tx, clipboard, thread_auto_copy);
                         }
                     }
                     Err(e) => {
@@ -418,7 +422,12 @@ impl Notifier {
         Ok(Self {
             tx: Some(tx),
             thread: Some(thread),
+            auto_copy_otp: auto_copy_flag,
         })
+    }
+
+    pub fn set_auto_copy_otp(&self, enabled: bool) {
+        self.auto_copy_otp.store(enabled, Ordering::Relaxed);
     }
 
     /// Never fails the caller: a toast that cannot be shown is not worth ending a
@@ -455,7 +464,7 @@ fn pump(
     rx: mpsc::Receiver<Cmd>,
     action_tx: broadcast::Sender<pb::NotifAction>,
     clipboard: Arc<clip::Bridge>,
-    auto_copy_otp: bool,
+    auto_copy_otp: Arc<AtomicBool>,
 ) {
     // The broker token for the phone capture currently on screen. At most one is ever
     // outstanding, because a new capture replaces the toast that named the old one — so
@@ -496,9 +505,9 @@ fn pump(
                         None
                     });
                 let code = verification_code::extract(&title, &body, &messages);
-                if auto_copy_otp && !suppress_popup {
+                if auto_copy_otp.load(Ordering::Relaxed) && !suppress_popup {
                     if let Some(ref value) = code {
-                        if let Err(e) = clipboard.apply(value) {
+                        if let Err(e) = clipboard.apply_private(value) {
                             warn!(error = %e, "could not auto-copy verification code");
                         }
                     }
@@ -574,9 +583,9 @@ fn pump(
                 let shape = shapes.get(&toast_key).cloned();
                 if let Some(shape) = shape {
                     if shape.code != code {
-                        if auto_copy_otp {
+                        if auto_copy_otp.load(Ordering::Relaxed) {
                             if let Some(ref value) = code {
-                                if let Err(e) = clipboard.apply(value) {
+                                if let Err(e) = clipboard.apply_private(value) {
                                     warn!(error = %e, "could not auto-copy updated verification code");
                                 }
                             }
@@ -703,7 +712,7 @@ fn show(
                 if let Some(code) = parse_copy_code(&arguments) {
                     // Only the exact code embedded in this toast is accepted. Never log the value.
                     if expected_copy_code.as_deref() == Some(code) {
-                        if let Err(e) = clipboard.apply(code) {
+                        if let Err(e) = clipboard.apply_private(code) {
                             warn!(error = %e, "could not copy verification code");
                         }
                     }
@@ -1015,14 +1024,42 @@ fn show_file(notifier: &ToastNotifier, path: &Path) -> Result<()> {
 /// Opens the *folder*, not the file. A received file's name and extension are chosen by
 /// the peer, and a toast whose click runs whatever arrived is a worse idea than one that
 /// shows the user where it is and lets them decide.
+/// Safe non-executable document and media extensions allowed for a direct "Open file"
+/// button on the Windows File Received toast (never scripts, binaries, or shortcuts).
+const SAFE_HANDOFF_EXTENSIONS: &[&str] = &[
+    "pdf", "txt", "md", "rtf", "csv", "tsv", "json", "xml", "yaml", "yml", "doc", "docx",
+    "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp", "epub", "png", "jpg", "jpeg", "webp",
+    "gif", "bmp", "mp3", "m4a", "wav", "flac", "ogg", "mp4", "mkv", "mov", "webm",
+];
+
+fn is_safe_handoff_document(name: &str) -> bool {
+    let trimmed = name.trim().trim_end_matches(['.', ' ']);
+    let Some((_, ext)) = trimmed.rsplit_once('.') else {
+        return false;
+    };
+    let lower = ext.to_ascii_lowercase();
+    SAFE_HANDOFF_EXTENSIONS.contains(&lower.as_str())
+}
+
 fn file_xml(path: &Path) -> String {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     let folder = path.parent().unwrap_or(Path::new("."));
+    let folder_launch = escape(&file_url(folder));
+    let mut actions = String::new();
+    if is_safe_handoff_document(&name) {
+        let file_launch = escape(&file_url(path));
+        actions.push_str(&format!(
+            r#"<action content="Open file" activationType="protocol" arguments="{file_launch}"/>"#
+        ));
+    }
+    actions.push_str(&format!(
+        r#"<action content="Open folder" activationType="protocol" arguments="{folder_launch}"/>"#
+    ));
     format!(
-        r#"<toast activationType="protocol" launch="{launch}">
+        r#"<toast activationType="protocol" launch="{folder_launch}">
              <visual>
                <binding template="ToastGeneric">
                  <text>File received</text>
@@ -1030,8 +1067,8 @@ fn file_xml(path: &Path) -> String {
                  <text placement="attribution">Conduit</text>
                </binding>
              </visual>
+             <actions>{actions}</actions>
            </toast>"#,
-        launch = escape(&file_url(folder)),
         name = escape(&name),
     )
 }

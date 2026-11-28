@@ -28,6 +28,9 @@ const CALLBACK_MESSAGE: u32 = WM_APP + 1;
 const TRAY_ID: u32 = 1;
 const MENU_OPEN: usize = 1001;
 const MENU_EXIT: usize = 1002;
+const MENU_DOWNLOADS: usize = 1003;
+const MENU_SHARE_CLIP: usize = 1004;
+const MENU_TOGGLE_LINK: usize = 1005;
 const TRAY_DARK_BYTES: &[u8] = include_bytes!("../assets/conduit-tray-dark.ico");
 const TRAY_LIGHT_BYTES: &[u8] = include_bytes!("../assets/conduit-tray-light.ico");
 
@@ -294,7 +297,7 @@ unsafe extern "system" fn wnd_proc(
             // With NOTIFYICON_VERSION_4 the low word is the mouse/message event and the high word
             // contains the icon id. Masking also remains compatible with the legacy callback form.
             match (lparam as u32) & 0xffff {
-                WM_LBUTTONDBLCLK => open_control(),
+                WM_LBUTTONUP | WM_LBUTTONDBLCLK => open_control(),
                 WM_RBUTTONUP | WM_CONTEXTMENU => show_menu(hwnd),
                 _ => {}
             }
@@ -303,6 +306,9 @@ unsafe extern "system" fn wnd_proc(
         WM_COMMAND => {
             match wparam & 0xffff {
                 MENU_OPEN => open_control(),
+                MENU_DOWNLOADS => open_downloads_folder(),
+                MENU_SHARE_CLIP => share_clipboard_link(),
+                MENU_TOGGLE_LINK => toggle_link_from_tray(),
                 MENU_EXIT => request_exit(hwnd),
                 _ => {}
             }
@@ -355,6 +361,65 @@ unsafe fn apply_popup_menu_theme(hwnd: HWND) {
     let _ = SetWindowTheme(hwnd, theme.as_ptr(), null());
 }
 
+fn clipboard_http_url() -> Option<String> {
+    let raw = clipboard_win::get_clipboard_string().ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > 2048
+        || trimmed.chars().any(|c| c.is_control() || c.is_whitespace())
+    {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    (lower.starts_with("http://") || lower.starts_with("https://")).then(|| trimmed.to_owned())
+}
+
+fn is_link_paused() -> bool {
+    CONFIG_DIR
+        .get()
+        .and_then(|dir| std::fs::read_to_string(dir.join("link-intent.txt")).ok())
+        .is_some_and(|text| text.trim() == "paused")
+}
+
+fn spawn_daemon_background(args: &[&str]) {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    use std::os::windows::process::CommandExt;
+    let _ = std::process::Command::new(exe)
+        .args(args)
+        .creation_flags(0x0800_0000)
+        .spawn();
+}
+
+fn open_downloads_folder() {
+    let configured = CONFIG_DIR
+        .get()
+        .and_then(|dir| crate::config::Config::load(dir).ok())
+        .and_then(|cfg| cfg.receive_dir)
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir());
+    let folder = configured.unwrap_or_else(|| {
+        std::env::var_os("USERPROFILE")
+            .map(|home| PathBuf::from(home).join("Downloads"))
+            .unwrap_or_else(|| PathBuf::from("."))
+    });
+    let _ = std::process::Command::new("explorer.exe").arg(folder).spawn();
+}
+
+fn share_clipboard_link() {
+    if let Some(url) = clipboard_http_url() {
+        spawn_daemon_background(&["share-url", &url]);
+    }
+}
+
+fn toggle_link_from_tray() {
+    let action = if is_link_paused() { "resume" } else { "pause" };
+    spawn_daemon_background(&["link", action]);
+}
+
 unsafe fn show_menu(hwnd: HWND) {
     apply_popup_menu_theme(hwnd);
     let menu = CreatePopupMenu();
@@ -362,8 +427,21 @@ unsafe fn show_menu(hwnd: HWND) {
         return;
     }
     let open = wide("Open Conduit");
+    let downloads = wide("Open Downloads");
+    let toggle_label = wide(if is_link_paused() {
+        "Resume connection"
+    } else {
+        "Pause connection"
+    });
     let exit = wide("Exit Conduit");
     let _ = AppendMenuW(menu, MF_STRING, MENU_OPEN, open.as_ptr());
+    let _ = AppendMenuW(menu, MF_STRING, MENU_DOWNLOADS, downloads.as_ptr());
+    if clipboard_http_url().is_some() {
+        let share = wide("Send clipboard link to phone");
+        let _ = AppendMenuW(menu, MF_STRING, MENU_SHARE_CLIP, share.as_ptr());
+    }
+    let _ = AppendMenuW(menu, MF_SEPARATOR, 0, null());
+    let _ = AppendMenuW(menu, MF_STRING, MENU_TOGGLE_LINK, toggle_label.as_ptr());
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, null());
     let _ = AppendMenuW(menu, MF_STRING, MENU_EXIT, exit.as_ptr());
 

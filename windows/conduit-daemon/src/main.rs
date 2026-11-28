@@ -835,6 +835,9 @@ async fn run() -> Result<()> {
                         if let Err(error) = history.configure(new_config.retention_days()) {
                             apply_error = Some(format!("updating notification retention: {error:#}"));
                         }
+                        if let Some(toasts) = &toasts {
+                            toasts.set_auto_copy_otp(new_config.auto_copy_otp());
+                        }
                         if let Err(error) = new_config.publish_effective(&dir, DEFAULT_RELAYS) {
                             apply_error = Some(format!("publishing effective settings: {error:#}"));
                         }

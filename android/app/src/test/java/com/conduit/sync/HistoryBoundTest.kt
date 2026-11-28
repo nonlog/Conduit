@@ -55,4 +55,14 @@ class HistoryBoundTest {
         assertEquals(Direction.Received, entry.direction)
         assertTrue("an image row must not offer tap-to-copy", entry.image)
     }
+
+    @Test
+    fun otp_codes_are_not_archived_in_history() {
+        History.record(Direction.Received, "123456")
+        History.record(Direction.Received, "G-842910")
+        History.record(Direction.Sent, "123-456")
+        assertTrue("standalone OTPs must not be archived", History.entries.isEmpty())
+        History.record(Direction.Sent, "https://example.com")
+        assertEquals(1, History.entries.size)
+    }
 }

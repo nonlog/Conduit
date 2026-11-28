@@ -2148,10 +2148,23 @@ class SyncService : Service() {
         }
     }
 
+    private fun isSensitiveClip(clip: ClipData?): Boolean {
+        val extras = clip?.description?.extras ?: return false
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            extras.getBoolean(android.content.ClipDescription.EXTRA_IS_SENSITIVE, false)
+        } else {
+            extras.getBoolean("android.content.extra.IS_SENSITIVE", false)
+        }
+    }
+
     private fun sendLocalClip(
         clip: ClipData?,
         source: String,
     ) {
+        if (isSensitiveClip(clip)) {
+            Log.d(TAG, "sensitive clipboard item skipped ($source)")
+            return
+        }
         val item = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)
         if (item == null) {
             // On stock Android 10+ the background listener cannot read the clipboard. The

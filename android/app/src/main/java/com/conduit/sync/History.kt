@@ -87,8 +87,29 @@ object History {
      * Synchronized because the two callers are on different threads and this is a
      * read-modify-write; the critical section is a list copy of at most [MAX] entries.
      */
+    /** Matches short standalone OTP codes (e.g. `123456`, `123-456`, `G-123456`) so they are not archived. */
+    internal fun isOtpClip(text: String): Boolean {
+        val t = text.trim()
+        if (t.length !in 4..10) return false
+        if (t.all { it.isDigit() } && t.length in 4..8) return true
+        if (t.length in 7..9 && t.count { it == '-' || it == ' ' } == 1) {
+            val digits = t.filter { it.isDigit() }
+            if (digits.length in 6..8 && t.all { it.isDigit() || it == '-' || it == ' ' }) return true
+        }
+        val dash = t.indexOf('-')
+        if (dash in 1..2) {
+            val prefix = t.substring(0, dash)
+            val rest = t.substring(dash + 1)
+            if (prefix.all { it in 'A'..'Z' } && rest.length in 4..8 && rest.all { it.isDigit() }) {
+                return true
+            }
+        }
+        return false
+    }
+
     @Synchronized
     fun record(direction: Direction, text: String, image: Boolean = false) {
+        if (!image && isOtpClip(text)) return
         val entry = HistoryEntry(
             direction = direction,
             preview = text.take(PREVIEW),

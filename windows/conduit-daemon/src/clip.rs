@@ -147,6 +147,44 @@ impl Bridge {
             .map_err(|e| anyhow!("SetClipboardData failed: {e}"))
     }
 
+    /// Puts a secret (such as a one-time verification code) on the local clipboard marked
+    /// private so Windows Clipboard History (Win+V), Cloud Clipboard, and clipboard monitors
+    /// do not archive it — matching NectarLink's private-clip posture.
+    pub fn apply_private(&self, text: &str) -> Result<()> {
+        let normalised = to_lf(text);
+        {
+            let mut last = self.last.lock().expect("clipboard mutex poisoned");
+            if *last == Seen::Text(normalised.clone()) {
+                debug!("remote private clip already on the clipboard");
+                return Ok(());
+            }
+            *last = Seen::Text(normalised.clone());
+        }
+        let crlf = to_crlf(&normalised);
+        let zero = 0u32.to_le_bytes();
+        let mut wrote: Result<()> = Ok(());
+        clipboard_win::with_clipboard(|| {
+            wrote = (|| {
+                clipboard_win::raw::empty().map_err(|e| anyhow!("EmptyClipboard failed: {e}"))?;
+                formats::Unicode
+                    .write_clipboard(&crlf)
+                    .map_err(|e| anyhow!("writing private text to the clipboard failed: {e}"))?;
+                for name in [
+                    "ExcludeClipboardContentFromMonitorProcessing",
+                    "CanIncludeInClipboardHistory",
+                    "CanUploadToCloudClipboard",
+                ] {
+                    if let Some(id) = clipboard_win::raw::register_format(name).map(|f| f.get()) {
+                        let _ = formats::RawData(id).write_clipboard(&zero);
+                    }
+                }
+                Ok(())
+            })();
+        })
+        .map_err(|e| anyhow!("OpenClipboard failed: {e}"))?;
+        wrote
+    }
+
     /// Puts a remote PNG on the local clipboard, in both formats Windows apps expect.
     ///
     /// Blocking and slow enough to matter — a 10 MiB screenshot is a decode plus an
@@ -214,7 +252,30 @@ fn png_format() -> Option<u32> {
 /// PNG is preferred because it needs no conversion and preserves alpha. Windows 11's
 /// Snipping Tool commonly publishes DIB/DIBV5 rather than `CF_BITMAP`, so both HGLOBAL
 /// DIB formats are tried before the legacy bitmap-handle fallback.
+fn is_dword_zero(bytes: &[u8]) -> bool {
+    bytes.len() >= 4 && u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) == 0
+}
+
+/// Checks Windows' standard password-manager exclusion markers without opening the clipboard.
+fn has_private_marker_format() -> bool {
+    for name in [
+        "ExcludeClipboardContentFromMonitorProcessing",
+        "Clipboard Viewer Ignore",
+    ] {
+        if let Some(id) = clipboard_win::raw::register_format(name).map(|f| f.get()) {
+            if clipboard_win::raw::is_format_avail(id) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn read_clipboard() -> Option<Clip> {
+    if has_private_marker_format() {
+        debug!("clipboard marked private by password manager, skipped");
+        return None;
+    }
     // `Getter::read_clipboard` is intentionally low-level in clipboard-win: unlike
     // `get_clipboard_string`, it does not call OpenClipboard for us. The old image path
     // called the getters directly, so text sync worked while every image read failed.
@@ -222,9 +283,19 @@ fn read_clipboard() -> Option<Clip> {
     // write, hence a few bounded OpenClipboard attempts here. This is event-driven work,
     // never an idle timer/poll.
     let mut image_clip = None;
+    let mut marked_private = false;
     if let Err(e) = clipboard_win::with_clipboard_attempts(8, || {
-        if image_clip.is_some() {
+        if image_clip.is_some() || marked_private {
             return;
+        }
+        if let Some(id) =
+            clipboard_win::raw::register_format("CanIncludeInClipboardHistory").map(|f| f.get())
+        {
+            let mut flag = Vec::new();
+            if formats::RawData(id).read_clipboard(&mut flag).is_ok() && is_dword_zero(&flag) {
+                marked_private = true;
+                return;
+            }
         }
         if let Some(format) = png_format() {
             let mut png = Vec::new();
@@ -261,6 +332,10 @@ fn read_clipboard() -> Option<Clip> {
         }
     }) {
         debug!(error = %e, "clipboard was busy after an image update");
+    }
+    if marked_private {
+        debug!("clipboard marked excluded from history, skipped");
+        return None;
     }
     if image_clip.is_some() {
         return image_clip;
@@ -356,5 +431,12 @@ mod tests {
         // Registered formats live above 0xC000; a smaller value would mean we had
         // collided with a predefined format such as CF_DIB.
         assert!(first >= 0xC000, "unexpected id {first:#x}");
+    }
+
+    #[test]
+    fn private_history_flag_detects_zero_dword() {
+        assert!(is_dword_zero(&0u32.to_le_bytes()));
+        assert!(!is_dword_zero(&1u32.to_le_bytes()));
+        assert!(!is_dword_zero(&[0, 0]));
     }
 }

@@ -45,6 +45,7 @@ pub struct Settings {
     pub manual_proxy: String,
     pub receive_dir: String,
     pub tray_icon: bool,
+    pub auto_copy_otp: bool,
     pub autostart: bool,
     pub explorer: bool,
 }
@@ -676,6 +677,10 @@ pub fn snapshot() -> Snapshot {
                 .get("tray_icon")
                 .map(|v| matches!(v.to_ascii_lowercase().as_str(), "true" | "1" | "yes" | "on"))
                 .unwrap_or(true),
+            auto_copy_otp: config
+                .get("auto_copy_otp")
+                .map(|v| matches!(v.to_ascii_lowercase().as_str(), "true" | "1" | "yes" | "on"))
+                .unwrap_or(true),
             autostart,
             explorer,
         },
@@ -944,6 +949,7 @@ pub fn save_settings(settings: Settings) -> Result<(), String> {
             },
         ),
         ("tray_icon", settings.tray_icon.to_string()),
+        ("auto_copy_otp", settings.auto_copy_otp.to_string()),
         ("receive_dir", settings.receive_dir.trim().into()),
         (
             "notification_retention_days",
@@ -1080,6 +1086,144 @@ pub fn open_received_file(name: &str) -> Result<(), String> {
         .spawn()
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+
+/// Extracts a one-time verification code from notification title/body when accompanied
+/// by an OTP keyword (English or Chinese). Mirrors the daemon's context-gated detector.
+pub fn extract_otp_code(title: &str, body: &str) -> Option<String> {
+    let combined = format!("{title}\n{body}");
+    let lower = combined.to_lowercase();
+    let has_keyword = [
+        "otp",
+        "code",
+        "passcode",
+        "verification",
+        "verify",
+        "pin",
+        "2fa",
+        "mfa",
+        "验证码",
+        "校验码",
+        "动态码",
+        "确认码",
+        "安全码",
+        "口令",
+        "認証コード",
+        "인증번호",
+    ]
+    .iter()
+    .any(|kw| lower.contains(kw));
+    if !has_keyword {
+        return None;
+    }
+    for raw_token in combined.split(|c: char| {
+        c.is_whitespace() || matches!(c, ':' | '：' | ',' | '，' | '.' | '。' | '(' | ')' | '（' | '）' | '[' | ']' | '【' | '】' | '"' | '\'' | ';' | '；' | '!' | '！')
+    }) {
+        let token = raw_token.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-');
+        if token.is_empty() || token.len() > 12 {
+            continue;
+        }
+        // Reject dates/times like 2026-11 or 12:30
+        if token.len() == 4 && token.starts_with("20") && token.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let digits: String = token.chars().filter(|c| c.is_ascii_digit()).collect();
+        if (4..=8).contains(&digits.len()) && token.bytes().all(|b| b.is_ascii_digit() || b == b'-') {
+            return Some(digits);
+        }
+        if let Some((prefix, rest)) = token.split_once('-') {
+            if (1..=2).contains(&prefix.len())
+                && prefix.bytes().all(|b| b.is_ascii_uppercase())
+                && (4..=8).contains(&rest.len())
+                && rest.bytes().all(|b| b.is_ascii_digit())
+            {
+                return Some(rest.to_owned());
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+pub fn copy_to_clipboard(text: &str, private: bool) -> Result<(), String> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::System::DataExchange::{
+        CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
+    };
+    use windows_sys::Win32::System::Memory::{
+        GMEM_MOVEABLE, GlobalAlloc, GlobalFree, GlobalLock, GlobalUnlock,
+    };
+
+    const CF_UNICODETEXT: u32 = 13;
+
+    let crlf = text.replace("\r\n", "\n").replace('\n', "\r\n");
+    let wide: Vec<u16> = crlf.encode_utf16().chain(std::iter::once(0)).collect();
+    let byte_len = wide.len() * 2;
+
+    unsafe {
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            return Err("Clipboard is busy".into());
+        }
+        let result = (|| -> Result<(), String> {
+            if EmptyClipboard() == 0 {
+                return Err("Could not clear clipboard".into());
+            }
+            let hmem = GlobalAlloc(GMEM_MOVEABLE, byte_len);
+            if hmem.is_null() {
+                return Err("Out of memory for clipboard".into());
+            }
+            let ptr = GlobalLock(hmem) as *mut u16;
+            if ptr.is_null() {
+                let _ = GlobalFree(hmem);
+                return Err("Could not lock clipboard buffer".into());
+            }
+            std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr, wide.len());
+            GlobalUnlock(hmem);
+            if SetClipboardData(CF_UNICODETEXT, hmem).is_null() {
+                let _ = GlobalFree(hmem);
+                return Err("Could not write clipboard text".into());
+            }
+            if private {
+                let zero = 0u32.to_le_bytes();
+                for name in [
+                    "ExcludeClipboardContentFromMonitorProcessing",
+                    "CanIncludeInClipboardHistory",
+                    "CanUploadToCloudClipboard",
+                ] {
+                    let wname: Vec<u16> = OsStr::new(name)
+                        .encode_wide()
+                        .chain(std::iter::once(0))
+                        .collect();
+                    let fmt = RegisterClipboardFormatW(wname.as_ptr());
+                    if fmt != 0 {
+                        let flag = GlobalAlloc(GMEM_MOVEABLE, zero.len());
+                        if !flag.is_null() {
+                            let fptr = GlobalLock(flag) as *mut u8;
+                            if !fptr.is_null() {
+                                std::ptr::copy_nonoverlapping(zero.as_ptr(), fptr, zero.len());
+                                GlobalUnlock(flag);
+                                if SetClipboardData(fmt, flag).is_null() {
+                                    let _ = GlobalFree(flag);
+                                }
+                            } else {
+                                let _ = GlobalFree(flag);
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(())
+        })();
+        CloseClipboard();
+        result
+    }
+}
+
+#[cfg(not(windows))]
+pub fn copy_to_clipboard(_text: &str, _private: bool) -> Result<(), String> {
+    Ok(())
 }
 
 pub fn reveal_received_file(name: &str) -> Result<(), String> {

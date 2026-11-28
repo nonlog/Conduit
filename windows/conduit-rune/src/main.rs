@@ -222,6 +222,7 @@ struct Ui {
     share_link: TextEdit,
     proxy_mode: String,
     tray_icon: bool,
+    auto_copy_otp: bool,
     settings_dirty: bool,
     confirm: Option<String>,
     notice: Option<Notice>,
@@ -266,6 +267,7 @@ impl Ui {
             share_link: TextEdit::new(""),
             proxy_mode: snap.settings.proxy_mode.clone(),
             tray_icon: snap.settings.tray_icon,
+            auto_copy_otp: snap.settings.auto_copy_otp,
             snap,
             settings_dirty: false,
             confirm: None,
@@ -294,6 +296,7 @@ impl Ui {
                 .replace_text(next.settings.receive_dir.clone());
             self.proxy_mode = next.settings.proxy_mode.clone();
             self.tray_icon = next.settings.tray_icon;
+            self.auto_copy_otp = next.settings.auto_copy_otp;
         }
         self.snap = next;
         self.refresh_pairing_qr();
@@ -504,6 +507,7 @@ impl Ui {
             manual_proxy: self.manual_proxy.text.clone(),
             receive_dir: self.receive_dir.text.clone(),
             tray_icon: self.tray_icon,
+            auto_copy_otp: self.auto_copy_otp,
             ..self.snap.settings.clone()
         };
         self.busy = true;
@@ -1936,12 +1940,52 @@ fn notifications(ui: &Ui, paint: Paint) -> El {
                     .max_lines(if expanded { 20 } else { 2 }),
             );
         }
+        let otp_code = bridge::extract_otp_code(&notification.title, &notification.body);
         if expanded {
             message = message.child(
                 text(stamp.full)
                     .font(rune::TextStyle::new(10.0, 450.0))
                     .color(paint.faint),
             );
+        }
+        if otp_code.is_some() || expanded {
+            let mut actions = row().gap(8.0).center_y();
+            if let Some(code) = otp_code {
+                let copy_code = code.clone();
+                actions = actions.child(button(
+                    format!("copy-otp-{}", notification.id),
+                    format!("Copy {code}"),
+                    paint,
+                    true,
+                    move |ui| {
+                        let value = copy_code.clone();
+                        match bridge::copy_to_clipboard(&value, true) {
+                            Ok(()) => ui.show_notice("Copied verification code", NoticeKind::Success),
+                            Err(e) => ui.show_notice(e, NoticeKind::Error),
+                        };
+                    },
+                ));
+            }
+            if expanded {
+                let copy_text = if notification.body.is_empty() {
+                    notification.title.clone()
+                } else {
+                    format!("{}\n{}", notification.title, notification.body)
+                };
+                actions = actions.child(button(
+                    format!("copy-notif-{}", notification.id),
+                    "Copy text",
+                    paint,
+                    false,
+                    move |ui| {
+                        match bridge::copy_to_clipboard(&copy_text, false) {
+                            Ok(()) => ui.show_notice("Copied notification text", NoticeKind::Success),
+                            Err(e) => ui.show_notice(e, NoticeKind::Error),
+                        };
+                    },
+                ));
+            }
+            message = message.child(actions);
         }
         let id = notification.id.clone();
         list = list.child(
@@ -2053,6 +2097,21 @@ fn links(ui: &Ui, paint: Paint) -> El {
                                     .truncate_middle(),
                             ),
                     )
+                    .child(button(
+                        format!("copy-link-{}", item.id),
+                        "Copy",
+                        paint,
+                        false,
+                        {
+                            let copy_url = item.url.clone();
+                            move |ui| {
+                                match bridge::copy_to_clipboard(&copy_url, false) {
+                                    Ok(()) => ui.show_notice("Link copied", NoticeKind::Success),
+                                    Err(e) => ui.show_notice(e, NoticeKind::Error),
+                                };
+                            }
+                        },
+                    ))
                     .child(action_button(
                         format!("open-{}", item.id),
                         "Open",
@@ -2469,7 +2528,30 @@ fn notification_history_settings(ui: &Ui, paint: Paint) -> El {
                 .child(el().grow(1.0)))
             .child(row().child(presets))))
         .child(text("0 disables age-based cleanup. Saving applies the rule immediately. Phone notifications are not deleted.")
-            .font(rune::TextStyle::new(10.0, 450.0)).color(paint.faint).max_lines(3)))
+            .font(rune::TextStyle::new(10.0, 450.0)).color(paint.faint).max_lines(3))
+        .child(tonal_block(
+            paint,
+            row()
+                .w_full()
+                .center_y()
+                .justify_between()
+                .child(
+                    col()
+                        .gap(4.0)
+                        .child(heading("Auto-copy verification codes", paint))
+                        .child(muted("Copy one-time codes privately without saving to Windows clipboard history", paint).max_lines(2)),
+                )
+                .child(preference_toggle(
+                    "toggle-auto-copy-otp",
+                    "Toggle auto-copy verification codes",
+                    ui.auto_copy_otp,
+                    paint,
+                    |s| {
+                        s.auto_copy_otp = !s.auto_copy_otp;
+                        s.settings_dirty = true;
+                    },
+                )),
+        )))
 }
 
 fn settings(ui: &Ui, paint: Paint) -> El {

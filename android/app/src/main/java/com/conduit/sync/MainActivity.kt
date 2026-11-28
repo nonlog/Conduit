@@ -41,7 +41,9 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
+import android.widget.Toast
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -1462,10 +1464,24 @@ internal fun filterHistory(
     }
 }
 
+private fun extractClipWebUrl(text: String): String? {
+    val trimmed = text.trim()
+    if (trimmed.isEmpty() || trimmed.length > 2048 || trimmed.any { it.isWhitespace() }) return null
+    val lower = trimmed.lowercase()
+    return if (lower.startsWith("http://") || lower.startsWith("https://")) trimmed else null
+}
+
 @Composable
 internal fun ClipRow(entry: HistoryEntry) {
+    val context = LocalContext.current
     val sent = entry.direction == Direction.Sent
     val directionLabel = if (sent) "Sent" else "Received"
+    val webUrl = if (!entry.image) extractClipWebUrl(entry.preview) else null
+    val copyAction = {
+        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+        cm?.setPrimaryClip(android.content.ClipData.newPlainText("Conduit", entry.preview))
+        Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
+    }
     ExpressiveCard(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
@@ -1495,7 +1511,9 @@ internal fun ClipRow(entry: HistoryEntry) {
                 )
             }
             ExpressiveBlock(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(if (!entry.image) Modifier.clickable(onClick = copyAction) else Modifier),
                 corner = 16.dp,
             ) {
                 Text(
@@ -1505,6 +1523,36 @@ internal fun ClipRow(entry: HistoryEntry) {
                     maxLines = 4,
                     overflow = TextOverflow.Ellipsis,
                 )
+            }
+            if (!entry.image) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                ) {
+                    if (webUrl != null) {
+                        FilledTonalButton(
+                            onClick = {
+                                runCatching {
+                                    context.startActivity(
+                                        Intent(Intent.ACTION_VIEW, android.net.Uri.parse(webUrl))
+                                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                                    )
+                                }.onFailure {
+                                    Toast.makeText(context, "No browser available", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                        ) {
+                            Text("Open")
+                        }
+                    }
+                    OutlinedButton(
+                        onClick = copyAction,
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                    ) {
+                        Text("Copy")
+                    }
+                }
             }
         }
     }
